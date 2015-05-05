@@ -31,15 +31,15 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     apt-get -y update
     apt-get install -y build-essential g++ python-dev autotools-dev libicu-dev build-essential libbz2-dev 
     apt-get install -y boost-all-dev
-    cd /src/ && scons build/rippled
-    cp /src/build/rippled /usr/local/sbin/rippled && strip /usr/local/sbin/rippled/rippled
+    cd /src/ && scons release
+    cp /src/build/gcc.release/rippled /usr/local/sbin/rippled && strip /usr/local/sbin/rippled
     mkdir -p /etc/ripple/
     mkdir -p /home/vagrant/.config/ripple/
-    cp /src/Builds/Vagrant/rippled.cfg /home/vagrant/.config/ripple/rippled.cfg
-    cp /src/Builds/Vagrant/rippled.cfg /etc/ripple/rippled.cfg
+    cp /src/Builds/Vagrant/rippled-example.cfg /home/vagrant/.config/ripple/rippled.cfg
+    cp /src/Builds/Vagrant/rippled-example.cfg /etc/ripple/rippled.cfg
     mkdir -p /root/.config/ripple/
-    cp /src/Builds/Vagrant/rippled.cfg /root/.config/ripple/rippled.cfg
-    cp /vagrant/init.d_rippled /etc/init.d/rippled
+    cp /src/Builds/Vagrant/rippled-example.cfg /root/.config/ripple/rippled.cfg
+    cp /src/Builds/Vagrant/init.d_rippled /etc/init.d/rippled
     chmod +x /etc/init.d/rippled
     service rippled start
   SCRIPT
