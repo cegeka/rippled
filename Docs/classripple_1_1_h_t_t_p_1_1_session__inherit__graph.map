@@ -1,0 +1,5 @@
+<map id="ripple::HTTP::Session" name="ripple::HTTP::Session">
+<area shape="rect" id="node2" href="$classripple_1_1_h_t_t_p_1_1_peer.html" title="ripple::HTTP::Peer\l\&lt; PlainPeer \&gt;" alt="" coords="205,5,336,46"/>
+<area shape="rect" id="node3" href="$classripple_1_1_h_t_t_p_1_1_peer.html" title="ripple::HTTP::Peer\l\&lt; SSLPeer \&gt;" alt="" coords="205,70,336,111"/>
+<area shape="rect" id="node4" href="$classripple_1_1_h_t_t_p_1_1_peer.html" title="Represents an active connection. " alt="" coords="205,135,336,177"/>
+</map>

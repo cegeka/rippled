@@ -1,0 +1,4 @@
+<map id="ripple::AnyPublicKeySlice" name="ripple::AnyPublicKeySlice">
+<area shape="rect" id="node3" href="$classripple_1_1_any_public_key.html" title="Variant container for all public keys, with ownership. " alt="" coords="19,155,161,181"/>
+<area shape="rect" id="node2" href="$classripple_1_1_slice.html" title="An immutable linear range of bytes. " alt="" coords="45,5,136,32"/>
+</map>

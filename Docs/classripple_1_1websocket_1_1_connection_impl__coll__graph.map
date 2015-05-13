@@ -1,0 +1,5 @@
+<map id="ripple::websocket::ConnectionImpl&lt; WebSocket &gt;" name="ripple::websocket::ConnectionImpl&lt; WebSocket &gt;">
+<area shape="rect" id="node2" href="$classripple_1_1_info_sub.html" title="Manages a client&#39;s subscription to data feeds. " alt="" coords="25,104,132,131"/>
+<area shape="rect" id="node3" href="$classripple_1_1_counted_object.html" title="ripple::CountedObject\l\&lt; InfoSub \&gt;" alt="" coords="5,6,152,47"/>
+<area shape="rect" id="node4" href="$classripple_1_1_counted_object.html" title="ripple::CountedObject\l\&lt; ConnectionImpl\&lt; WebSocket \&gt; \&gt;" alt="" coords="156,97,385,138"/>
+</map>

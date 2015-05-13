@@ -1,0 +1,5 @@
+<map id="ripple::InfoSub" name="ripple::InfoSub">
+<area shape="rect" id="node3" href="$classripple_1_1_r_p_c_sub.html" title="Subscription object for JSON RPC. " alt="" coords="5,179,117,205"/>
+<area shape="rect" id="node4" href="$classripple_1_1websocket_1_1_connection_impl.html" title="A Ripple WebSocket connection handler. " alt="" coords="143,171,348,213"/>
+<area shape="rect" id="node2" href="$classripple_1_1_counted_object.html" title="ripple::CountedObject\l\&lt; InfoSub \&gt;" alt="" coords="79,6,227,47"/>
+</map>
