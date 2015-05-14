@@ -7,6 +7,10 @@ VAGRANTFILE_API_VERSION = "2"
 Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   config.vm.box = "ubuntu/trusty64"
   #config.vm.box_url = "https://github.com/kraksoft/vagrant-box-ubuntu/releases/download/14.04/ubuntu-14.04-amd64.box"
+  
+  if Vagrant.has_plugin?("vagrant-timezone")
+    config.timezone.value = "Europe/Bucharest"
+  end
 
   config.vm.provision :shell, :inline => <<-EOT
      sudo sed -i '/LC_ALL=/d' /etc/default/locale
