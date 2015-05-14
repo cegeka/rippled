@@ -18,7 +18,7 @@ GROUP="root"
 PIDFILE=/var/run/$NAME.pid
 DAEMON=/usr/local/sbin/rippled
 DAEMON_OPTS="--conf /etc/ripple/rippled.cfg"
-NET_OPTS="--net $DAEMON_OPTS"
+NET_OPTS="--start $DAEMON_OPTS"
 
 export PATH="${PATH:+$PATH:}/usr/sbin:/sbin"
 

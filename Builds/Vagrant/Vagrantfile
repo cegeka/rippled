@@ -44,8 +44,11 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 	cp /src/Builds/Vagrant/validators.txt /etc/ripple/validators.txt
 	# service
 	cp /src/Builds/Vagrant/init.d_rippled /etc/init.d/rippled
-    chmod +x /etc/init.d/rippled
+        chmod +x /etc/init.d/rippled
+        cp /src/Builds/Vagrant/init.d_rippled2 /etc/init.d/rippled
+        chmod +x /etc/init.d/rippled2
 	flip -u /etc/init.d/rippled
+        flip -u /etc/init.d/rippled2
 	flip -u /etc/ripple/validators.txt
   SCRIPT
 
@@ -54,10 +57,10 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   config.vm.define "one", primary: true do |one|
     one.vm.network "private_network", ip: "192.168.50.4"
     one.vm.network "forwarded_port", guest: 18080, host: 18080, auto_correct: true
-	one.vm.network "forwarded_port", guest: 9000, host: 9000, auto_correct: true
-	one.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
-	one.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
-	one.vm.network "forwarded_port", guest: 27017, host: 27017, auto_correct: true
+	#one.vm.network "forwarded_port", guest: 9000, host: 9000, auto_correct: true
+	#one.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
+	#one.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
+	#one.vm.network "forwarded_port", guest: 27017, host: 27017, auto_correct: true
     one.vm.provider :virtualbox do |vb|
       vb.memory = 4096
       vb.customize ["modifyvm", :id, "--cpus", 2]
@@ -102,9 +105,9 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 	  # npm install -g bower
 	  # bower install --allow-root --config.interactive=false
 	  
-	  # start server
-	  cp /src/Builds/Vagrant/init.d.one_rippled /etc/init.d/rippled
-	  flip -u /etc/init.d/rippled
+	  # server
+	  #cp /src/Builds/Vagrant/init.d.one_rippled /etc/init.d/rippled
+	  #flip -u /etc/init.d/rippled
 	  
       cp /src/Builds/Vagrant/rippled_one.cfg /etc/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_one.cfg /root/.config/ripple/rippled.cfg
