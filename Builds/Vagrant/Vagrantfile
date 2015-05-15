@@ -49,7 +49,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 	# service
 	cp /src/Builds/Vagrant/init.d_rippled /etc/init.d/rippled
   chmod +x /etc/init.d/rippled
-  cp /src/Builds/Vagrant/init.d_rippled2 /etc/init.d/rippled
+  cp /src/Builds/Vagrant/init.d_rippled2 /etc/init.d/rippled2
   chmod +x /etc/init.d/rippled2
 	flip -u /etc/init.d/rippled
   flip -u /etc/init.d/rippled2
