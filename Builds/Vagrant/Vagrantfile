@@ -113,7 +113,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 	  #cp /src/Builds/Vagrant/init.d.one_rippled /etc/init.d/rippled
 	  #flip -u /etc/init.d/rippled
 	  
-      cp /src/Builds/Vagrant/rippled_one.cfg /etc/ripple/rippled.cfg
+    cp /src/Builds/Vagrant/rippled_one.cfg /etc/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_one.cfg /root/.config/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_one.cfg /home/vagrant/.config/ripple/rippled.cfg
 	  flip -u /etc/ripple/rippled.cfg
@@ -152,8 +152,6 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 	  cp /src/Builds/Vagrant/rippled_two.cfg /root/.config/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_two.cfg /home/vagrant/.config/ripple/rippled.cfg
 	  flip -u /etc/ripple/rippled.cfg
-    cp /src/Builds/Vagrant/init.d_rippled_four /etc/init.d/rippled
-    chmod +x /etc/init.d/rippled
 	  service rippled start
     SCRIPT
 
@@ -195,7 +193,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     four.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
     four.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
     four.vm.network "forwarded_port", guest: 27017, host: 27017, auto_correct: true
-    
+
 	$rippleclient_four = <<-SCRIPT
     #!/bin/bash
 	  
@@ -216,6 +214,9 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 	  cp /src/Builds/Vagrant/rippled_four.cfg /root/.config/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_four.cfg /home/vagrant/.config/ripple/rippled.cfg
 	  flip -u /etc/ripple/rippled.cfg
+    cp /src/Builds/Vagrant/init.d_rippled_four /etc/init.d/rippled
+    chmod +x /etc/init.d/rippled
+    flip -u /etc/init.d/rippled
 	  service rippled start
 
     # riweb
