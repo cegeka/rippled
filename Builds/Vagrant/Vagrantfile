@@ -48,11 +48,11 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 	cp /src/Builds/Vagrant/validators.txt /etc/ripple/validators.txt
 	# service
 	cp /src/Builds/Vagrant/init.d_rippled /etc/init.d/rippled
-        chmod +x /etc/init.d/rippled
-        cp /src/Builds/Vagrant/init.d_rippled2 /etc/init.d/rippled
-        chmod +x /etc/init.d/rippled2
+  chmod +x /etc/init.d/rippled
+  cp /src/Builds/Vagrant/init.d_rippled2 /etc/init.d/rippled
+  chmod +x /etc/init.d/rippled2
 	flip -u /etc/init.d/rippled
-        flip -u /etc/init.d/rippled2
+  flip -u /etc/init.d/rippled2
 	flip -u /etc/ripple/validators.txt
   SCRIPT
 
@@ -61,10 +61,10 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   config.vm.define "one", primary: true do |one|
     one.vm.network "private_network", ip: "192.168.50.4"
     one.vm.network "forwarded_port", guest: 18080, host: 18080, auto_correct: true
-	#one.vm.network "forwarded_port", guest: 9000, host: 9000, auto_correct: true
-	#one.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
-	#one.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
-	#one.vm.network "forwarded_port", guest: 27017, host: 27017, auto_correct: true
+	  #one.vm.network "forwarded_port", guest: 9000, host: 9000, auto_correct: true
+	  #one.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
+	  #one.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
+	  #one.vm.network "forwarded_port", guest: 27017, host: 27017, auto_correct: true
     one.vm.provider :virtualbox do |vb|
       vb.memory = 4096
       vb.customize ["modifyvm", :id, "--cpus", 2]
@@ -88,10 +88,10 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 	  
 	  # riweb
 	  # apt-get install nodejs npm -y
-      # rm -rf /usr/local/bin/node
-      # ln -s /usr/bin/nodejs /usr/local/bin/node
-      # cd /
-      # git clone https://github.com/andreicristianpetcu/riweb.git
+    # rm -rf /usr/local/bin/node
+    # ln -s /usr/bin/nodejs /usr/local/bin/node
+    # cd /
+    # git clone https://github.com/andreicristianpetcu/riweb.git
 	  # cd riweb/
 	  # Install dependecies
 	  # npm install
@@ -137,21 +137,23 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 	  
 	  # Isolate, just in case
 	  sed -i '/ripple.com/d' /etc/hosts
-      echo "127.0.0.1 local.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 www.local.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 ripple.local.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 history.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 api.ripplecharts.com" | tee -a /etc/hosts
-      echo "127.0.0.1 local.id.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 id.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 s-west.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 s-east.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 auth1.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 local.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 www.local.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 ripple.local.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 history.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 api.ripplecharts.com" | tee -a /etc/hosts
+    echo "127.0.0.1 local.id.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 id.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 s-west.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 s-east.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 auth1.ripple.com" | tee -a /etc/hosts
 	  
-      cp /src/Builds/Vagrant/rippled_two.cfg /etc/ripple/rippled.cfg
+    cp /src/Builds/Vagrant/rippled_two.cfg /etc/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_two.cfg /root/.config/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_two.cfg /home/vagrant/.config/ripple/rippled.cfg
 	  flip -u /etc/ripple/rippled.cfg
+    cp /src/Builds/Vagrant/init.d_rippled_four /etc/init.d/rippled
+    chmod +x /etc/init.d/rippled
 	  service rippled start
     SCRIPT
 
@@ -166,18 +168,18 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 	  
 	  # Isolate, just in case
 	  sed -i '/ripple.com/d' /etc/hosts
-      echo "127.0.0.1 local.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 www.local.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 ripple.local.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 history.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 api.ripplecharts.com" | tee -a /etc/hosts
-      echo "127.0.0.1 local.id.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 id.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 s-west.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 s-east.ripple.com" | tee -a /etc/hosts
-      echo "127.0.0.1 auth1.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 local.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 www.local.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 ripple.local.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 history.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 api.ripplecharts.com" | tee -a /etc/hosts
+    echo "127.0.0.1 local.id.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 id.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 s-west.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 s-east.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 auth1.ripple.com" | tee -a /etc/hosts
 	  
-      cp /src/Builds/Vagrant/rippled_three.cfg /etc/ripple/rippled.cfg
+    cp /src/Builds/Vagrant/rippled_three.cfg /etc/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_three.cfg /root/.config/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_three.cfg /home/vagrant/.config/ripple/rippled.cfg
 	  flip -u /etc/ripple/rippled.cfg
@@ -187,54 +189,84 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     config.vm.provision :shell, :inline => $rippleclient_three
   end
   
-  # Let's have only 3 nodes for now
-  # config.vm.define "four", autostart: false, primary: false do |four|
-    # four.vm.network "private_network", ip: "192.168.50.7"
-	# $rippleclient_four = <<-SCRIPT
-      # #!/bin/bash
+  config.vm.define "four", autostart: false, primary: false do |four|
+    four.vm.network "private_network", ip: "192.168.50.7"
+    four.vm.network "forwarded_port", guest: 9000, host: 9000, auto_correct: true
+    four.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
+    four.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
+    four.vm.network "forwarded_port", guest: 27017, host: 27017, auto_correct: true
+	$rippleclient_four = <<-SCRIPT
+    #!/bin/bash
 	  
-	  # # Isolate, just in case
-	  # sed -i '/ripple.com/d' /etc/hosts
-      # echo "127.0.0.1 local.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 www.local.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 ripple.local.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 history.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 api.ripplecharts.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 local.id.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 id.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 s-west.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 s-east.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 auth1.ripple.com" | tee -a /etc/hosts
+	  # Isolate, just in case
+	  sed -i '/ripple.com/d' /etc/hosts
+    echo "127.0.0.1 local.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 www.local.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 ripple.local.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 history.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 api.ripplecharts.com" | tee -a /etc/hosts
+    echo "127.0.0.1 local.id.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 id.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 s-west.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 s-east.ripple.com" | tee -a /etc/hosts
+    echo "127.0.0.1 auth1.ripple.com" | tee -a /etc/hosts
 	  
-      # cp /src/Builds/Vagrant/rippled_three.cfg /etc/ripple/rippled.cfg
-	  # cp /src/Builds/Vagrant/rippled_three.cfg /root/.config/ripple/rippled.cfg
-	  # cp /src/Builds/Vagrant/rippled_three.cfg /home/vagrant/.config/ripple/rippled.cfg
-	  # flip -u /etc/ripple/rippled.cfg
-	  # service rippled start
-    # SCRIPT
+    cp /src/Builds/Vagrant/rippled_four.cfg /etc/ripple/rippled.cfg
+	  cp /src/Builds/Vagrant/rippled_four.cfg /root/.config/ripple/rippled.cfg
+	  cp /src/Builds/Vagrant/rippled_four.cfg /home/vagrant/.config/ripple/rippled.cfg
+	  flip -u /etc/ripple/rippled.cfg
+	  service rippled start
 
-    # config.vm.provision :shell, :inline => $rippleclient_four
-  # end
+    # riweb
+    apt-get install nodejs npm -y
+    rm -rf /usr/local/bin/node
+    ln -s /usr/bin/nodejs /usr/local/bin/node
+    cd /
+    git clone https://github.com/crazyquark/riweb.git
+    cd riweb/
+    Install dependecies
+    npm install
+    install docker
+    wget -qO- https://get.docker.com/ | sh
+    ssl for docker
+    apt-get install apparmor
+    service docker restart
+    
+    # mongoDB
+    chmod +x ./docker/start_mongo.sh
+    cd ./docker/ && ./start_mongo.sh && cd ..
+    
+    # bower
+    npm install -g bower
+    bower install --allow-root --config.interactive=false
+    
+    # start client
+    npm install -g grunt-cli
+    screen -dmS riweb bash -c 'grunt serve'
+    SCRIPT
+
+    config.vm.provision :shell, :inline => $rippleclient_four
+  end
 
   # config.vm.define "five", autostart: false, primary: false do |five|
     # five.vm.network "private_network", ip: "192.168.50.8"
 	# $rippleclient_five = <<-SCRIPT
-      # #!/bin/bash
+    # #!/bin/bash
 	  
 	  # # Isolate, just in case
 	  # sed -i '/ripple.com/d' /etc/hosts
-      # echo "127.0.0.1 local.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 www.local.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 ripple.local.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 history.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 api.ripplecharts.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 local.id.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 id.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 s-west.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 s-east.ripple.com" | tee -a /etc/hosts
-      # echo "127.0.0.1 auth1.ripple.com" | tee -a /etc/hosts
+    # echo "127.0.0.1 local.ripple.com" | tee -a /etc/hosts
+    # echo "127.0.0.1 www.local.ripple.com" | tee -a /etc/hosts
+    # echo "127.0.0.1 ripple.local.ripple.com" | tee -a /etc/hosts
+    # echo "127.0.0.1 history.ripple.com" | tee -a /etc/hosts
+    # echo "127.0.0.1 api.ripplecharts.com" | tee -a /etc/hosts
+    # echo "127.0.0.1 local.id.ripple.com" | tee -a /etc/hosts
+    # echo "127.0.0.1 id.ripple.com" | tee -a /etc/hosts
+    # echo "127.0.0.1 s-west.ripple.com" | tee -a /etc/hosts
+    # echo "127.0.0.1 s-east.ripple.com" | tee -a /etc/hosts
+    # echo "127.0.0.1 auth1.ripple.com" | tee -a /etc/hosts
 	  
-      # cp /src/Builds/Vagrant/rippled_three.cfg /etc/ripple/rippled.cfg
+    # cp /src/Builds/Vagrant/rippled_three.cfg /etc/ripple/rippled.cfg
 	  # cp /src/Builds/Vagrant/rippled_three.cfg /root/.config/ripple/rippled.cfg
 	  # cp /src/Builds/Vagrant/rippled_three.cfg /home/vagrant/.config/ripple/rippled.cfg
 	  # flip -u /etc/ripple/rippled.cfg
