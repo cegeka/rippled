@@ -195,6 +195,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     four.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
     four.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
     four.vm.network "forwarded_port", guest: 27017, host: 27017, auto_correct: true
+    
 	$rippleclient_four = <<-SCRIPT
     #!/bin/bash
 	  
