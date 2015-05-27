@@ -136,14 +136,14 @@ BasicTaker::remaining_offer () const
 
         // We scale the output based on the remaining input:
         return Amounts (remaining_.in, divRound (
-            remaining_.in, quality_.rate (), remaining_.out, true));
+            remaining_.in, quality_.rate (), issue_out_, true));
     }
 
     assert (remaining_.out > zero);
 
     // We scale the input based on the remaining output:
     return Amounts (mulRound (
-        remaining_.out, quality_.rate (), remaining_.in, true), remaining_.out);
+        remaining_.out, quality_.rate (), issue_in_, true), remaining_.out);
 }
 
 Amounts const&
@@ -328,7 +328,7 @@ BasicTaker::do_cross (Amounts offer, Quality quality, Account const& owner)
 
     if (cross_type_ == CrossType::XrpToIou)
     {
-        result = flow_xrp_to_iou (offer, quality, owner_funds, taker_funds, 
+        result = flow_xrp_to_iou (offer, quality, owner_funds, taker_funds,
             out_rate (owner, account ()));
     }
     else if (cross_type_ == CrossType::IouToXrp)
@@ -490,6 +490,10 @@ TER Taker::transfer_xrp (
     if (from == to)
         return tesSUCCESS;
 
+    // Transferring zero is equivalent to not doing a transfer
+    if (amount == zero)
+        return tesSUCCESS;
+
     return m_view.transfer_xrp (from, to, amount);
 }
 
@@ -504,6 +508,12 @@ TER Taker::redeem_iou (
     if (account == issue.account)
         return tesSUCCESS;
 
+    // Transferring zero is equivalent to not doing a transfer
+    if (amount == zero)
+        return tesSUCCESS;
+
+    // If we are trying to redeem some amount, then the account
+    // must have a credit balance.
     if (get_funds (account, amount) <= zero)
         throw std::logic_error ("redeem_iou has no funds to redeem");
 
@@ -524,6 +534,10 @@ TER Taker::issue_iou (
         throw std::logic_error ("Using issue_iou with XRP");
 
     if (account == issue.account)
+        return tesSUCCESS;
+
+    // Transferring zero is equivalent to not doing a transfer
+    if (amount == zero)
         return tesSUCCESS;
 
     return m_view.issue_iou (account, amount, issue);
