@@ -42,7 +42,7 @@ namespace detail {
 class ErrorCategory
 {
 public:
-    using Map = std::unordered_map <error_code_i, ErrorInfo> ;
+    using Map = std::unordered_map <error_code_i, ErrorInfo>;
 
     ErrorCategory ()
         : m_unknown (rpcUNKNOWN, "unknown", "An unknown error code.")
@@ -64,7 +64,6 @@ public:
         add (rpcDST_ACT_MISSING,       "dstActMissing",     "Destination account does not exist.");
         add (rpcDST_AMT_MALFORMED,     "dstAmtMalformed",   "Destination amount/currency/issuer is malformed.");
         add (rpcDST_ISR_MALFORMED,     "dstIsrMalformed",   "Destination issuer is malformed.");
-        add (rpcFAIL_GEN_DECRYPT,      "failGenDecrypt",    "Failed to decrypt generator.");
         add (rpcFORBIDDEN,             "forbidden",         "Bad credentials.");
         add (rpcGENERAL,               "general",           "Generic error reason.");
         add (rpcGETS_ACT_MALFORMED,    "getsActMalformed",  "Gets account malformed.");
@@ -89,7 +88,6 @@ public:
         add (rpcNO_CLOSED,             "noClosed",          "Closed ledger is unavailable.");
         add (rpcNO_CURRENT,            "noCurrent",         "Current ledger is unavailable.");
         add (rpcNO_EVENTS,             "noEvents",          "Current transport does not support events.");
-        add (rpcNO_GEN_DECRYPT,        "noGenDecrypt",      "Password failed to decrypt master public generator.");
         add (rpcNO_NETWORK,            "noNetwork",         "Not synced to Ripple network.");
         add (rpcNO_PATH,               "noPath",            "Unable to find a ripple path.");
         add (rpcNO_PERMISSION,         "noPermission",      "You don't have permission for this command.");
@@ -100,6 +98,7 @@ public:
         add (rpcPORT_MALFORMED,        "portMalformed",     "Port is malformed.");
         add (rpcPUBLIC_MALFORMED,      "publicMalformed",   "Public key is malformed.");
         add (rpcQUALITY_MALFORMED,     "qualityMalformed",  "Quality malformed.");
+        add (rpcSIGN_FOR_MALFORMED,    "signForMalformed",  "Signing for account is malformed.");
         add (rpcSLOW_DOWN,             "slowDown",          "You are placing too much load on the server.");
         add (rpcSRC_ACT_MALFORMED,     "srcActMalformed",   "Source account is malformed.");
         add (rpcSRC_ACT_MISSING,       "srcActMissing",     "Source account not provided.");

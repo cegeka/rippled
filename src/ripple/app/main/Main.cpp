@@ -137,7 +137,15 @@ void printHelp (const po::options_description& desc)
            "     ripple_path_find <json> [<ledger>]\n"
            "     version\n"
            "     server_info\n"
+           "     sign\n"
+#if RIPPLE_ENABLE_MULTI_SIGN
+           "     sign_for\n"
+#endif // RIPPLE_ENABLE_MULTI_SIGN
            "     stop\n"
+           "     submit\n"
+#if RIPPLE_ENABLE_MULTI_SIGN
+           "     submit_multisigned\n"
+#endif // RIPPLE_ENABLE_MULTI_SIGN
            "     tx <id>\n"
            "     unl_add <domain>|<public> [<comment>]\n"
            "     unl_delete <domain>|<public_key>\n"
@@ -147,9 +155,6 @@ void printHelp (const po::options_description& desc)
            "     unl_reset\n"
            "     validation_create [<seed>|<pass_phrase>|<key>]\n"
            "     validation_seed [<seed>|<pass_phrase>|<key>]\n"
-           "     wallet_accounts <seed>\n"
-           "     wallet_add <regular_seed> <paying_account> <master_seed> [<initial_funds>] [<account_annotation>]\n"
-           "     wallet_claim <master_seed> <regular_seed> [<source_tag>] [<account_annotation>]\n"
            "     wallet_propose [<passphrase>]\n"
            "     wallet_seed [<seed>|<passphrase>|<passkey>]\n";
 }

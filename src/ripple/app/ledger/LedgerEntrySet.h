@@ -91,6 +91,7 @@ public:
     transaction finishes, the LES is committed into the ledger to make
     the modifications. The transaction metadata is built from the LES too.
 */
+/** @{ */
 class LedgerEntrySet
     : public CountedObject <LedgerEntrySet>
 {
@@ -184,11 +185,13 @@ public:
     /** @{ */
     void incrementOwnerCount (SLE::ref sleAccount);
     void incrementOwnerCount (Account const& owner);
+    void increaseOwnerCount (SLE::ref sleAccount, std::uint32_t howMuch);
     /** @} */
 
     /** @{ */
     void decrementOwnerCount (SLE::ref sleAccount);
     void decrementOwnerCount (Account const& owner);
+    void decreaseOwnerCount (SLE::ref sleAccount, std::uint32_t howMuch);
     /** @} */
 
     // Offer functions.
@@ -243,8 +246,8 @@ public:
     void calcRawMeta (Serializer&, TER result, std::uint32_t index);
 
     // iterator functions
-    typedef std::map<uint256, LedgerEntrySetEntry>::iterator iterator;
-    typedef std::map<uint256, LedgerEntrySetEntry>::const_iterator const_iterator;
+    using iterator = std::map<uint256, LedgerEntrySetEntry>::iterator;
+    using const_iterator = std::map<uint256, LedgerEntrySetEntry>::const_iterator;
 
     bool empty () const
     {
@@ -294,7 +297,7 @@ private:
     // Defers credits made to accounts until later
     boost::optional<DeferredCredits> mDeferredCredits;
 
-    typedef hash_map<uint256, SLE::pointer> NodeToLedgerEntry;
+    using NodeToLedgerEntry = hash_map<uint256, SLE::pointer>;
 
     TransactionMetaSet mSet;
     TransactionEngineParams mParams;
@@ -345,6 +348,11 @@ private:
                       Account const& receiver,
                       STAmount const& amount);
 };
+
+using LedgerView = LedgerEntrySet;
+/** @} */
+
+//------------------------------------------------------------------------------
 
 class ScopedDeferCredits
 {

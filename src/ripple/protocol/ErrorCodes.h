@@ -100,6 +100,7 @@ enum error_code_i
     rpcPAYS_AMT_MALFORMED,
     rpcPORT_MALFORMED,
     rpcPUBLIC_MALFORMED,
+    rpcSIGN_FOR_MALFORMED,
     rpcSRC_ACT_MALFORMED,
     rpcSRC_ACT_MISSING,
     rpcSRC_ACT_NOT_FOUND,
@@ -110,10 +111,8 @@ enum error_code_i
 
     // Internal error (should never happen)
     rpcINTERNAL,        // Generic internal error.
-    rpcFAIL_GEN_DECRYPT,
     rpcNOT_IMPL,
     rpcNOT_SUPPORTED,
-    rpcNO_GEN_DECRYPT,
 };
 
 //------------------------------------------------------------------------------

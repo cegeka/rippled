@@ -39,7 +39,7 @@ namespace ripple {
 /** A functor to visit all active peers and retrieve their JSON data */
 struct get_peer_json
 {
-    typedef Json::Value return_type;
+    using return_type = Json::Value;
 
     Json::Value json;
 
@@ -245,7 +245,7 @@ OverlayImpl::onHandoff (std::unique_ptr <beast::asio::ssl_bundle>&& ssl_bundle,
     std::string name;
     bool const cluster = getApp().getUNL().nodeInCluster(
         publicKey, name);
-    
+
     auto const result = m_peerFinder->activate (slot,
         publicKey.toPublicKey(), cluster);
     if (result != PeerFinder::Result::success)
@@ -338,7 +338,7 @@ OverlayImpl::connect (beast::IP::Endpoint const& remote_endpoint)
             "Over resource limit: " << remote_endpoint;
         return;
     }
-    
+
     auto const slot = peerFinder().new_outbound_slot(remote_endpoint);
     if (slot == nullptr)
     {
@@ -460,21 +460,27 @@ OverlayImpl::onPrepare()
     if (bootstrapIps.empty ())
         bootstrapIps.push_back ("r.ripple.com 51235");
 
-    if (!bootstrapIps.empty ())
-    {
-        m_resolver.resolve (bootstrapIps,
-            [this](std::string const& name,
-                std::vector <beast::IP::Endpoint> const& addresses)
+    m_resolver.resolve (bootstrapIps,
+        [this](std::string const& name,
+            std::vector <beast::IP::Endpoint> const& addresses)
+        {
+            std::vector <std::string> ips;
+            ips.reserve(addresses.size());
+            for (auto const& addr : addresses)
             {
-                std::vector <std::string> ips;
-                ips.reserve(addresses.size());
-                for (auto const& addr : addresses)
-                    ips.push_back (to_string (addr));
-                std::string const base ("config: ");
-                if (!ips.empty ())
-                    m_peerFinder->addFallbackStrings (base + name, ips);
-            });
-    }
+                if (addr.port () == 0)
+                {
+                    throw std::runtime_error ("Port not specified for "
+                        "address:" + addr.to_string ());
+                }
+
+                ips.push_back (to_string (addr));
+            }
+
+            std::string const base ("config: ");
+            if (!ips.empty ())
+                m_peerFinder->addFallbackStrings (base + name, ips);
+        });
 
     // Add the ips_fixed from the rippled.cfg file
     if (! getConfig ().RUN_STANDALONE && !getConfig ().IPS_FIXED.empty ())
@@ -568,6 +574,33 @@ OverlayImpl::onPeerDeactivate (Peer::id_t id,
     std::lock_guard <decltype(mutex_)> lock (mutex_);
     m_shortIdMap.erase(id);
     m_publicKeyMap.erase(publicKey);
+}
+
+std::size_t
+OverlayImpl::selectPeers (PeerSet& set, std::size_t limit,
+    std::function<bool(std::shared_ptr<Peer> const&)> score)
+{
+    using item = std::pair<int, std::shared_ptr<PeerImp>>;
+    std::vector<item> v;
+    {
+        std::lock_guard <decltype(mutex_)> lock (mutex_);
+        v.reserve(m_publicKeyMap.size());
+        for_each_unlocked ([&](std::shared_ptr<PeerImp> && e)
+        {
+            v.emplace_back(
+                e->getScore(score(e)), std::move(e));
+        });
+    }
+    std::sort(v.begin(), v.end(),
+    [](item const& lhs, item const&rhs)
+    {
+        return lhs.first > rhs.first;
+    });
+    std::size_t accepted = 0;
+    for (auto const& e : v)
+        if (set.insert(e.second) && ++accepted >= limit)
+            break;
+    return accepted;
 }
 
 /** The number of active peers on the network
@@ -829,6 +862,19 @@ OverlayImpl::sendEndpoints()
     }
 }
 
+//------------------------------------------------------------------------------
+
+bool ScoreHasLedger::operator()(std::shared_ptr<Peer> const& bp) const
+{
+    auto const& p = std::dynamic_pointer_cast<PeerImp>(bp);
+    return p->hasLedger (hash_, seq_);
+}
+
+bool ScoreHasTxSet::operator()(std::shared_ptr<Peer> const& bp) const
+{
+    auto const& p = std::dynamic_pointer_cast<PeerImp>(bp);
+    return p->hasTxSet (hash_);
+}
 
 //------------------------------------------------------------------------------
 

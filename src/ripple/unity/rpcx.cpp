@@ -73,8 +73,10 @@
 #include <ripple/rpc/handlers/ServerInfo.cpp>
 #include <ripple/rpc/handlers/ServerState.cpp>
 #include <ripple/rpc/handlers/Sign.cpp>
+#include <ripple/rpc/handlers/SignFor.cpp>
 #include <ripple/rpc/handlers/Stop.cpp>
 #include <ripple/rpc/handlers/Submit.cpp>
+#include <ripple/rpc/handlers/SubmitMultiSigned.cpp>
 #include <ripple/rpc/handlers/Subscribe.cpp>
 #include <ripple/rpc/handlers/TransactionEntry.cpp>
 #include <ripple/rpc/handlers/Tx.cpp>
@@ -89,13 +91,12 @@
 #include <ripple/rpc/handlers/Unsubscribe.cpp>
 #include <ripple/rpc/handlers/ValidationCreate.cpp>
 #include <ripple/rpc/handlers/ValidationSeed.cpp>
-#include <ripple/rpc/handlers/WalletAccounts.cpp>
 #include <ripple/rpc/handlers/WalletPropose.cpp>
 #include <ripple/rpc/handlers/WalletSeed.cpp>
 
 #include <ripple/rpc/impl/AccountFromString.cpp>
 #include <ripple/rpc/impl/Accounts.cpp>
-#include <ripple/rpc/impl/GetMasterGenerator.cpp>
+#include <ripple/rpc/impl/GetAccountObjects.cpp>
 #include <ripple/rpc/impl/Handler.cpp>
 #include <ripple/rpc/impl/KeypairForSignature.cpp>
 #include <ripple/rpc/impl/LegacyPathFind.cpp>

@@ -129,7 +129,7 @@ private:
     }
 
 private:
-    typedef Json::Value (RPCParser::*parseFuncPtr) (Json::Value const& jvParams);
+    using parseFuncPtr = Json::Value (RPCParser::*) (Json::Value const& jvParams);
 
     Json::Value parseAsIs (Json::Value const& jvParams)
     {
@@ -420,6 +420,30 @@ private:
         return jvRequest;
     }
 
+    // sign_for
+    Json::Value parseSignFor (Json::Value const& jvParams)
+    {
+        Json::Value     txJSON;
+        Json::Reader    reader;
+
+        if ((4 == jvParams.size ())
+            && reader.parse (jvParams[3u].asString (), txJSON))
+        {
+            if (txJSON.type () == Json::objectValue)
+            {
+                // Return SigningFor object for the submitted transaction.
+                Json::Value jvRequest;
+                jvRequest["signing_for"] = jvParams[0u].asString ();
+                jvRequest["account"] = jvParams[1u].asString ();
+                jvRequest["secret"]  = jvParams[2u].asString ();
+                jvRequest["tx_json"] = txJSON;
+
+                return jvRequest;
+            }
+        }
+        return rpcError (rpcINVALID_PARAMS);
+    }
+
     // json <command> <json>
     Json::Value parseJson (Json::Value const& jvParams)
     {
@@ -605,7 +629,7 @@ private:
     {
         Json::Value     txJSON;
         Json::Reader    reader;
-        bool            bOffline    = 3 == jvParams.size () && jvParams[2u].asString () == "offline";
+        bool const      bOffline    = 3 == jvParams.size () && jvParams[2u].asString () == "offline";
 
         if (1 == jvParams.size ())
         {
@@ -628,6 +652,28 @@ private:
 
             if (bOffline)
                 jvRequest[jss::offline]    = true;
+
+            return jvRequest;
+        }
+
+        return rpcError (rpcINVALID_PARAMS);
+    }
+
+    // submit any multisigned transaction to the network
+    //
+    // submit_multisigned <json>
+    Json::Value parseSubmitMultiSigned (Json::Value const& jvParams)
+    {
+        Json::Value     jvRequest;
+        Json::Reader    reader;
+        bool const      bOffline    = 2 == jvParams.size () && jvParams[1u].asString () == "offline";
+
+        if ((1 == jvParams.size () || bOffline)
+            && reader.parse (jvParams[0u].asString (), jvRequest))
+        {
+            // Multisigned.
+            if (bOffline)
+                jvRequest["offline"]    = true;
 
             return jvRequest;
         }
@@ -721,16 +767,6 @@ private:
         return jvRequest;
     }
 
-    // wallet_accounts <seed>
-    Json::Value parseWalletAccounts (Json::Value const& jvParams)
-    {
-        Json::Value jvRequest;
-
-        jvRequest[jss::seed]       = jvParams[0u].asString ();
-
-        return jvRequest;
-    }
-
     // wallet_propose [<passphrase>]
     // <passphrase> is only for testing. Master seeds should only be generated randomly.
     Json::Value parseWalletPropose (Json::Value const& jvParams)
@@ -813,7 +849,7 @@ public:
             {   "account_currencies",   &RPCParser::parseAccountCurrencies,     1,  2   },
             {   "account_info",         &RPCParser::parseAccountItems,          1,  2   },
             {   "account_lines",        &RPCParser::parseAccountLines,          1,  5   },
-            {   "account_objects",      &RPCParser::parseAccountItems,          1,  4   },
+            {   "account_objects",      &RPCParser::parseAccountItems,          1,  5   },
             {   "account_offers",       &RPCParser::parseAccountItems,          1,  4   },
             {   "account_tx",           &RPCParser::parseAccountTransactions,   1,  8   },
             {   "book_offers",          &RPCParser::parseBookOffers,            2,  7   },
@@ -841,7 +877,13 @@ public:
             {   "random",               &RPCParser::parseAsIs,                  0,  0   },
             {   "ripple_path_find",     &RPCParser::parseRipplePathFind,        1,  2   },
             {   "sign",                 &RPCParser::parseSignSubmit,            2,  3   },
+#if RIPPLE_ENABLE_MULTI_SIGN
+            {   "sign_for",             &RPCParser::parseSignFor,               4,  4   },
+#endif // RIPPLE_ENABLE_MULTI_SIGN
             {   "submit",               &RPCParser::parseSignSubmit,            1,  3   },
+#if RIPPLE_ENABLE_MULTI_SIGN
+            {   "submit_multisigned",   &RPCParser::parseSubmitMultiSigned,     1,  1   },
+#endif // RIPPLE_ENABLE_MULTI_SIGN
             {   "server_info",          &RPCParser::parseAsIs,                  0,  0   },
             {   "server_state",         &RPCParser::parseAsIs,                  0,  0   },
             {   "stop",                 &RPCParser::parseAsIs,                  0,  0   },
@@ -859,7 +901,6 @@ public:
             {   "validation_create",    &RPCParser::parseValidationCreate,      0,  1   },
             {   "validation_seed",      &RPCParser::parseValidationSeed,        0,  1   },
             {   "version",              &RPCParser::parseAsIs,                  0,  0   },
-            {   "wallet_accounts",      &RPCParser::parseWalletAccounts,        1,  1   },
             {   "wallet_propose",       &RPCParser::parseWalletPropose,         0,  1   },
             {   "wallet_seed",          &RPCParser::parseWalletSeed,            0,  1   },
             {   "internal",             &RPCParser::parseInternal,              1,  -1  },

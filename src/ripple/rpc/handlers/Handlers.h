@@ -62,6 +62,7 @@ Json::Value doServerState           (RPC::Context&); // for machines
 Json::Value doSessionClose          (RPC::Context&);
 Json::Value doSessionOpen           (RPC::Context&);
 Json::Value doSign                  (RPC::Context&);
+Json::Value doSignFor               (RPC::Context&);
 Json::Value doStop                  (RPC::Context&);
 Json::Value doSubmit                (RPC::Context&);
 Json::Value doSubscribe             (RPC::Context&);
@@ -79,7 +80,6 @@ Json::Value doUnlScore              (RPC::Context&);
 Json::Value doUnsubscribe           (RPC::Context&);
 Json::Value doValidationCreate      (RPC::Context&);
 Json::Value doValidationSeed        (RPC::Context&);
-Json::Value doWalletAccounts        (RPC::Context&);
 Json::Value doWalletLock            (RPC::Context&);
 Json::Value doWalletPropose         (RPC::Context&);
 Json::Value doWalletSeed            (RPC::Context&);

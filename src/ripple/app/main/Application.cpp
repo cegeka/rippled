@@ -19,14 +19,15 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/main/Application.h>
-#include <ripple/app/data/DatabaseCon.h>
-#include <ripple/app/data/DBInit.h>
-#include <ripple/app/impl/BasicApp.h>
+#include <ripple/core/DatabaseCon.h>
+#include <ripple/app/main/DBInit.h>
+#include <ripple/app/main/BasicApp.h>
 #include <ripple/app/main/Tuning.h>
 #include <ripple/app/ledger/AcceptedLedger.h>
 #include <ripple/app/ledger/InboundLedgers.h>
 #include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/ledger/OrderBookDB.h>
+#include <ripple/app/ledger/PendingSaves.h>
 #include <ripple/app/main/CollectorManager.h>
 #include <ripple/app/main/LoadManager.h>
 #include <ripple/app/main/LocalCredentials.h>
@@ -38,7 +39,7 @@
 #include <ripple/app/misc/Validations.h>
 #include <ripple/app/paths/FindPaths.h>
 #include <ripple/app/paths/PathRequests.h>
-#include <ripple/app/peers/UniqueNodeList.h>
+#include <ripple/app/misc/UniqueNodeList.h>
 #include <ripple/app/tx/InboundTransactions.h>
 #include <ripple/app/tx/TransactionMaster.h>
 #include <ripple/basics/Log.h>
@@ -257,6 +258,7 @@ public:
     NodeStoreScheduler m_nodeStoreScheduler;
     std::unique_ptr <SHAMapStore> m_shaMapStore;
     std::unique_ptr <NodeStore::Database> m_nodeStore;
+    PendingSaves pendingSaves_;
 
     // These are not Stoppable-derived
     NodeCache m_tempNodeCache;
@@ -589,6 +591,11 @@ public:
     SHAMapStore& getSHAMapStore () override
     {
         return *m_shaMapStore;
+    }
+
+    PendingSaves& pendingSaves() override
+    {
+        return pendingSaves_;
     }
 
     Overlay& overlay ()

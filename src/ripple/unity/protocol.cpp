@@ -27,6 +27,7 @@
 #include <ripple/protocol/impl/HashPrefix.cpp>
 #include <ripple/protocol/impl/Indexes.cpp>
 #include <ripple/protocol/impl/LedgerFormats.cpp>
+#include <ripple/protocol/impl/Quality.cpp>
 #include <ripple/protocol/impl/RippleAddress.cpp>
 #include <ripple/protocol/impl/Serializer.cpp>
 #include <ripple/protocol/impl/SField.cpp>
@@ -44,14 +45,18 @@
 #include <ripple/protocol/impl/STLedgerEntry.cpp>
 #include <ripple/protocol/impl/STObject.cpp>
 #include <ripple/protocol/impl/STParsedJSON.cpp>
+#include <ripple/protocol/impl/InnerObjectFormats.cpp>
 #include <ripple/protocol/impl/STPathSet.cpp>
 #include <ripple/protocol/impl/STTx.cpp>
 #include <ripple/protocol/impl/STValidation.cpp>
 #include <ripple/protocol/impl/STVar.cpp>
 #include <ripple/protocol/impl/STVector256.cpp>
 
+
 #include <ripple/protocol/tests/BuildInfo.test.cpp>
+#include <ripple/protocol/tests/InnerObjectFormats.test.cpp>
 #include <ripple/protocol/tests/Issue.test.cpp>
+#include <ripple/protocol/tests/Quality.test.cpp>
 #include <ripple/protocol/tests/RippleAddress.test.cpp>
 #include <ripple/protocol/tests/Serializer.test.cpp>
 #include <ripple/protocol/tests/STAmount.test.cpp>

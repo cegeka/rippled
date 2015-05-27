@@ -112,7 +112,7 @@ bool compareAccountCandidate (
     return (first.priority ^ seq) < (second.priority ^ seq);
 }
 
-typedef std::vector<AccountCandidate> AccountCandidates;
+using AccountCandidates = std::vector<AccountCandidate>;
 
 struct CostedPath
 {
@@ -120,15 +120,15 @@ struct CostedPath
     Pathfinder::PathType type;
 };
 
-typedef std::vector<CostedPath> CostedPathList;
+using CostedPathList = std::vector<CostedPath>;
 
-typedef std::map<Pathfinder::PaymentType, CostedPathList> PathTable;
+using PathTable = std::map<Pathfinder::PaymentType, CostedPathList>;
 
 struct PathCost {
     int cost;
     char const* path;
 };
-typedef std::vector<PathCost> PathCostList;
+using PathCostList = std::vector<PathCost>;
 
 static PathTable mPathTable;
 
@@ -297,7 +297,7 @@ bool Pathfinder::findPaths (int searchLevel)
             return false;
         }
 
-        auto reserve = mLedger->getReserve (0);
+        auto const reserve = STAmount (mLedger->getReserve (0));
         if (mDstAmount < reserve)
         {
             WriteLog (lsDEBUG, Pathfinder)
@@ -430,7 +430,7 @@ namespace {
 // total number of paths we have to evaluate.
 STAmount smallestUsefulAmount (STAmount const& amount, int maxPaths)
 {
-    return divide (amount, STAmount (maxPaths + 2), amount);
+    return divide (amount, STAmount (maxPaths + 2), amount.issue ());
 }
 
 } // namespace
@@ -908,7 +908,7 @@ void Pathfinder::addLink (
         // add accounts
         if (bOnXRP)
         {
-            if (mDstAmount.isNative () && !currentPath.empty ())
+            if (mDstAmount.native () && !currentPath.empty ())
             { // non-default path to XRP destination
                 WriteLog (lsTRACE, Pathfinder)
                     << "complete path found ax: " << currentPath.getJson(0);

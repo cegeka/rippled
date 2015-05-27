@@ -19,12 +19,12 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/misc/Validations.h>
-#include <ripple/app/data/DatabaseCon.h>
+#include <ripple/core/DatabaseCon.h>
 #include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/ledger/LedgerTiming.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/NetworkOPs.h>
-#include <ripple/app/peers/UniqueNodeList.h>
+#include <ripple/app/misc/UniqueNodeList.h>
 #include <ripple/basics/Log.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/basics/seconds_clock.h>
@@ -39,8 +39,8 @@ class ValidationsImp : public Validations
 {
 private:
     using LockType = std::mutex;
-    typedef std::lock_guard <LockType> ScopedLockType;
-    typedef beast::GenericScopedUnlock <LockType> ScopedUnlockType;
+    using ScopedLockType = std::lock_guard <LockType>;
+    using ScopedUnlockType = beast::GenericScopedUnlock <LockType>;
     std::mutex mutable mLock;
 
     TaggedCache<uint256, ValidationSet> mValidations;
@@ -385,6 +385,18 @@ private:
         }
 
         return ret;
+    }
+
+    std::vector<uint32_t>
+    getValidationTimes (uint256 const& hash)
+    {
+        std::vector <std::uint32_t> times;
+        ScopedLockType sl (mLock);
+        if (auto j = findSet (hash))
+            for (auto& it : *j)
+                if (it.second->isTrusted())
+                    times.push_back (it.second->getSignTime());
+        return times;
     }
 
     void flush ()

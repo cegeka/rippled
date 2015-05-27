@@ -146,8 +146,12 @@ public:
     // comparison/sync functions
     void getMissingNodes (std::vector<SHAMapNodeID>& nodeIDs, std::vector<uint256>& hashes, int max,
                           SHAMapSyncFilter * filter);
-    bool getNodeFat (SHAMapNodeID node, std::vector<SHAMapNodeID>& nodeIDs,
-                     std::vector<Blob >& rawNode, bool fatRoot, bool fatLeaves) const;
+    
+    bool getNodeFat (SHAMapNodeID node,
+        std::vector<SHAMapNodeID>& nodeIDs,
+            std::vector<Blob>& rawNode,
+                bool fatLeaves, std::uint32_t depth) const;
+    
     bool getRootNode (Serializer & s, SHANodeFormat format) const;
     std::vector<uint256> getNeededHashes (int max, SHAMapSyncFilter * filter);
     SHAMapAddNode addRootNode (uint256 const& hash, Blob const& rootNode, SHANodeFormat format,
@@ -173,7 +177,7 @@ public:
     void walkMap (std::vector<SHAMapMissingNode>& missingNodes, int maxMissing) const;
     bool deepCompare (SHAMap & other) const;
 
-    typedef std::pair <uint256, Blob> fetchPackEntry_t;
+    using fetchPackEntry_t = std::pair <uint256, Blob>;
 
     void visitDifferences (SHAMap * have, std::function<bool (SHAMapTreeNode&)>) const;
 
@@ -188,7 +192,7 @@ private:
     using SharedPtrNodeStack =
         std::stack<std::pair<std::shared_ptr<SHAMapTreeNode>, SHAMapNodeID>>;
     using DeltaRef = std::pair<std::shared_ptr<SHAMapItem> const&,
-                               std::shared_ptr<SHAMapItem> const&> ;
+                               std::shared_ptr<SHAMapItem> const&>;
 
     int unshare ();
 

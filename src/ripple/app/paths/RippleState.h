@@ -20,7 +20,7 @@
 #ifndef RIPPLE_APP_PATHS_RIPPLESTATE_H_INCLUDED
 #define RIPPLE_APP_PATHS_RIPPLESTATE_H_INCLUDED
 
-#include <ripple/app/book/Types.h>
+#include <ripple/app/ledger/LedgerEntrySet.h>
 #include <ripple/protocol/STAmount.h>
 #include <cstdint>
 #include <beast/cxx14/memory.h> // <memory>
@@ -35,7 +35,7 @@ namespace ripple {
 class RippleState
 {
 public:
-    typedef std::shared_ptr <RippleState> pointer;
+    using pointer = std::shared_ptr <RippleState>;
 
 public:
     RippleState () = delete;

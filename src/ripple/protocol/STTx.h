@@ -41,8 +41,10 @@ class STTx final
 public:
     static char const* getCountedObjectName () { return "STTx"; }
 
-    typedef std::shared_ptr<STTx>        pointer;
-    typedef const std::shared_ptr<STTx>& ref;
+    using pointer = std::shared_ptr<STTx>;
+    using ref     = const std::shared_ptr<STTx>&;
+
+    static std::size_t const maxMultiSigners = 8;
 
 public:
     STTx () = delete;
@@ -53,8 +55,7 @@ public:
     explicit STTx (SerialIter& sit);
     explicit STTx (TxType type);
 
-    // Only called from ripple::RPC::transactionSign - can we eliminate this?
-    explicit STTx (STObject const& object);
+    explicit STTx (STObject&& object);
 
     STBase*
     copy (std::size_t n, void* buf) const override
@@ -68,14 +69,14 @@ public:
         return emplace(n, buf, std::move(*this));
     }
 
-    // STObject functions
+    // STObject functions.
     SerializedTypeID getSType () const override
     {
         return STI_TRANSACTION;
     }
     std::string getFullText () const override;
 
-    // outer transaction functions / signature functions
+    // Outer transaction functions / signature functions.
     Blob getSignature () const;
 
     uint256 getSigningHash () const;
@@ -117,8 +118,8 @@ public:
 
     uint256 getTransactionID () const;
 
-    virtual Json::Value getJson (int options) const override;
-    virtual Json::Value getJson (int options, bool binary) const;
+    Json::Value getJson (int options) const override;
+    Json::Value getJson (int options, bool binary) const;
 
     void sign (RippleAddress const& private_key);
 
@@ -141,7 +142,7 @@ public:
         sig_state_ = false;
     }
 
-    // SQL Functions with metadata
+    // SQL Functions with metadata.
     static
     std::string const&
     getMetaSQLInsertReplaceHeader ();
@@ -156,6 +157,9 @@ public:
         std::string const& escapedMetaData) const;
 
 private:
+    bool checkSingleSign () const;
+    bool checkMultiSign () const;
+
     TxType tx_type_;
 
     mutable boost::tribool sig_state_;

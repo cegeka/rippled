@@ -54,10 +54,6 @@ LedgerFormats::LedgerFormats ()
             << SOElement (sfIndexPrevious,       SOE_OPTIONAL)
             ;
 
-    add ("GeneratorMap", ltGENERATOR_MAP)
-            << SOElement (sfGenerator,           SOE_REQUIRED)
-            ;
-
     add ("Offer", ltOFFER)
             << SOElement (sfAccount,             SOE_REQUIRED)
             << SOElement (sfSequence,            SOE_REQUIRED)
@@ -92,7 +88,7 @@ LedgerFormats::LedgerFormats ()
             ;
 
     add ("EnabledAmendments", ltAMENDMENTS)
-            << SOElement (sfAmendments, SOE_REQUIRED)
+            << SOElement (sfAmendments,          SOE_REQUIRED)
             ;
 
     add ("FeeSettings", ltFEE_SETTINGS)
@@ -108,6 +104,14 @@ LedgerFormats::LedgerFormats ()
             << SOElement (sfOwnerNode,           SOE_REQUIRED)
             << SOElement (sfTarget,              SOE_OPTIONAL)
             << SOElement (sfExpiration,          SOE_OPTIONAL)
+            ;
+
+    // All three fields are SOE_REQUIRED because there is always a
+    // SignerEntries.  If there are no SignerEntries the node is deleted.
+    add ("SignerList", ltSIGNER_LIST)
+            << SOElement (sfOwnerNode,           SOE_REQUIRED)
+            << SOElement (sfSignerQuorum,        SOE_REQUIRED)
+            << SOElement (sfSignerEntries,       SOE_REQUIRED)
             ;
 }
 

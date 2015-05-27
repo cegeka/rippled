@@ -18,13 +18,12 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/app/book/Quality.h>
+#include <ripple/protocol/Quality.h>
 #include <ripple/app/ledger/LedgerEntrySet.h>
 #include <ripple/app/ledger/DeferredCredits.h>
 #include <ripple/basics/Log.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/json/to_string.h>
-#include <ripple/legacy/0.27/Emulate027.h>
 #include <ripple/protocol/JsonFields.h>
 #include <ripple/protocol/Indexes.h>
 
@@ -288,10 +287,6 @@ Json::Value LedgerEntrySet::getJson (int) const
 
         case ltDIR_NODE:
             entry[jss::type] = "dir_node";
-            break;
-
-        case ltGENERATOR_MAP:
-            entry[jss::type] = "generator_map";
             break;
 
         case ltRIPPLE_STATE:
@@ -1023,50 +1018,65 @@ uint256 LedgerEntrySet::getNextLedgerIndex (
 
 void LedgerEntrySet::incrementOwnerCount (SLE::ref sleAccount)
 {
-    assert (sleAccount);
-
-    std::uint32_t const current_count = sleAccount->getFieldU32 (sfOwnerCount);
-
-    if (current_count == std::numeric_limits<std::uint32_t>::max ())
-    {
-        WriteLog (lsFATAL, LedgerEntrySet) <<
-            "Account " << sleAccount->getFieldAccount160 (sfAccount) <<
-            " owner count exceeds max!";
-        return;
-    }
-
-    sleAccount->setFieldU32 (sfOwnerCount, current_count + 1);
-    entryModify (sleAccount);
+    increaseOwnerCount (sleAccount, 1);
 }
 
 void LedgerEntrySet::incrementOwnerCount (Account const& owner)
 {
-    incrementOwnerCount(entryCache (ltACCOUNT_ROOT,
-        getAccountRootIndex (owner)));
+    increaseOwnerCount(
+        entryCache (ltACCOUNT_ROOT, getAccountRootIndex (owner)), 1);
 }
 
-void LedgerEntrySet::decrementOwnerCount (SLE::ref sleAccount)
+void
+LedgerEntrySet::increaseOwnerCount (SLE::ref sleAccount, std::uint32_t howMuch)
 {
     assert (sleAccount);
 
     std::uint32_t const current_count = sleAccount->getFieldU32 (sfOwnerCount);
+    std::uint32_t new_count = current_count + howMuch;
 
-    if (current_count == 0)
+    // Check for integer overflow -- well defined behavior on unsigned.
+    if (new_count < current_count)
     {
         WriteLog (lsFATAL, LedgerEntrySet) <<
             "Account " << sleAccount->getFieldAccount160 (sfAccount) <<
-            " owner count is already 0!";
-        return;
+            " owner count exceeds max!";
+        new_count = std::numeric_limits<std::uint32_t>::max ();
     }
-
-    sleAccount->setFieldU32 (sfOwnerCount, current_count - 1);
+    sleAccount->setFieldU32 (sfOwnerCount, new_count);
     entryModify (sleAccount);
+}
+
+void LedgerEntrySet::decrementOwnerCount (SLE::ref sleAccount)
+{
+    decreaseOwnerCount (sleAccount, 1);
 }
 
 void LedgerEntrySet::decrementOwnerCount (Account const& owner)
 {
-    decrementOwnerCount(entryCache (ltACCOUNT_ROOT,
-        getAccountRootIndex (owner)));
+    decreaseOwnerCount(
+        entryCache (ltACCOUNT_ROOT, getAccountRootIndex (owner)), 1);
+}
+
+void
+LedgerEntrySet::decreaseOwnerCount (SLE::ref sleAccount, std::uint32_t howMuch)
+{
+    assert (sleAccount);
+
+    std::uint32_t const current_count = sleAccount->getFieldU32 (sfOwnerCount);
+    std::uint32_t new_count = current_count - howMuch;
+
+    // Check for integer underflow -- well defined behavior on unsigned.
+    if (new_count > current_count)
+    {
+        WriteLog (lsFATAL, LedgerEntrySet) <<
+            "Account " << sleAccount->getFieldAccount160 (sfAccount) <<
+            " owner count set below 0!";
+        new_count = 0;
+        assert (false); // "This is a dangerous place."  Stop in a debug build.
+    }
+    sleAccount->setFieldU32 (sfOwnerCount, new_count);
+    entryModify (sleAccount);
 }
 
 TER LedgerEntrySet::offerDelete (SLE::pointer sleOffer)
@@ -1153,22 +1163,23 @@ STAmount LedgerEntrySet::accountHolds (
         std::uint64_t uReserve = mLedger->getReserve (
             sleAccount->getFieldU32 (sfOwnerCount));
 
-        STAmount saBalance   = sleAccount->getFieldAmount (sfBalance);
+        STAmount const saBalance = sleAccount->getFieldAmount (sfBalance);
+        STAmount const saReserve (uReserve);
 
-        if (saBalance < uReserve)
+        if (saBalance < saReserve)
         {
             saAmount.clear ();
         }
         else
         {
-            saAmount = saBalance - uReserve;
+            saAmount = saBalance - saReserve;
         }
 
         WriteLog (lsTRACE, LedgerEntrySet) << "accountHolds:" <<
             " account=" << to_string (account) <<
             " saAmount=" << saAmount.getFullText () <<
             " saBalance=" << saBalance.getFullText () <<
-            " uReserve=" << uReserve;
+            " saReserve=" << saReserve.getFullText ();
 
         return adjustedBalance(account, issuer, saAmount);
     }
@@ -1238,7 +1249,7 @@ STAmount LedgerEntrySet::accountFunds (
 {
     STAmount    saFunds;
 
-    if (!saDefault.isNative () && saDefault.getIssuer () == account)
+    if (!saDefault.native () && saDefault.getIssuer () == account)
     {
         saFunds = saDefault;
 
@@ -1494,9 +1505,6 @@ TER LedgerEntrySet::rippleCredit (
 
         bool noRipple = (sleAccount->getFlags() & lsfDefaultRipple) == 0;
 
-        if (ripple::legacy::emulate027 (mLedger))
-            noRipple = false;
-
         terResult = trustCreate (
             bSenderHigh,
             uSenderID,
@@ -1677,7 +1685,7 @@ TER LedgerEntrySet::accountSend (
     if (!saAmount || (uSenderID == uReceiverID))
         return tesSUCCESS;
 
-    if (!saAmount.isNative ())
+    if (!saAmount.native ())
     {
         STAmount saActual;
 
@@ -1853,9 +1861,6 @@ TER LedgerEntrySet::issue_iou (
 
         bool noRipple = (receiverAccount->getFlags() & lsfDefaultRipple) == 0;
 
-        if (ripple::legacy::emulate027 (mLedger))
-            noRipple = false;
-
         return trustCreate (bSenderHigh, issue.account, account, index,
             receiverAccount, false, noRipple, false, final_balance, limit);
     }
@@ -1968,7 +1973,7 @@ TER LedgerEntrySet::transfer_xrp (
     assert (from != beast::zero);
     assert (to != beast::zero);
     assert (from != to);
-    assert (amount.isNative ());
+    assert (amount.native ());
 
     SLE::pointer sender = entryCache (ltACCOUNT_ROOT,
         getAccountRootIndex (from));

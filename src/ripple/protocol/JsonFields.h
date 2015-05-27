@@ -43,6 +43,7 @@ JSS ( Invalid );                    // out: app/misc/AccountState
 JSS ( LimitAmount );                // field.
 JSS ( OfferSequence );              // field.
 JSS ( Paths );                      // in/out: TransactionSign
+JSS ( historical_perminute );       // historical_perminute
 JSS ( SLE_hit_rate );               // out: GetCounts
 JSS ( SendMax );                    // in: TransactionSign
 JSS ( Sequence );                   // in/out: TransactionSign; field.
@@ -180,6 +181,7 @@ JSS ( issuer );                     // in: RipplePathFind, Subscribe,
                                     // out: paths/Node, STPathSet, STAmount
 JSS ( key );                        // out: WalletSeed
 JSS ( key_type );                   // in/out: WalletPropose, TransactionSign
+JSS ( latency );                    // out: PeerImp
 JSS ( last );                       // out: RPCVersion
 JSS ( last_close );                 // out: NetworkOPs
 JSS ( ledger );                     // in: NetworkOPs, LedgerCleaner,
@@ -353,7 +355,8 @@ JSS ( tx_signing_hash );            // out: TransactionSign
 JSS ( tx_unsigned );                // out: TransactionSign
 JSS ( txn_count );                  // out: NetworkOPs
 JSS ( txs );                        // out: TxHistory
-JSS ( type );                       // rpc; out: NetworkOPs, LedgerEntrySet
+JSS ( type );                       // in: AccountObjects
+                                    // out: NetworkOPs, LedgerEntrySet
                                     //      paths/Node.cpp, OverlayImpl, Logic
 JSS ( type_hex );                   // out: STPathSet
 JSS ( unl );                        // out: UnlList

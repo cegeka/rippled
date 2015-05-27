@@ -20,7 +20,7 @@
 #ifndef RIPPLE_APP_TX_TRANSACTIONACQUIRE_H_INCLUDED
 #define RIPPLE_APP_TX_TRANSACTIONACQUIRE_H_INCLUDED
 
-#include <ripple/app/peers/PeerSet.h>
+#include <ripple/overlay/PeerSet.h>
 #include <ripple/shamap/SHAMap.h>
 
 namespace ripple {
@@ -35,7 +35,7 @@ class TransactionAcquire
 public:
     static char const* getCountedObjectName () { return "TransactionAcquire"; }
 
-    typedef std::shared_ptr<TransactionAcquire> pointer;
+    using pointer = std::shared_ptr<TransactionAcquire>;
 
 public:
     TransactionAcquire (uint256 const& hash, clock_type& clock);

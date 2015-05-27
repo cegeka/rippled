@@ -21,7 +21,7 @@
 #define RIPPLE_APP_LEDGER_INBOUNDLEDGER_H_INCLUDED
 
 #include <ripple/app/ledger/Ledger.h>
-#include <ripple/app/peers/PeerSet.h>
+#include <ripple/overlay/PeerSet.h>
 #include <ripple/basics/CountedObject.h>
 #include <set>
 
@@ -37,8 +37,8 @@ class InboundLedger
 public:
     static char const* getCountedObjectName () { return "InboundLedger"; }
 
-    typedef std::shared_ptr <InboundLedger> pointer;
-    typedef std::pair < std::weak_ptr<Peer>, std::shared_ptr<protocol::TMLedgerData> > PeerDataPairType;
+    using pointer = std::shared_ptr <InboundLedger>;
+    using PeerDataPairType = std::pair < std::weak_ptr<Peer>, std::shared_ptr<protocol::TMLedgerData> >;
 
     // These are the reasons we might acquire a ledger
     enum fcReason
@@ -54,6 +54,9 @@ public:
     InboundLedger (uint256 const& hash, std::uint32_t seq, fcReason reason, clock_type& clock);
 
     ~InboundLedger ();
+
+    // Called when another attempt is made to fetch this same ledger
+    void update (std::uint32_t seq);
 
     bool isHeader () const
     {
@@ -95,7 +98,7 @@ public:
 
     bool gotData (std::weak_ptr<Peer>, std::shared_ptr<protocol::TMLedgerData>);
 
-    typedef std::pair <protocol::TMGetObjectByHash::ObjectType, uint256> neededHash_t;
+    using neededHash_t = std::pair <protocol::TMGetObjectByHash::ObjectType, uint256>;
 
     std::vector<neededHash_t> getNeededHashes ();
 

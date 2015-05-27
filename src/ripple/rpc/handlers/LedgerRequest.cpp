@@ -20,6 +20,7 @@
 #include <BeastConfig.h>
 #include <ripple/app/ledger/InboundLedgers.h>
 #include <ripple/app/ledger/LedgerToJson.h>
+#include <ripple/rpc/impl/Tuning.h>
 
 namespace ripple {
 
@@ -52,7 +53,8 @@ Json::Value doLedgerRequest (RPC::Context& context)
             return RPC::invalid_field_message (jss::ledger_index);
 
         // We need a validated ledger to get the hash from the sequence
-        if (ledgerMaster.getValidatedLedgerAge() > 120)
+        if (ledgerMaster.getValidatedLedgerAge() >
+            RPC::Tuning::maxValidatedLedgerAge)
             return rpcError (rpcNO_CURRENT);
 
         auto ledgerIndex = jsonIndex.asInt();
@@ -77,8 +79,11 @@ Json::Value doLedgerRequest (RPC::Context& context)
                 // We don't have the ledger we need to figure out which ledger
                 // they want. Try to get it.
 
-                if (auto il = getApp().getInboundLedgers().findCreate (
+                if (auto il = getApp().getInboundLedgers().acquire (
                         refHash, refIndex, InboundLedger::fcGENERIC))
+                    return getJson (LedgerFill (*il));
+
+                if (auto il = getApp().getInboundLedgers().find (refHash))
                 {
                     Json::Value jvResult = il->getJson (0);
 
@@ -86,7 +91,7 @@ Json::Value doLedgerRequest (RPC::Context& context)
                     return jvResult;
                 }
 
-                // findCreate failed to return an inbound ledger. App is likely shutting down
+                // Likely the app is shutting down
                 return Json::Value();
             }
 
@@ -107,11 +112,13 @@ Json::Value doLedgerRequest (RPC::Context& context)
     else
     {
         // Try to get the desired ledger
-        if (auto il = getApp ().getInboundLedgers ().findCreate (
+        if (auto il = getApp ().getInboundLedgers ().acquire (
                 ledgerHash, 0, InboundLedger::fcGENERIC))
-        {
+            return getJson (LedgerFill (*il));
+
+        if (auto il = getApp().getInboundLedgers().find (ledgerHash))
             return il->getJson (0);
-        }
+
         return RPC::make_error (
             rpcNOT_READY, "findCreate failed to return an inbound ledger");
     }

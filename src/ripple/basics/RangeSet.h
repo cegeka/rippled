@@ -57,6 +57,10 @@ public:
 
     std::string toString () const;
 
+    /** Returns the sum of the Lebesgue measures of all sub-ranges. */
+    std::size_t
+    lebesgue_sum() const;
+
     /** Check invariants of the data.
 
         This is for diagnostics, and does nothing in release builds.
@@ -67,12 +71,12 @@ private:
     void simplify ();
 
 private:
-    typedef std::map <std::uint32_t, std::uint32_t> Map;
+    using Map = std::map <std::uint32_t, std::uint32_t>;
 
-    typedef Map::const_iterator            const_iterator;
-    typedef Map::const_reverse_iterator    const_reverse_iterator;
-    typedef Map::value_type                value_type;
-    typedef Map::iterator                  iterator;
+    using const_iterator         = Map::const_iterator;
+    using const_reverse_iterator = Map::const_reverse_iterator;
+    using value_type             = Map::value_type;
+    using iterator               = Map::iterator;
 
     static bool contains (value_type const& it, std::uint32_t v)
     {

@@ -32,7 +32,7 @@ template <typename Integer>
 class VotableInteger
 {
 private:
-    typedef std::map <Integer, int> map_type;
+    using map_type = std::map <Integer, int>;
     Integer mCurrent;   // The current setting
     Integer mTarget;    // The setting we want
     map_type mVoteMap;
@@ -226,7 +226,7 @@ FeeVoteImpl::doVoting (Ledger::ref lastClosedLedger,
             journal_.warning << "Vote: " << txID;
 
         Serializer s;
-        trans.add (s, true);
+        trans.add (s);
 
         auto tItem = std::make_shared<SHAMapItem> (txID, s.peekData ());
 

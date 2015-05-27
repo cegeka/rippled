@@ -45,12 +45,12 @@ protected:
     explicit LedgerMaster (Stoppable& parent);
 
 public:
-    typedef std::function <void (Ledger::ref)> callback;
+    using callback = std::function <void (Ledger::ref)>;
 
 public:
-    typedef RippleRecursiveMutex LockType;
-    typedef std::unique_lock <LockType> ScopedLockType;
-    typedef beast::GenericScopedUnlock <LockType> ScopedUnlockType;
+    using LockType = RippleRecursiveMutex;
+    using ScopedLockType = std::unique_lock <LockType>;
+    using ScopedUnlockType = beast::GenericScopedUnlock <LockType>;
 
     virtual ~LedgerMaster () = 0;
 
@@ -108,8 +108,6 @@ public:
     */
     virtual uint256 walkHashBySeq (std::uint32_t index) = 0;
     virtual uint256 walkHashBySeq (std::uint32_t index, Ledger::ref referenceLedger) = 0;
-
-    virtual Ledger::pointer findAcquireLedger (std::uint32_t index, uint256 const& hash) = 0;
 
     virtual Ledger::pointer getLedgerBySeq (std::uint32_t index) = 0;
 
