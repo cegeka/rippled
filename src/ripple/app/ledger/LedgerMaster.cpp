@@ -1426,6 +1426,10 @@ public:
         if (!referenceLedger || (referenceLedger->getLedgerSeq() < index))
             return ledgerHash; // Nothing we can do. No validated ledger.
 
+        // TODO CS This is a hack; the first 2 ledgers are bugged.
+        if (index < 2 && referenceLedger->getLedgerSeq() >= 3)
+            return ledgerHash; // This will be 0
+
         // See if the hash for the ledger we need is in the reference ledger
         ledgerHash = referenceLedger->getLedgerHash (index);
         if (ledgerHash.isZero())
