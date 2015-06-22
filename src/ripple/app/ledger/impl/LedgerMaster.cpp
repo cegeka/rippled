@@ -1429,7 +1429,9 @@ public:
 
         // TODO CS This is a hack; the first 2 ledgers are bugged.
         if (index < 2 && referenceLedger->getLedgerSeq() >= 3)
-            return ledgerHash; // This will be 0
+        {
+            return zero;
+        }
 
         // See if the hash for the ledger we need is in the reference ledger
         auto ledgerHash = hashOfSeq(*referenceLedger, index,
