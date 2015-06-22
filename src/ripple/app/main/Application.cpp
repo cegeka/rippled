@@ -26,6 +26,7 @@
 #include <ripple/app/ledger/AcceptedLedger.h>
 #include <ripple/app/ledger/InboundLedgers.h>
 #include <ripple/app/ledger/LedgerMaster.h>
+#include <ripple/app/ledger/LedgerToJson.h>
 #include <ripple/app/ledger/OrderBookDB.h>
 #include <ripple/app/ledger/PendingSaves.h>
 #include <ripple/app/main/CollectorManager.h>
@@ -43,11 +44,9 @@
 #include <ripple/app/tx/InboundTransactions.h>
 #include <ripple/app/tx/TransactionMaster.h>
 #include <ripple/basics/Log.h>
-#include <ripple/basics/LoggedTimings.h>
 #include <ripple/basics/ResolverAsio.h>
 #include <ripple/basics/Sustain.h>
 #include <ripple/basics/seconds_clock.h>
-#include <ripple/basics/make_SSLContext.h>
 #include <ripple/json/json_reader.h>
 #include <ripple/json/to_string.h>
 #include <ripple/core/LoadFeeTrack.h>
@@ -57,6 +56,7 @@
 #include <ripple/nodestore/DummyScheduler.h>
 #include <ripple/nodestore/Manager.h>
 #include <ripple/overlay/make_Overlay.h>
+#include <ripple/protocol/Indexes.h>
 #include <ripple/protocol/STParsedJSON.h>
 #include <ripple/rpc/Manager.h>
 #include <ripple/server/make_ServerHandler.h>
@@ -806,6 +806,8 @@ public:
             getConfig());
         add (*m_overlay); // add to PropertyStream
 
+        m_overlay->setupValidatorKeyManifests (getConfig (), getWalletDB ());
+
         {
             auto setup = setup_ServerHandler(getConfig(), std::cerr);
             setup.makeContexts();
@@ -899,6 +901,8 @@ public:
         m_entropyTimer.cancel ();
 
         mValidations->flush ();
+
+        m_overlay->saveValidatorKeyManifests (getWalletDB ());
 
         RippleAddress::clearCache ();
         stopped ();
@@ -995,39 +999,18 @@ public:
         // VFALCO NOTE Does the order of calls matter?
         // VFALCO TODO fix the dependency inversion using an observer,
         //         have listeners register for "onSweep ()" notification.
-        //
 
-        family_.fullbelow().sweep ();
-
-        logTimedCall (m_journal.warning, "TransactionMaster::sweep", __FILE__, __LINE__, std::bind (
-            &TransactionMaster::sweep, &m_txMaster));
-
-        logTimedCall (m_journal.warning, "NodeStore::sweep", __FILE__, __LINE__, std::bind (
-            &NodeStore::Database::sweep, m_nodeStore.get()));
-
-        logTimedCall (m_journal.warning, "LedgerMaster::sweep", __FILE__, __LINE__, std::bind (
-            &LedgerMaster::sweep, m_ledgerMaster.get()));
-
-        logTimedCall (m_journal.warning, "TempNodeCache::sweep", __FILE__, __LINE__, std::bind (
-            &NodeCache::sweep, &m_tempNodeCache));
-
-        logTimedCall (m_journal.warning, "Validations::sweep", __FILE__, __LINE__, std::bind (
-            &Validations::sweep, mValidations.get ()));
-
-        logTimedCall (m_journal.warning, "InboundLedgers::sweep", __FILE__, __LINE__, std::bind (
-            &InboundLedgers::sweep, &getInboundLedgers ()));
-
-        logTimedCall (m_journal.warning, "SLECache::sweep", __FILE__, __LINE__, std::bind (
-            &SLECache::sweep, &m_sleCache));
-
-        logTimedCall (m_journal.warning, "AcceptedLedger::sweep", __FILE__, __LINE__,
-            &AcceptedLedger::sweep);
-
-        logTimedCall (m_journal.warning, "SHAMap::sweep", __FILE__, __LINE__,std::bind (
-            &TreeNodeCache::sweep, &family().treecache()));
-
-        logTimedCall (m_journal.warning, "NetworkOPs::sweepFetchPack", __FILE__, __LINE__, std::bind (
-            &NetworkOPs::sweepFetchPack, m_networkOPs.get ()));
+        family().fullbelow().sweep ();
+        getMasterTransaction().sweep();
+        getNodeStore().sweep();
+        getLedgerMaster().sweep();
+        getTempNodeCache().sweep();
+        getValidations().sweep();
+        getInboundLedgers().sweep();
+        getSLECache().sweep();
+        AcceptedLedger::sweep();
+        family().treecache().sweep();
+        getOPs().sweepFetchPack();
 
         // VFALCO NOTE does the call to sweep() happen on another thread?
         m_sweepTimer.setExpiration (getConfig ().getSize (siSweepInterval));
@@ -1037,6 +1020,7 @@ public:
 private:
     void updateTables ();
     void startNewLedger ();
+    Ledger::pointer getLastFullLedger();
     bool loadOldLedger (
         std::string const& ledgerID, bool replay, bool isFilename);
 
@@ -1058,21 +1042,67 @@ void ApplicationImp::startNewLedger ()
 
     {
         Ledger::pointer firstLedger = std::make_shared<Ledger> (rootAddress, SYSTEM_CURRENCY_START);
-        assert (firstLedger->getAccountState (rootAddress));
+        assert (firstLedger->exists(getAccountRootIndex(rootAddress.getAccountID())));
         // TODO(david): Add any default amendments
         // TODO(david): Set default fee/reserve
-        firstLedger->updateHash ();
+        firstLedger->getHash(); // updates the hash
         firstLedger->setClosed ();
         firstLedger->setAccepted ();
-        firstLedger->setImmutable();
         m_ledgerMaster->pushLedger (firstLedger);
 
         Ledger::pointer secondLedger = std::make_shared<Ledger> (true, std::ref (*firstLedger));
         secondLedger->setClosed ();
         secondLedger->setAccepted ();
         m_ledgerMaster->pushLedger (secondLedger, std::make_shared<Ledger> (true, std::ref (*secondLedger)));
-        assert (secondLedger->getAccountState (rootAddress));
+        assert (secondLedger->exists(getAccountRootIndex(rootAddress.getAccountID())));
         m_networkOPs->setLastCloseTime (secondLedger->getCloseTimeNC ());
+    }
+}
+
+Ledger::pointer
+ApplicationImp::getLastFullLedger()
+{
+    try
+    {
+        Ledger::pointer ledger;
+        std::uint32_t ledgerSeq;
+        uint256 ledgerHash;
+        std::tie (ledger, ledgerSeq, ledgerHash) =
+                loadLedgerHelper ("order by LedgerSeq desc limit 1");
+
+        if (!ledger)
+            return ledger;
+
+        ledger->setClosed ();
+
+        if (getApp().getOPs ().haveLedger (ledgerSeq))
+        {
+            ledger->setAccepted ();
+            ledger->setValidated ();
+        }
+
+        if (ledger->getHash () != ledgerHash)
+        {
+            if (ShouldLog (lsERROR, Ledger))
+            {
+                WriteLog (lsERROR, Ledger) << "Failed on ledger";
+                Json::Value p;
+                addJson (p, {*ledger, LedgerFill::full});
+                WriteLog (lsERROR, Ledger) << p;
+            }
+
+            assert (false);
+            return Ledger::pointer ();
+        }
+
+        WriteLog (lsTRACE, Ledger) << "Loaded ledger: " << ledgerHash;
+        return ledger;
+    }
+    catch (SHAMapMissingNode& sn)
+    {
+        WriteLog (lsWARNING, Ledger)
+                << "Database contains ledger with missing nodes: " << sn;
+        return Ledger::pointer ();
     }
 }
 
@@ -1163,6 +1193,8 @@ bool ApplicationImp::loadOldLedger (
 
                              if (stp.object && (uIndex.isNonZero()))
                              {
+                                 // VFALCO TODO This is the only place that
+                                 //             constructor is used, try to remove it
                                  STLedgerEntry sle (*stp.object, uIndex);
                                  bool ok = loadLedger->addSLE (sle);
                                  if (!ok)
@@ -1182,7 +1214,9 @@ bool ApplicationImp::loadOldLedger (
             }
         }
         else if (ledgerID.empty () || (ledgerID == "latest"))
-            loadLedger = Ledger::getLastFullLedger ();
+        {
+            loadLedger = getLastFullLedger ();
+        }
         else if (ledgerID.length () == 64)
         {
             // by hash
@@ -1283,16 +1317,18 @@ bool ApplicationImp::loadOldLedger (
             cur = std::make_shared <Ledger> (*cur, true);
             assert (!cur->isImmutable());
 
-            for (auto it = txns->peekFirstItem(); it != nullptr;
-                 it = txns->peekNextItem(it->getTag()))
+            for (auto const& item : *txns)
             {
-                Transaction::pointer txn = replayLedger->getTransaction(it->getTag());
-                m_journal.info << txn->getJson(0);
+                auto const txn =
+                    replayLedger->getTransaction(item->getTag());
+                if (m_journal.info) m_journal.info <<
+                    txn->getJson(0);
                 Serializer s;
                 txn->getSTransaction()->add(s);
-                if (!cur->addTransaction(it->getTag(), s))
-                    m_journal.warning << "Unable to add transaction " << it->getTag();
-                getApp().getHashRouter().setFlag (it->getTag(), SF_SIGGOOD);
+                if (! cur->addTransaction(item->getTag(), s))
+                    if (m_journal.warning) m_journal.warning <<
+                        "Unable to add transaction " << item->getTag();
+                getApp().getHashRouter().setFlag (item->getTag(), SF_SIGGOOD);
             }
 
             // Switch to the mutable snapshot

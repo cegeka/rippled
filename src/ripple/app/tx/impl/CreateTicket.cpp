@@ -85,18 +85,17 @@ public:
                 return tesSUCCESS;
         }
 
-        SLE::pointer sleTicket = mEngine->view().entryCreate (ltTICKET,
+        SLE::pointer sleTicket = std::make_shared<SLE>(ltTICKET,
             getTicketIndex (mTxnAccountID, mTxn.getSequence ()));
-
         sleTicket->setFieldAccount (sfAccount, mTxnAccountID);
         sleTicket->setFieldU32 (sfSequence, mTxn.getSequence ());
-
         if (expiration != 0)
             sleTicket->setFieldU32 (sfExpiration, expiration);
+        mEngine->view().entryCreate (sleTicket);
 
         if (mTxn.isFieldPresent (sfTarget))
         {
-            Account const target_account (mTxn.getFieldAccount160 (sfTarget));
+            AccountID const target_account (mTxn.getFieldAccount160 (sfTarget));
 
             SLE::pointer sleTarget = mEngine->view().entryCache (ltACCOUNT_ROOT,
                 getAccountRootIndex (target_account));
@@ -134,7 +133,7 @@ public:
         sleTicket->setFieldU64(sfOwnerNode, hint);
 
         // If we succeeded, the new entry counts agains the creator's reserve.
-        mEngine->view ().incrementOwnerCount (mTxnAccount);
+        adjustOwnerCount(mEngine->view(), mTxnAccount, 1);
 
         return result;
     }
@@ -146,11 +145,9 @@ transact_CreateTicket (
     TransactionEngineParams params,
     TransactionEngine* engine)
 {
-#if RIPPLE_ENABLE_TICKETS
+    if (! engine->enableTickets())
+        return temDISABLED;
     return CreateTicket (txn, params, engine).apply ();
-#else
-    return temDISABLED;
-#endif
 }
 
 }

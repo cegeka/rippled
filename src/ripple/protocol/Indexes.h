@@ -21,11 +21,13 @@
 #define RIPPLE_PROTOCOL_INDEXES_H_INCLUDED
 
 #include <ripple/protocol/LedgerFormats.h>
+#include <ripple/protocol/Protocol.h>
 #include <ripple/protocol/RippleAddress.h>
 #include <ripple/protocol/Serializer.h>
 #include <ripple/protocol/UintTypes.h>
 #include <ripple/basics/base_uint.h>
 #include <ripple/protocol/Book.h>
+#include <cstdint>
 
 namespace ripple {
 
@@ -48,22 +50,22 @@ uint256
 getLedgerFeeIndex ();
 
 uint256
-getAccountRootIndex (Account const& account);
+getAccountRootIndex (AccountID const& account);
 
 uint256
 getAccountRootIndex (const RippleAddress & account);
 
 uint256
-getGeneratorIndex (Account const& uGeneratorID);
+getGeneratorIndex (AccountID const& uGeneratorID);
 
 uint256
 getBookBase (Book const& book);
 
 uint256
-getOfferIndex (Account const& account, std::uint32_t uSequence);
+getOfferIndex (AccountID const& account, std::uint32_t uSequence);
 
 uint256
-getOwnerDirIndex (Account const& account);
+getOwnerDirIndex (AccountID const& account);
 
 uint256
 getDirNodeIndex (uint256 const& uDirRoot, const std::uint64_t uNodeIndex);
@@ -79,16 +81,147 @@ std::uint64_t
 getQuality (uint256 const& uBase);
 
 uint256
-getTicketIndex (Account const& account, std::uint32_t uSequence);
+getTicketIndex (AccountID const& account, std::uint32_t uSequence);
 
 uint256
-getRippleStateIndex (Account const& a, Account const& b, Currency const& currency);
+getRippleStateIndex (AccountID const& a, AccountID const& b, Currency const& currency);
 
 uint256
-getRippleStateIndex (Account const& a, Issue const& issue);
+getRippleStateIndex (AccountID const& a, Issue const& issue);
 
 uint256
-getSignerListIndex (Account const& account);
+getSignerListIndex (AccountID const& account);
+
+//------------------------------------------------------------------------------
+
+/** A pair of SHAMap key and LedgerEntryType.
+    
+    A Keylet identifies both a key in the state map
+    and its ledger entry type.
+*/
+struct Keylet
+{
+    LedgerEntryType type;
+    uint256 key;
+
+    Keylet (LedgerEntryType type_,
+            uint256 const& key_)
+        : type(type_)
+        , key(key_)
+    {
+    }
+};
+
+/** Keylet computation funclets. */
+namespace keylet {
+
+/** AccountID root */
+struct account_t
+{
+    Keylet operator()(AccountID const& id) const;
+
+    // DEPRECATED
+    Keylet operator()(RippleAddress const& ra) const;
+};
+static account_t const account {};
+
+/** OWner directory */
+struct owndir_t
+{
+    Keylet operator()(AccountID const& id) const;
+};
+static owndir_t const ownerDir {};
+
+/** Skip list */
+struct skip_t
+{
+    Keylet operator()() const;
+
+    Keylet operator()(LedgerIndex ledger) const;
+};
+static skip_t const skip {};
+
+/** The amendment table */
+struct amendments_t
+{
+    Keylet operator()() const;
+};
+static amendments_t const amendments {};
+
+/** The ledger fees */
+struct fee_t
+{
+    Keylet operator()() const;
+};
+static fee_t const fee {};
+
+/** The beginning of an order book */
+struct book_t
+{
+    Keylet operator()(Book const& b) const;
+};
+static book_t const book {};
+
+/** An offer from an account */
+struct offer_t
+{
+    Keylet operator()(AccountID const& id,
+        std::uint32_t seq) const;
+};
+static offer_t const offer {};
+
+/** An item in a directory */
+struct item_t
+{
+    Keylet operator()(Keylet const& k,
+        std::uint64_t index,
+            LedgerEntryType type) const;
+};
+static item_t const item {};
+
+/** The directory for a specific quality */
+struct quality_t
+{
+    Keylet operator()(Keylet const& k,
+        std::uint64_t q) const;
+};
+static quality_t const quality {};
+
+/** The directry for the next lower quality */
+struct next_t
+{
+    Keylet operator()(Keylet const& k) const;
+};
+static next_t const next {};
+
+/** A ticket belonging to an account */
+struct ticket_t
+{
+    Keylet operator()(AccountID const& id,
+        std::uint32_t seq) const;
+};
+static ticket_t const ticket {};
+
+/** A trust line */
+struct trust_t
+{
+    Keylet operator()(AccountID const& id0,
+        AccountID const& id1, Currency const& currency) const;
+
+    Keylet operator()(AccountID const& id,
+        Issue const& issue) const;
+};
+static trust_t const trust {};
+
+/** A SignerList */
+struct signers_t
+{
+    Keylet operator()(AccountID const& id) const;
+};
+static signers_t const signers {};
+
+} // keylet
+
 }
 
 #endif

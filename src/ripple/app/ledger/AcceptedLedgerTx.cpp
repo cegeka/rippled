@@ -28,8 +28,9 @@ namespace ripple {
 AcceptedLedgerTx::AcceptedLedgerTx (Ledger::ref ledger, SerialIter& sit)
     : mLedger (ledger)
 {
-    Serializer          txnSer (sit.getVL ());
-    SerialIter  txnIt (txnSer);
+    // VFALCO This is making a needless copy
+    auto const vl = sit.getVL();
+    SerialIter txnIt (make_Slice(vl));
 
     mTxn =      std::make_shared<STTx> (std::ref (txnIt));
     mRawMeta =  sit.getVL ();
@@ -98,7 +99,8 @@ void AcceptedLedgerTx::buildJson ()
         if (account != amount.issue ().account)
         {
             LedgerEntrySet les (mLedger, tapNONE, true);
-            auto const ownerFunds (les.accountFunds (account, amount, fhIGNORE_FREEZE));
+            auto const ownerFunds (funds(
+                les, account, amount, fhIGNORE_FREEZE));
 
             mJson[jss::transaction][jss::owner_funds] = ownerFunds.getText ();
         }

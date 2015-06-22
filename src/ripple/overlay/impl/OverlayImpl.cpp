@@ -19,6 +19,7 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/misc/IHashRouter.h>
+#include <ripple/core/DatabaseCon.h>
 #include <ripple/basics/Log.h>
 #include <ripple/basics/make_SSLContext.h>
 #include <ripple/protocol/JsonFields.h>
@@ -28,6 +29,7 @@
 #include <ripple/overlay/impl/PeerImp.h>
 #include <ripple/overlay/impl/TMHello.h>
 #include <ripple/peerfinder/make_Manager.h>
+#include <ripple/protocol/STExchange.h>
 #include <beast/ByteOrder.h>
 #include <beast/crypto/base64.h>
 #include <beast/http/rfc2616.h>
@@ -175,14 +177,14 @@ OverlayImpl::onHandoff (std::unique_ptr <beast::asio::ssl_bundle>&& ssl_bundle,
 
     handoff.moved = true;
 
-    if (journal.trace) journal.trace <<
+    if (journal.debug) journal.debug<<
         "Peer connection upgrade from " << remote_endpoint;
 
     error_code ec;
     auto const local_endpoint (ssl_bundle->socket.local_endpoint(ec));
     if (ec)
     {
-        if (journal.trace) journal.trace <<
+        if (journal.debug) journal.debug <<
             remote_endpoint << " failed: " << ec.message();
         return handoff;
     }
@@ -250,7 +252,7 @@ OverlayImpl::onHandoff (std::unique_ptr <beast::asio::ssl_bundle>&& ssl_bundle,
         publicKey.toPublicKey(), cluster);
     if (result != PeerFinder::Result::success)
     {
-        if (journal.trace) journal.trace <<
+        if (journal.debug) journal.debug <<
             "Peer " << remote_endpoint << " redirected, slots full";
         handoff.moved = false;
         handoff.response = makeRedirectResponse(slot, request,
@@ -426,6 +428,56 @@ OverlayImpl::checkStopped ()
 }
 
 void
+OverlayImpl::setupValidatorKeyManifests (BasicConfig const& config,
+                                         DatabaseCon& db)
+{
+    auto const validator_keys = config.section ("validator_keys");
+    auto const validation_manifest = config.section ("validation_manifest");
+
+    if (! validator_keys.lines().empty())
+    {
+        for (auto const& line : validator_keys.lines())
+        {
+            manifestCache_.configValidatorKey (line, journal_);
+        }
+    }
+    else
+    {
+        if (journal_.warning)
+            journal_.warning << "[validator_keys] is empty";
+    }
+
+    if (! validation_manifest.lines().empty())
+    {
+        std::string s;
+        for (auto const& line : validation_manifest.lines())
+            s += beast::rfc2616::trim(line);
+        s = beast::base64_decode(s);
+        if (auto mo = make_Manifest (std::move (s)))
+        {
+            manifestCache_.configManifest (std::move (*mo), journal_);
+        }
+        else
+        {
+            throw std::runtime_error("Malformed manifest in config");
+        }
+    }
+    else
+    {
+        if (journal_.warning)
+            journal_.warning << "No [validation_manifest] section in config";
+    }
+
+    manifestCache_.load (db, journal_);
+}
+
+void
+OverlayImpl::saveValidatorKeyManifests (DatabaseCon& db) const
+{
+    manifestCache_.save (db);
+}
+
+void
 OverlayImpl::onPrepare()
 {
     PeerFinder::Config config;
@@ -576,6 +628,80 @@ OverlayImpl::onPeerDeactivate (Peer::id_t id,
     m_publicKeyMap.erase(publicKey);
 }
 
+void
+OverlayImpl::onManifests (Job&,
+    std::shared_ptr<protocol::TMManifests> const& m,
+        std::shared_ptr<PeerImp> const& from)
+{
+    auto& hashRouter = getApp().getHashRouter();
+    auto const n = m->list_size();
+    auto const& journal = from->pjournal();
+
+    if (journal.debug) journal.debug
+        << "TMManifest, " << n << (n == 1 ? " item" : " items");
+
+    bool const history = m->history ();
+    for (std::size_t i = 0; i < n; ++i)
+    {
+        auto& s = m->list ().Get (i).stobject ();
+
+        if (auto mo = make_Manifest (s))
+        {
+            uint256 const hash = mo->hash ();
+            if (!hashRouter.addSuppressionPeer (hash, from->id ()))
+                continue;
+
+            auto const result =
+                manifestCache_.applyManifest (std::move (*mo), journal);
+
+            if (result == ManifestDisposition::accepted)
+            {
+                auto db = getApp ().getWalletDB ().checkoutDb ();
+
+                soci::transaction tr(*db);
+                static const char* const sql =
+                        "INSERT INTO ValidatorManifests (RawData) VALUES (:rawData);";
+                soci::blob rawData(*db);
+                convert (mo->serialized, rawData);
+                *db << sql, soci::use (rawData);
+                tr.commit ();
+            }
+
+            if (history)
+            {
+                // Historical manifests are sent on initial peer connections.
+                // They do not need to be forwarded to other peers.
+                std::set<Peer::id_t> peers;
+                hashRouter.swapSet (hash, peers, SF_RELAYED);
+                continue;
+            }
+
+            if (result == ManifestDisposition::accepted)
+            {
+                protocol::TMManifests o;
+                o.add_list ()->set_stobject (s);
+
+                std::set<Peer::id_t> peers;
+                hashRouter.swapSet (hash, peers, SF_RELAYED);
+                foreach (send_if_not (
+                    std::make_shared<Message>(o, protocol::mtMANIFESTS),
+                    peer_in_set (peers)));
+            }
+            else
+            {
+                if (journal.info)
+                    journal.info << "Bad manifest #" << i + 1;
+            }
+        }
+        else
+        {
+            if (journal.warning)
+                journal.warning << "Malformed manifest #" << i + 1;
+            continue;
+        }
+    }
+}
+
 std::size_t
 OverlayImpl::selectPeers (PeerSet& set, std::size_t limit,
     std::function<bool(std::shared_ptr<Peer> const&)> score)
@@ -587,8 +713,8 @@ OverlayImpl::selectPeers (PeerSet& set, std::size_t limit,
         v.reserve(m_publicKeyMap.size());
         for_each_unlocked ([&](std::shared_ptr<PeerImp> && e)
         {
-            v.emplace_back(
-                e->getScore(score(e)), std::move(e));
+            auto const s = e->getScore(score(e));
+            v.emplace_back(s, std::move(e));
         });
     }
     std::sort(v.begin(), v.end(),

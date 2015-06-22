@@ -19,6 +19,7 @@
 
 #include <BeastConfig.h>
 #include <ripple/basics/Log.h>
+#include <ripple/basics/SHA512Half.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/crypto/ECDSA.h>
 #include <ripple/crypto/ECIES.h>
@@ -63,16 +64,8 @@ bool isCanonicalEd25519Signature (std::uint8_t const* signature)
 static
 uint128 PassPhraseToKey (std::string const& passPhrase)
 {
-    Serializer s;
-
-    s.addRaw (passPhrase);
-    // NIKB TODO this calling sequence is a bit ugly; this should be improved.
-    uint256 hash256 = s.getSHA512Half ();
-    uint128 ret (uint128::fromVoid (hash256.data()));
-
-    s.secureErase ();
-
-    return ret;
+    return uint128::fromVoid(sha512Half_s(
+        make_Slice(passPhrase)).data());
 }
 
 static
@@ -332,7 +325,7 @@ void RippleAddress::signNodePrivate (uint256 const& hash, Blob& vchSig) const
 // AccountID
 //
 
-Account RippleAddress::getAccountID () const
+AccountID RippleAddress::getAccountID () const
 {
     switch (nVersion)
     {
@@ -340,12 +333,12 @@ Account RippleAddress::getAccountID () const
         throw std::runtime_error ("unset source - getAccountID");
 
     case VER_ACCOUNT_ID:
-        return Account(vchData);
+        return AccountID(vchData);
 
     case VER_ACCOUNT_PUBLIC: {
         // Note, we are encoding the left.
         // TODO(tom): decipher this comment.
-        Account account;
+        AccountID account;
         account.copyFrom (Hash160 (vchData));
         return account;
     }
@@ -435,7 +428,7 @@ bool RippleAddress::setAccountID (
 {
     if (strAccountID.empty ())
     {
-        setAccountID (Account ());
+        setAccountID (AccountID ());
 
         mIsValid    = true;
     }
@@ -447,7 +440,7 @@ bool RippleAddress::setAccountID (
     return mIsValid;
 }
 
-void RippleAddress::setAccountID (Account const& hash160)
+void RippleAddress::setAccountID (AccountID const& hash160)
 {
     mIsValid        = true;
     SetData (VER_ACCOUNT_ID, hash160);
@@ -543,11 +536,12 @@ bool RippleAddress::accountPublicVerify (
                 && isCanonicalEd25519Signature (signature);
     }
 
-    uint256 const uHash = getSHA512Half (message);
-    return verifySignature (getAccountPublic(), uHash, vucSig, fullyCanonical);
+    return verifySignature (getAccountPublic(),
+        sha512Half(make_Slice(message)), vucSig,
+            fullyCanonical);
 }
 
-RippleAddress RippleAddress::createAccountID (Account const& account)
+RippleAddress RippleAddress::createAccountID (AccountID const& account)
 {
     RippleAddress   na;
     na.setAccountID (account);
@@ -632,9 +626,8 @@ Blob RippleAddress::accountPrivateSign (Blob const& message) const
         return signature;
     }
 
-    uint256 const uHash = getSHA512Half (message);
-
-    Blob result = ECDSASign (uHash, getAccountPrivate());
+    Blob result = ECDSASign(
+        sha512Half(make_Slice(message)), getAccountPrivate());
     bool const ok = !result.empty();
 
     CondLog (!ok, lsWARNING, RippleAddress)
@@ -893,14 +886,8 @@ RippleAddress RippleAddress::createSeedGeneric (std::string const& strText)
 
 uint256 keyFromSeed (uint128 const& seed)
 {
-    Serializer s;
-
-    s.add128 (seed);
-    uint256 result = s.getSHA512Half();
-
-    s.secureErase ();
-
-    return result;
+    return sha512Half_s(Slice(
+        seed.data(), seed.size()));
 }
 
 RippleAddress getSeedFromRPC (Json::Value const& params)

@@ -1,27 +1,27 @@
 //------------------------------------------------------------------------------
 /*
-This file is part of rippled: https://github.com/ripple/rippled
-Copyright (c) 2012, 2013 Ripple Labs Inc.
+  This file is part of rippled: https://github.com/ripple/rippled
+  Copyright (c) 2012-2015 Ripple Labs Inc.
 
-Permission to use, copy, modify, and/or distribute this software for any
-purpose  with  or without fee is hereby granted, provided that the above
-copyright notice and this permission notice appear in all copies.
+  Permission to use, copy, modify, and/or distribute this software for any
+  purpose  with  or without fee is hereby granted, provided that the above
+  copyright notice and this permission notice appear in all copies.
 
-THE  SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-WITH  REGARD  TO  THIS  SOFTWARE  INCLUDING  ALL  IMPLIED  WARRANTIES  OF
-MERCHANTABILITY  AND  FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
-ANY  SPECIAL ,  DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-WHATSOEVER  RESULTING  FROM  LOSS  OF USE, DATA OR PROFITS, WHETHER IN AN
-ACTION  OF  CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+  THE  SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+  WITH  REGARD  TO  THIS  SOFTWARE  INCLUDING  ALL  IMPLIED  WARRANTIES  OF
+  MERCHANTABILITY  AND  FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+  ANY  SPECIAL ,  DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+  WHATSOEVER  RESULTING  FROM  LOSS  OF USE, DATA OR PROFITS, WHETHER IN AN
+  ACTION  OF  CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 */
 //==============================================================================
 
 #include <ripple/app/ledger/tests/common_ledger.h>
-#include <ripple/protocol/RippleAddress.h>
-
-#include <ripple/protocol/Indexes.h>
+#include <ripple/app/main/Application.h>
 #include <ripple/app/paths/FindPaths.h>
+#include <ripple/protocol/RippleAddress.h>
+#include <ripple/protocol/Indexes.h>
 #include <ripple/rpc/impl/RipplePathFind.h>
 #include <ripple/json/json_writer.h>
 
@@ -137,13 +137,13 @@ applyTransaction(Ledger::pointer const& ledger, STTx const& tx, bool check)
 
 // Create genesis ledger from a start amount in drops, and the public
 // master RippleAddress
-std::pair<Ledger::pointer, Ledger::pointer>
+std::pair<std::shared_ptr<Ledger const>, Ledger::pointer>
 createGenesisLedger(std::uint64_t start_amount_drops, TestAccount const& master)
 {
     initializePathfinding();
-    Ledger::pointer ledger = std::make_shared<Ledger>(master.pk,
+    auto ledger = std::make_shared<Ledger>(master.pk,
         start_amount_drops);
-    ledger->updateHash();
+    ledger->getHash(); // updates the hash
     ledger->setClosed();
     if (!ledger->assertSane())
         throw std::runtime_error(
@@ -198,7 +198,7 @@ createAndFundAccountsWithFlags(TestAccount& from,
     std::vector<std::string> passphrases,
     KeyType keyType, std::uint64_t amountDrops,
     Ledger::pointer& ledger,
-    Ledger::pointer& LCL,
+    std::shared_ptr<Ledger const>& LCL,
     const std::uint32_t flags, bool sign)
 {
     auto accounts = createAndFundAccounts(from,
@@ -430,11 +430,14 @@ trust(TestAccount& from, TestAccount const& issuer,
 }
 
 void
-close_and_advance(Ledger::pointer& ledger, Ledger::pointer& LCL)
+close_and_advance(Ledger::pointer& ledger, std::shared_ptr<Ledger const>& LCL)
 {
     std::shared_ptr<SHAMap> set = ledger->peekTransactionMap();
     CanonicalTXSet retriableTransactions(set->getHash());
-    Ledger::pointer newLCL = std::make_shared<Ledger>(false, *LCL);
+    // Make a non-const copy of LCL. This won't be necessary once
+    // that other Ledger constructor can take a const Ledger.
+    Ledger oldLCL(*LCL, false);
+    Ledger::pointer newLCL = std::make_shared<Ledger>(false, oldLCL);
     // Set up to write SHAMap changes to our database,
     //   perform updates, extract changes
     applyTransactions(set, newLCL, newLCL, retriableTransactions, false);
@@ -453,8 +456,12 @@ close_and_advance(Ledger::pointer& ledger, Ledger::pointer& LCL)
     bool closeTimeCorrect = true;
     newLCL->setAccepted(closeTime, closeResolution, closeTimeCorrect);
 
+    if (!newLCL->assertSane())
+        throw std::runtime_error(
+            "!newLCL->assertSane()");
+
     LCL = newLCL;
-    ledger = std::make_shared<Ledger>(false, *LCL);
+    ledger = std::make_shared<Ledger>(false, *newLCL);
 }
 
 Json::Value findPath(Ledger::pointer ledger, TestAccount const& src,
@@ -488,10 +495,10 @@ Json::Value findPath(Ledger::pointer ledger, TestAccount const& src,
     return result.second;
 }
 
-SLE::pointer
+std::shared_ptr<SLE const>
 getLedgerEntryRippleState(Ledger::pointer ledger,
     TestAccount const& account1, TestAccount const& account2,
-    Currency currency)
+        Currency currency)
 {
     auto uNodeIndex = getRippleStateIndex(
         account1.pk.getAccountID(), account2.pk.getAccountID(),
@@ -501,14 +508,15 @@ getLedgerEntryRippleState(Ledger::pointer ledger,
         throw std::runtime_error(
         "!uNodeIndex.isNonZero()");
 
-    return ledger->getSLEi(uNodeIndex);
+    return fetch(*ledger, uNodeIndex,
+        getApp().getSLECache());
 }
 
 void
 verifyBalance(Ledger::pointer ledger, TestAccount const& account,
     Amount const& amount)
 {
-    auto sle = getLedgerEntryRippleState(ledger, account,
+    auto const sle = getLedgerEntryRippleState(ledger, account,
         amount.getIssuer(), amount.getCurrency());
     if (!sle)
         throw std::runtime_error(

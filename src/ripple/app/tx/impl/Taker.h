@@ -24,6 +24,7 @@
 #include <ripple/protocol/Quality.h>
 #include <ripple/protocol/TxFlags.h>
 
+#include <beast/utility/Journal.h>
 #include <beast/utility/noexcept.h>
 #include <functional>
 
@@ -63,7 +64,7 @@ private:
     };
 
 private:
-    Account account_;
+    AccountID account_;
     Quality quality_;
     Quality threshold_;
 
@@ -88,6 +89,8 @@ private:
     CrossType cross_type_;
 
 protected:
+    beast::Journal journal_;
+
     struct Flow
     {
         Amounts order;
@@ -106,6 +109,9 @@ protected:
     };
 
 private:
+    void
+    log_flow (char const* description, Flow const& flow);
+
     Flow
     flow_xrp_to_iou (Amounts const& offer, Quality quality,
         STAmount const& owner_funds, STAmount const& taker_funds,
@@ -126,18 +132,18 @@ private:
     static
     Rate
     effective_rate (std::uint32_t rate, Issue const &issue,
-        Account const& from, Account const& to);
+        AccountID const& from, AccountID const& to);
 
     // The transfer rate for the input currency between the given accounts
     Rate
-    in_rate (Account const& from, Account const& to) const
+    in_rate (AccountID const& from, AccountID const& to) const
     {
         return effective_rate (m_rate_in, original_.in.issue (), from, to);
     }
 
     // The transfer rate for the output currency between the given accounts
     Rate
-    out_rate (Account const& from, Account const& to) const
+    out_rate (AccountID const& from, AccountID const& to) const
     {
         return effective_rate (m_rate_out, original_.out.issue (), from, to);
     }
@@ -147,9 +153,9 @@ public:
     BasicTaker (BasicTaker const&) = delete;
 
     BasicTaker (
-        CrossType cross_type, Account const& account, Amounts const& amount,
+        CrossType cross_type, AccountID const& account, Amounts const& amount,
         Quality const& quality, std::uint32_t flags, std::uint32_t rate_in,
-        std::uint32_t rate_out);
+        std::uint32_t rate_out, beast::Journal journal = beast::Journal ());
 
     virtual ~BasicTaker () = default;
 
@@ -167,7 +173,7 @@ public:
     original_offer () const;
 
     /** Returns the account identifier of the taker. */
-    Account const&
+    AccountID const&
     account () const noexcept
     {
         return account_;
@@ -212,19 +218,19 @@ public:
         @return an `Amounts` describing the flow achieved during cross
     */
     BasicTaker::Flow
-    do_cross (Amounts offer, Quality quality, Account const& owner);
+    do_cross (Amounts offer, Quality quality, AccountID const& owner);
 
     /** Perform bridged crossing through given offers.
         @return a pair of `Amounts` describing the flow achieved during cross
     */
     std::pair<BasicTaker::Flow, BasicTaker::Flow>
     do_cross (
-        Amounts offer1, Quality quality1, Account const& owner1,
-        Amounts offer2, Quality quality2, Account const& owner2);
+        Amounts offer1, Quality quality1, AccountID const& owner1,
+        Amounts offer2, Quality quality2, AccountID const& owner2);
 
     virtual
     STAmount
-    get_funds (Account const& account, STAmount const& funds) const = 0;
+    get_funds (AccountID const& account, STAmount const& funds) const = 0;
 };
 
 class Taker
@@ -233,10 +239,10 @@ class Taker
 private:
     static
     std::uint32_t
-    calculateRate (LedgerView& view, Account const& issuer, Account const& account);
+    calculateRate (LedgerView& view, AccountID const& issuer, AccountID const& account);
 
     // The underlying ledger entry we are dealing with
-    LedgerView& m_view;
+    LedgerView& view_;
 
     // The amount of XRP that flowed if we were autobridging
     STAmount xrp_flow_;
@@ -256,27 +262,27 @@ private:
         BasicTaker::Flow const& flow2, Offer const& leg2);
 
     TER
-    transfer_xrp (Account const& from, Account const& to, STAmount const& amount);
+    transfer_xrp (AccountID const& from, AccountID const& to, STAmount const& amount);
 
     TER
-    redeem_iou (Account const& account, STAmount const& amount, Issue const& issue);
+    redeem_iou (AccountID const& account, STAmount const& amount, Issue const& issue);
 
     TER
-    issue_iou (Account const& account, STAmount const& amount, Issue const& issue);
+    issue_iou (AccountID const& account, STAmount const& amount, Issue const& issue);
 
 public:
     Taker () = delete;
     Taker (Taker const&) = delete;
 
-    Taker (CrossType cross_type, LedgerView& view, Account const& account,
-        Amounts const& offer, std::uint32_t flags);
+    Taker (CrossType cross_type, LedgerView& view, AccountID const& account,
+        Amounts const& offer, std::uint32_t flags, beast::Journal journal);
     ~Taker () = default;
 
     void
     consume_offer (Offer const& offer, Amounts const& order);
 
     STAmount
-    get_funds (Account const& account, STAmount const& funds) const;
+    get_funds (AccountID const& account, STAmount const& funds) const;
 
     STAmount const&
     get_xrp_flow () const

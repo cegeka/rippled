@@ -23,6 +23,7 @@
 #include <ripple/app/ledger/LedgerEntrySet.h>
 #include <ripple/app/paths/Node.h>
 #include <ripple/app/paths/Types.h>
+#include <boost/optional.hpp>
 
 namespace ripple {
 
@@ -49,8 +50,8 @@ class PathState : public CountedObject <PathState>
     TER expandPath (
         LedgerEntrySet const&   lesSource,
         STPath const&           spSourcePath,
-        Account const&          uReceiverID,
-        Account const&          uSenderID
+        AccountID const&          uReceiverID,
+        AccountID const&          uSenderID
     );
 
     path::Node::List& nodes() { return nodes_; }
@@ -96,25 +97,42 @@ class PathState : public CountedObject <PathState>
     void setIndex (int i) { mIndex  = i; }
     int index() const { return mIndex; }
 
-    TER checkNoRipple (Account const& destinationAccountID,
-                       Account const& sourceAccountID);
+    TER checkNoRipple (AccountID const& destinationAccountID,
+                       AccountID const& sourceAccountID);
     void checkFreeze ();
 
     static bool lessPriority (PathState const& lhs, PathState const& rhs);
 
-    LedgerEntrySet& ledgerEntries() { return lesEntries; }
+    // VFALCO Remove or rename to view, 
+    LedgerEntrySet& ledgerEntries()
+    {
+        return *lesEntries_;
+    }
 
     bool isDry() const
     {
         return !(saInPass && saOutPass);
     }
 
-  private:
+private:
     TER checkNoRipple (
-        Account const&, Account const&, Account const&, Currency const&);
+        AccountID const&, AccountID const&, AccountID const&, Currency const&);
 
     /** Clear path structures, and clear each node. */
     void clear();
+
+    TER pushNode (
+        int const iType,
+        AccountID const& account,
+        Currency const& currency,
+        AccountID const& issuer);
+
+    TER pushImpliedNodes (
+        AccountID const& account,
+        Currency const& currency,
+        AccountID const& issuer);
+    
+    Json::Value getJson () const;
 
     TER terStatus;
     path::Node::List nodes_;
@@ -132,7 +150,7 @@ class PathState : public CountedObject <PathState>
     // Source may only be used there if not mentioned by an account.
     AccountIssueToNodeIndex umReverse;
 
-    LedgerEntrySet lesEntries;
+    boost::optional<LedgerEntrySet> lesEntries_;
 
     int                         mIndex;    // Index/rank amoung siblings.
     std::uint64_t               uQuality;  // 0 = no quality/liquity left.
@@ -147,19 +165,6 @@ class PathState : public CountedObject <PathState>
 
     // If true, all liquidity on this path has been consumed.
     bool allLiquidityConsumed_ = false;
-
-    TER pushNode (
-        int const iType,
-        Account const& account,
-        Currency const& currency,
-        Account const& issuer);
-
-    TER pushImpliedNodes (
-        Account const& account,
-        Currency const& currency,
-        Account const& issuer);
-    
-    Json::Value getJson () const;
 };
 
 } // ripple

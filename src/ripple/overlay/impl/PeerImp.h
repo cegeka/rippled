@@ -156,7 +156,8 @@ private:
     beast::asio::streambuf write_buffer_;
     std::queue<Message::pointer> send_queue_;
     bool gracefulClose_ = false;
-    bool recent_empty_ = true;
+    int large_sendq_ = 0;
+    int no_ping_ = 0;
     std::unique_ptr <LoadEvent> load_event_;
     std::unique_ptr<Validators::Connection> validatorsConnection_;
     bool hopsAware_ = false;
@@ -187,6 +188,12 @@ public:
 
     virtual
     ~PeerImp();
+
+    beast::Journal const&
+    pjournal() const
+    {
+        return p_journal_;
+    }
 
     PeerFinder::Slot::ptr const&
     slot()
@@ -395,6 +402,7 @@ public:
         std::shared_ptr <::google::protobuf::Message> const& m);
 
     void onMessage (std::shared_ptr <protocol::TMHello> const& m);
+    void onMessage (std::shared_ptr <protocol::TMManifests> const& m);
     void onMessage (std::shared_ptr <protocol::TMPing> const& m);
     void onMessage (std::shared_ptr <protocol::TMCluster> const& m);
     void onMessage (std::shared_ptr <protocol::TMGetPeers> const& m);

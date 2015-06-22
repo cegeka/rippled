@@ -55,7 +55,8 @@ public:
 private:
     PathCursor(PathCursor const&) = default;
 
-    PathCursor increment(int delta = 1) const {
+    PathCursor increment(int delta = 1) const
+    {
         return {rippleCalc_, pathState_, multiQuality_, nodeIndex_ + delta};
     }
 
@@ -80,20 +81,15 @@ private:
 
     // To deliver from an order book, when computing
     TER deliverNodeReverse (
-        Account const& uOutAccountID,
+        AccountID const& uOutAccountID,
         STAmount const& saOutReq,
         STAmount& saOutAct) const;
 
     TER deliverNodeForward (
-        Account const& uInAccountID,
+        AccountID const& uInAccountID,
         STAmount const& saInReq,
         STAmount& saInAct,
         STAmount& saInFees) const;
-
-    RippleCalc& rippleCalc_;
-    PathState& pathState_;
-    bool multiQuality_;
-    NodeIndex nodeIndex_;
 
     LedgerEntrySet& ledger() const
     {
@@ -129,6 +125,11 @@ private:
     {
         return node (restrict (nodeIndex_ + 1));
     }
+
+    RippleCalc& rippleCalc_;
+    PathState& pathState_;
+    bool multiQuality_;
+    NodeIndex nodeIndex_;
 };
 
 } // path

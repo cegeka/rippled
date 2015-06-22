@@ -36,7 +36,7 @@ class UserAccount
 {
 private:
     KeyPair master_;
-    Account acctID_;
+    AccountID acctID_;
     KeyPair regular_;
     bool useRegKey_ = false;
     std::uint32_t sequence_ = 0;
@@ -48,7 +48,7 @@ public:
 
     UserAccount (KeyType kType, std::string const& passphrase);
 
-    Account const& getID () const
+    AccountID const& getID () const
     {
         return acctID_;
     }
@@ -101,7 +101,7 @@ public:
 class TestLedger
 {
 private:
-    Ledger::pointer lastClosedLedger_;
+    std::shared_ptr<Ledger const> lastClosedLedger_;
     Ledger::pointer openLedger_;
     beast::unit_test::suite& suite_;
 
@@ -128,6 +128,8 @@ public:
     void applyTecTransaction (STTx const& tx, TER err, bool check = true);
 
     // Return the AccountState for a UserAccount
+    // VFALCO This function is not necessary, just expose
+    //        the ledger data member and use the free function.
     AccountState::pointer getAccountState (UserAccount const& acct) const;
 
     // Return the current open ledger.
@@ -237,8 +239,8 @@ public:
 
     friend bool operator<(MultiSig const& lhs, MultiSig const& rhs)
     {
-        Account const& lhsSigingFor = lhs.signingFor_->getID();
-        Account const& rhsSigningFor = rhs.signingFor_->getID();
+        AccountID const& lhsSigingFor = lhs.signingFor_->getID();
+        AccountID const& rhsSigningFor = rhs.signingFor_->getID();
         if (lhsSigingFor < rhsSigningFor)
             return true;
 
@@ -251,12 +253,12 @@ public:
         return false;
     }
 
-    Account const& signingForAccount() const
+    AccountID const& signingForAccount() const
     {
         return signingFor_->getID();
     }
 
-    Account const& signingAccount() const
+    AccountID const& signingAccount() const
     {
         return signer_->getID();
     }
@@ -308,7 +310,7 @@ STTx getPaymentTx (
     UserAccount& from, UserAccount const& to, STAmount const& amount);
 
 // Return a transaction that sets a regular key.
-STTx getSetRegularKeyTx (UserAccount& acct, Account const& regKey);
+STTx getSetRegularKeyTx (UserAccount& acct, AccountID const& regKey);
 
 // Return a transaction that clears a regular key.
 STTx getClearRegularKeyTx (UserAccount& acct);
@@ -347,11 +349,11 @@ std::vector<RippleState::pointer> getRippleStates (
     TestLedger& ledger, UserAccount const& from, UserAccount const& peer);
 
 // Get all Offers on an account.
-std::vector <SLE::pointer>
+std::vector <std::shared_ptr<SLE const>>
 getOffersOnAccount (TestLedger& ledger, UserAccount const& acct);
 
 // Get all Tickets on an account.
-std::vector <SLE::pointer>
+std::vector <std::shared_ptr<SLE const>>
 getTicketsOnAccount (TestLedger& ledger, UserAccount const& acct);
 
 } // test

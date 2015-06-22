@@ -19,6 +19,7 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/tx/TransactionMaster.h>
+#include <ripple/rpc/impl/Utilities.h>
 
 namespace ripple {
 
@@ -55,7 +56,8 @@ Json::Value doTx (RPC::Context& context)
     if (!isHexTxID (txid))
         return rpcError (rpcNOT_IMPL);
 
-    auto txn = getApp().getMasterTransaction ().fetch (uint256 (txid), true);
+    auto txn = getApp().getMasterTransaction ().fetch (
+        from_hex_text<uint256>(txid), true);
 
     if (!txn)
         return rpcError (rpcTXN_NOT_FOUND);

@@ -28,6 +28,7 @@
 #include <ripple/overlay/ClusterNodeStatus.h>
 #include <ripple/app/misc/UniqueNodeList.h>
 #include <ripple/app/tx/InboundTransactions.h>
+#include <ripple/basics/SHA512Half.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/basics/UptimeTimer.h>
 #include <ripple/core/JobQueue.h>
@@ -188,10 +189,22 @@ PeerImp::send (Message::pointer const& m)
         return;
     if(detaching_)
         return;
+
+    auto sendq_size = send_queue_.size();
+
+    if (sendq_size < Tuning::targetSendQueue)
+    {
+        // To detect a peer that does not read from their
+        // side of the connection, we expect a peer to have
+        // a small senq periodically
+        large_sendq_ = 0;
+    }
+
     send_queue_.push(m);
-    if(send_queue_.size() > 1)
+
+    if(sendq_size != 0)
         return;
-    recent_empty_ = true;
+
     boost::asio::async_write (stream_, boost::asio::buffer(
         send_queue_.front()->getBuffer()), strand_.wrap(std::bind(
             &PeerImp::onWriteMessage, shared_from_this(),
@@ -451,7 +464,7 @@ PeerImp::setTimer()
 {
     error_code ec;
     timer_.expires_from_now( std::chrono::seconds(
-        (lastPingSeq_ == 0) ? 3 : 15), ec);
+        Tuning::timerSeconds), ec);
 
     if (ec)
     {
@@ -498,25 +511,32 @@ PeerImp::onTimer (error_code const& ec)
         return close();
     }
 
-    if (! recent_empty_)
+    if (large_sendq_++ >= Tuning::sendqIntervals)
     {
-        fail ("Timeout");
+        fail ("Large send queue");
         return;
     }
 
-    recent_empty_ = false;
+    if (no_ping_++ >= Tuning::noPing)
+    {
+        fail ("No ping reply received");
+        return;
+    }
 
-    // Make sequence unpredictable enough that a peer
-    // can't fake their latency
-    lastPingSeq_ += (rand() % 8192);
-    lastPingTime_ = clock_type::now();
+    if (lastPingSeq_ == 0)
+    {
+        // Make sequence unpredictable enough that a peer
+        // can't fake their latency
+        lastPingSeq_ = (rand() % 65536);
+        lastPingTime_ = clock_type::now();
 
-    protocol::TMPing message;
-    message.set_type (protocol::TMPing::ptPING);
-    message.set_seq (lastPingSeq_);
+        protocol::TMPing message;
+        message.set_type (protocol::TMPing::ptPING);
+        message.set_seq (lastPingSeq_);
 
-    send (std::make_shared<Message> (
-        message, protocol::mtPING));
+        send (std::make_shared<Message> (
+            message, protocol::mtPING));
+    }
 
     setTimer();
 }
@@ -653,6 +673,24 @@ void
 PeerImp::doProtocolStart()
 {
     onReadMessage(error_code(), 0);
+
+    protocol::TMManifests tm;
+    tm.set_history (true);
+
+    overlay_.manifestCache ().for_each_manifest (
+        [&tm](size_t s){tm.mutable_list()->Reserve(s);},
+        [&tm](Manifest const& manifest)
+        {
+            auto const& s = manifest.serialized;
+            auto& tm_e = *tm.add_list();
+            tm_e.set_stobject(s.data(), s.size());
+        });
+
+    if (tm.list_size() > 0)
+    {
+        auto m = std::make_shared<Message>(tm, protocol::mtMANIFESTS);
+        send (m);
+    }
 }
 
 // Called repeatedly with protocol message data
@@ -779,6 +817,15 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMHello> const& m)
 }
 
 void
+PeerImp::onMessage (std::shared_ptr<protocol::TMManifests> const& m)
+{
+    // VFALCO What's the right job type?
+    getApp().getJobQueue().addJob (jtVALIDATION_ut,
+        "receiveManifests", std::bind(&OverlayImpl::onManifests,
+            &overlay_, std::placeholders::_1, m, shared_from_this()));
+}
+
+void
 PeerImp::onMessage (std::shared_ptr <protocol::TMPing> const& m)
 {
     if (m->type () == protocol::TMPing::ptPING)
@@ -800,6 +847,7 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMPing> const& m)
 
         if ((lastPingSeq_ != 0) && (m->seq () == lastPingSeq_))
         {
+            no_ping_ = 0;
             auto estimate = std::chrono::duration_cast <std::chrono::milliseconds>
                 (clock_type::now() - lastPingTime_);
             if (latency_ == unknownLatency)
@@ -951,7 +999,7 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMTransaction> const& m)
         return;
     }
 
-    SerialIter sit (m->rawtransaction ());
+    SerialIter sit (make_Slice(m->rawtransaction()));
 
     try
     {
@@ -1103,7 +1151,7 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMProposeSet> const& m)
         return;
     }
 
-    if (set.has_previousledger () && (set.previousledger ().size () != 32))
+    if (set.previousledger ().size () != 32)
     {
         p_journal_.warning << "Proposal: malformed";
         fee_ = Resource::feeInvalidRequest;
@@ -1112,17 +1160,14 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMProposeSet> const& m)
 
     uint256 proposeHash, prevLedger;
     memcpy (proposeHash.begin (), set.currenttxhash ().data (), 32);
+    memcpy (prevLedger.begin (), set.previousledger ().data (), 32);
 
-    if (set.has_previousledger ())
-        memcpy (prevLedger.begin (), set.previousledger ().data (), 32);
-
-    uint256 suppression = LedgerProposal::computeSuppressionID (
+    uint256 suppression = proposalUniqueId (
         proposeHash, prevLedger, set.proposeseq(), set.closetime (),
-            Blob(set.nodepubkey ().begin (), set.nodepubkey ().end ()),
-                Blob(set.signature ().begin (), set.signature ().end ()));
+        Blob(set.nodepubkey ().begin (), set.nodepubkey ().end ()),
+        Blob(set.signature ().begin (), set.signature ().end ()));
 
-    if (! getApp().getHashRouter ().addSuppressionPeer (
-        suppression, id_))
+    if (! getApp().getHashRouter ().addSuppressionPeer (suppression, id_))
     {
         p_journal_.trace << "Proposal: duplicate";
         return;
@@ -1139,25 +1184,27 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMProposeSet> const& m)
 
     bool isTrusted = getApp().getUNL ().nodeInUNL (signerPublic);
 
-    if (!isTrusted && (sanity_.load() == Sanity::insane))
+    if (!isTrusted)
     {
-        p_journal_.debug << "Proposal: Dropping UNTRUSTED (insane)";
-        return;
-    }
+        if (sanity_.load() == Sanity::insane)
+        {
+            p_journal_.debug << "Proposal: Dropping UNTRUSTED (insane)";
+            return;
+        }
 
-    if (!isTrusted && getApp().getFeeTrack ().isLoadedLocal ())
-    {
-        p_journal_.debug << "Proposal: Dropping UNTRUSTED (load)";
-        return;
+        if (getApp().getFeeTrack ().isLoadedLocal ())
+        {
+            p_journal_.debug << "Proposal: Dropping UNTRUSTED (load)";
+            return;
+        }
     }
 
     p_journal_.trace <<
         "Proposal: " << (isTrusted ? "trusted" : "UNTRUSTED");
 
-    LedgerProposal::pointer proposal = std::make_shared<LedgerProposal> (
-        prevLedger.isNonZero () ? prevLedger : uint256(),
-            set.proposeseq (), proposeHash, set.closetime (),
-                signerPublic, suppression);
+    auto proposal = std::make_shared<LedgerProposal> (
+        prevLedger, set.proposeseq (), proposeHash, set.closetime (),
+            signerPublic, suppression);
 
     getApp().getJobQueue ().addJob (isTrusted ? jtPROPOSAL_t : jtPROPOSAL_ut,
         "recvPropose->checkPropose", std::bind(beast::weak_fn(
@@ -1364,10 +1411,12 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMValidation> const& m)
 
     try
     {
-        Serializer s (m->validation ());
-        SerialIter sit (s);
-        STValidation::pointer val = std::make_shared <
-            STValidation> (std::ref (sit), false);
+        STValidation::pointer val;
+        {
+            SerialIter sit (make_Slice(m->validation()));
+            val = std::make_shared <
+                STValidation> (std::ref (sit), false);
+        }
 
         if (closeTime > (120 + val->getFieldU32(sfSigningTime)))
         {
@@ -1376,8 +1425,8 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMValidation> const& m)
             return;
         }
 
-        if (! getApp().getHashRouter ().addSuppressionPeer (
-            s.getSHA512Half(), id_))
+        if (! getApp().getHashRouter ().addSuppressionPeer(
+            sha512Half(make_Slice(m->validation())), id_))
         {
             p_journal_.trace << "Validation: duplicate";
             return;
@@ -1425,6 +1474,14 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMGetObjectByHash> const& m)
     if (packet.query ())
     {
         // this is a query
+        if (send_queue_.size() >= Tuning::dropSendQueue)
+        {
+            if (p_journal_.debug) p_journal_.debug <<
+                "GetObject: Large send queue";
+            return;
+        }
+
+
         if (packet.type () == protocol::TMGetObjectByHash::otFETCH_PACK)
         {
             doFetchPack (m);
@@ -1456,7 +1513,7 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMGetObjectByHash> const& m)
                 memcpy (hash.begin (), obj.hash ().data (), 256 / 8);
                 // VFALCO TODO Move this someplace more sensible so we dont
                 //             need to inject the NodeStore interfaces.
-                NodeObject::pointer hObj =
+                std::shared_ptr<NodeObject> hObj =
                     getApp().getNodeStore ().fetch (hash);
 
                 if (hObj)
@@ -1668,7 +1725,6 @@ PeerImp::checkPropose (Job& job,
     std::shared_ptr <protocol::TMProposeSet> const& packet,
         LedgerProposal::pointer proposal)
 {
-    bool sigGood = false;
     bool isTrusted = (job.getType () == jtPROPOSAL_t);
 
     p_journal_.trace <<
@@ -1677,66 +1733,39 @@ PeerImp::checkPropose (Job& job,
     assert (packet);
     protocol::TMProposeSet& set = *packet;
 
-
-    uint256 consensusLCL;
-    if (! set.has_previousledger() || ! isTrusted)
+    if (! cluster() && ! proposal->checkSign (set.signature ()))
     {
-        std::lock_guard<Application::MutexType> lock(getApp().getMasterMutex());
-        consensusLCL = getApp().getOPs ().getConsensusLCL ();
-    }
-
-    uint256 prevLedger;
-    if (set.has_previousledger ())
-    {
-        // proposal includes a previous ledger
-        p_journal_.trace <<
-            "proposal with previous ledger";
-        memcpy (prevLedger.begin (), set.previousledger ().data (), 256 / 8);
-        proposal->setPrevLedger (prevLedger);
-
-        if (! cluster() && !proposal->checkSign (set.signature ()))
-        {
-            p_journal_.warning <<
-                "Proposal with previous ledger fails sig check";
-            charge (Resource::feeInvalidSignature);
-            return;
-        }
-        else
-            sigGood = true;
-    }
-    else
-    {
-        proposal->setPrevLedger (consensusLCL);
-        if (consensusLCL.isNonZero () && proposal->checkSign (set.signature ()))
-        {
-            prevLedger = consensusLCL;
-            sigGood = true;
-        }
-        else
-        {
-            // Could be mismatched prev ledger
-            p_journal_.warning <<
-                "Ledger proposal fails signature check";
-            proposal->setSignature (set.signature ());
-        }
+        p_journal_.warning <<
+            "Proposal fails sig check";
+        charge (Resource::feeInvalidSignature);
+        return;
     }
 
     if (isTrusted)
     {
         getApp().getOPs ().processTrustedProposal (
-            proposal, packet, publicKey_, prevLedger, sigGood);
-    }
-    else if (sigGood && (prevLedger == consensusLCL))
-    {
-        // relay untrusted proposal
-        p_journal_.trace <<
-            "relaying UNTRUSTED proposal";
-        overlay_.relay(set, proposal->getSuppressionID());
+            proposal, packet, publicKey_);
     }
     else
     {
-        p_journal_.debug <<
-            "Not relaying UNTRUSTED proposal";
+        uint256 consensusLCL;
+        {
+            std::lock_guard<Application::MutexType> lock (getApp().getMasterMutex());
+            consensusLCL = getApp().getOPs ().getConsensusLCL ();
+        }
+
+        if (consensusLCL == proposal->getPrevLedger())
+        {
+            // relay untrusted proposal
+            p_journal_.trace <<
+                "relaying UNTRUSTED proposal";
+            overlay_.relay(set, proposal->getSuppressionID());
+        }
+        else
+        {
+            p_journal_.debug <<
+                "Not relaying UNTRUSTED proposal";
+        }
     }
 }
 
@@ -1896,6 +1925,13 @@ PeerImp::getLedger (std::shared_ptr<protocol::TMGetLedger> const& m)
     }
     else
     {
+        if (send_queue_.size() >= Tuning::dropSendQueue)
+        {
+            if (p_journal_.debug) p_journal_.debug <<
+                "GetLedger: Large send queue";
+            return;
+        }
+
         if (getApp().getFeeTrack().isLoadedLocal() && ! cluster())
         {
             if (p_journal_.debug) p_journal_.debug <<

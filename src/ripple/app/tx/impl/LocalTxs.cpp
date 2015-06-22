@@ -19,7 +19,9 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/tx/LocalTxs.h>
+#include <ripple/app/main/Application.h>
 #include <ripple/app/misc/CanonicalTXSet.h>
+#include <ripple/protocol/Indexes.h>
 
 /*
  This code prevents scenarios like the following:
@@ -120,21 +122,17 @@ public:
 
     bool can_remove (LocalTx& txn, Ledger::ref ledger)
     {
-
         if (txn.isExpired (ledger->getLedgerSeq ()))
             return true;
-
         if (ledger->hasTransaction (txn.getID ()))
             return true;
-
-        SLE::pointer sle = ledger->getAccountRoot (txn.getAccount ());
-        if (!sle)
+        auto const sle = fetch(*ledger,
+            getAccountRootIndex(txn.getAccount().getAccountID()),
+                getApp().getSLECache());
+        if (! sle)
             return false;
-
         if (sle->getFieldU32 (sfSequence) > txn.getSeq ())
             return true;
-
-
         return false;
     }
 

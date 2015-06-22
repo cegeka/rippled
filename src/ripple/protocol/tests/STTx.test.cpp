@@ -46,7 +46,7 @@ public:
 
         Serializer rawTxn;
         j.add (rawTxn);
-        SerialIter sit (rawTxn);
+        SerialIter sit (rawTxn.slice());
         STTx copy (sit);
 
         if (copy != j)
@@ -101,10 +101,10 @@ public:
         RippleAddress const saGenerator = saSeed.createGeneratorPublic (saSeed);
         RippleAddress const saPublicAcct =
             saSeed.createAccountPublic (saGenerator, 1);
-        Account const saID = saPublicAcct.getAccountID ();
+        AccountID const saID = saPublicAcct.getAccountID ();
 
         // Create a field for SigningFor
-        Account const signingForID = txnPublicAcct.getAccountID ();
+        AccountID const signingForID = txnPublicAcct.getAccountID ();
 
         RippleAddress saPrivateAcct =
             saSeed.createAccountPrivate(saGenerator, saSeed, 0);
@@ -150,7 +150,7 @@ public:
 
             Serializer rawTxn;
             tempTxn.add (rawTxn);
-            SerialIter sit (rawTxn);
+            SerialIter sit (rawTxn.slice());
             bool serialized = false;
             try
             {

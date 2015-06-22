@@ -136,7 +136,7 @@ public:
 
         // overrride OptimizeLevelStyleCompaction
         options.min_write_buffer_number_to_merge = 1;
-        
+
         rocksdb::BlockBasedTableOptions table_options;
         // Use hash index
         table_options.index_type =
@@ -145,7 +145,7 @@ public:
             rocksdb::NewBloomFilterPolicy(10));
         options.table_factory.reset(
             NewBlockBasedTableFactory(table_options));
-        
+
         // Higher values make reads slower
         // table_options.block_size = 4096;
 
@@ -201,7 +201,7 @@ public:
     //--------------------------------------------------------------------------
 
     Status
-    fetch (void const* key, NodeObject::Ptr* pObject)
+    fetch (void const* key, std::shared_ptr<NodeObject>* pObject)
     {
         pObject->reset ();
 
@@ -257,7 +257,7 @@ public:
     }
 
     void
-    store (NodeObject::ref object)
+    store (std::shared_ptr<NodeObject> const& object)
     {
         storeBatch(Batch{object});
     }
@@ -273,7 +273,7 @@ public:
     storeBatch (Batch const& batch)
     {
         rocksdb::WriteBatch wb;
- 
+
         EncodedBlob encoded;
 
         for (auto const& e : batch)
@@ -291,7 +291,7 @@ public:
 
         // Crucial to ensure good write speed and non-blocking writes to memtable
         options.disableWAL = true;
-        
+
         auto ret = m_db->Write (options, &wb);
 
         if (!ret.ok ())
@@ -299,7 +299,7 @@ public:
     }
 
     void
-    for_each (std::function <void(NodeObject::Ptr)> f)
+    for_each (std::function <void(std::shared_ptr<NodeObject>)> f)
     {
         rocksdb::ReadOptions const options;
 
@@ -321,7 +321,8 @@ public:
                 {
                     // Uh oh, corrupted data!
                     if (m_journal.fatal) m_journal.fatal <<
-                        "Corrupt NodeObject #" << uint256 (it->key ().data ());
+                        "Corrupt NodeObject #" <<
+                        from_hex_text<uint256>(it->key ().data ());
                 }
             }
             else

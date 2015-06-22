@@ -32,6 +32,18 @@
 
 namespace ripple {
 
+enum VersionEncoding
+{
+    VER_NONE                = 1,
+    VER_NODE_PUBLIC         = 28,
+    VER_NODE_PRIVATE        = 32,
+    VER_ACCOUNT_ID          = 0,
+    VER_ACCOUNT_PUBLIC      = 35,
+    VER_ACCOUNT_PRIVATE     = 34,
+    VER_FAMILY_GENERATOR    = 41,
+    VER_FAMILY_SEED         = 33,
+};
+
 //
 // Used to hold addresses and parse and produce human formats.
 //
@@ -40,18 +52,6 @@ namespace ripple {
 class RippleAddress : private CBase58Data
 {
 private:
-    enum VersionEncoding
-    {
-        VER_NONE                = 1,
-        VER_NODE_PUBLIC         = 28,
-        VER_NODE_PRIVATE        = 32,
-        VER_ACCOUNT_ID          = 0,
-        VER_ACCOUNT_PUBLIC      = 35,
-        VER_ACCOUNT_PRIVATE     = 34,
-        VER_FAMILY_GENERATOR    = 41,
-        VER_FAMILY_SEED         = 33,
-    };
-
     bool    mIsValid;
 
 public:
@@ -123,16 +123,16 @@ public:
     //
     // Accounts IDs
     //
-    Account getAccountID () const;
+    AccountID getAccountID () const;
 
     std::string humanAccountID () const;
 
     bool setAccountID (
         std::string const& strAccountID,
         Base58::Alphabet const& alphabet = Base58::getRippleAlphabet());
-    void setAccountID (Account const& hash160In);
+    void setAccountID (AccountID const& hash160In);
 
-    static RippleAddress createAccountID (Account const& uiAccountID);
+    static RippleAddress createAccountID (AccountID const& uiAccountID);
 
     //
     // Accounts Public

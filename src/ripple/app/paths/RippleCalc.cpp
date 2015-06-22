@@ -59,8 +59,8 @@ RippleCalc::Output RippleCalc::rippleCalculate (
     //           trust node.
     STAmount const& saDstAmountReq,
 
-    Account const& uDstAccountID,
-    Account const& uSrcAccountID,
+    AccountID const& uDstAccountID,
+    AccountID const& uSrcAccountID,
 
     // A set of paths that are included in the transaction that we'll
     // explore for liquidity.
@@ -288,7 +288,9 @@ TER RippleCalc::rippleCalculate ()
                         assert (mActiveLedger.isValid ());
                         mActiveLedger.swapWith (pathState->ledgerEntries());
                         // For the path, save ledger state.
-                        mActiveLedger.invalidate ();
+
+                        // VFALCO Can this be done without the function call?
+                        mActiveLedger.deprecatedInvalidate();
 
                         iBest   = pathState->index ();
                     }
@@ -339,7 +341,10 @@ TER RippleCalc::rippleCalculate ()
             // return.
             assert (pathState->ledgerEntries().isValid ());
             mActiveLedger.swapWith (pathState->ledgerEntries());
-            pathState->ledgerEntries().invalidate ();
+            
+            // VFALCO Why is this needed? Can it be done
+            //        without the function call?
+            pathState->ledgerEntries().deprecatedInvalidate();
 
             actualAmountIn_ += pathState->inPass();
             actualAmountOut_ += pathState->outPass();

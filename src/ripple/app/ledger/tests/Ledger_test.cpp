@@ -29,8 +29,8 @@ class Ledger_test : public beast::unit_test::suite
         std::uint64_t const xrp = std::mega::num;
 
         auto master = createAccount ("masterpassphrase", keyType);
-        
-        Ledger::pointer LCL;
+
+        std::shared_ptr<Ledger const> LCL;
         Ledger::pointer ledger;
         std::tie(LCL, ledger) = createGenesisLedger(100000*xrp, master);
 
@@ -96,7 +96,7 @@ class Ledger_test : public beast::unit_test::suite
 
         auto master = createAccount ("masterpassphrase", keyType);
 
-        Ledger::pointer LCL;
+        std::shared_ptr<Ledger const> LCL;
         Ledger::pointer ledger;
         std::tie(LCL, ledger) = createGenesisLedger (100000 * xrp, master);
 
@@ -120,7 +120,7 @@ class Ledger_test : public beast::unit_test::suite
 
     void test_getQuality ()
     {
-        uint256 uBig (
+        uint256 uBig = from_hex_text<uint256> (
             "D2DC44E5DC189318DB36EF87D2104CDF0A0FE3A4B698BEEE55038D7EA4C68000");
         expect (6125895493223874560 == getQuality (uBig));
 

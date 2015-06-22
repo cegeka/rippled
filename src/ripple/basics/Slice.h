@@ -20,10 +20,15 @@
 #ifndef RIPPLE_BASICS_SLICE_H_INCLUDED
 #define RIPPLE_BASICS_SLICE_H_INCLUDED
 
+#include <ripple/basics/strHex.h>
 #include <beast/utility/noexcept.h>
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstring>
+#include <string>
+#include <vector>
+#include <beast/cxx14/type_traits.h> // <type_traits>
 
 namespace ripple {
 
@@ -84,7 +89,7 @@ inline
 void
 hash_append (Hasher& h, Slice const& v)
 {
-    h.append(v.data(), v.size());
+    h(v.data(), v.size());
 }
 
 inline
@@ -98,12 +103,48 @@ operator== (Slice const& lhs, Slice const& rhs) noexcept
 
 inline
 bool
+operator!= (Slice const& lhs, Slice const& rhs) noexcept
+{
+    return !(lhs == rhs);
+}
+
+inline
+bool
 operator< (Slice const& lhs, Slice const& rhs) noexcept
 {
     return std::lexicographical_compare(
         lhs.data(), lhs.data() + lhs.size(),
             rhs.data(), rhs.data() + rhs.size());
 }
+
+
+template <class Stream>
+Stream& operator<<(Stream& s, Slice const& v)
+{
+    s << strHex(v.data(), v.size());
+    return s;
+}
+
+template <class T, class Alloc>
+std::enable_if_t<
+    std::is_same<T, char>::value ||
+        std::is_same<T, unsigned char>::value,
+    Slice
+>
+make_Slice (std::vector<T, Alloc> const& v)
+{
+    return Slice(v.data(), v.size());
+}
+
+template <class Traits, class Alloc>
+Slice
+make_Slice (std::basic_string<char, Traits, Alloc> const& s)
+{
+    return Slice(s.data(), s.size());
+}
+
+std::string
+strHex (Slice const& slice);
 
 } // ripple
 

@@ -74,12 +74,8 @@ Transactor::transact (
     case ttTICKET_CANCEL:
         return transact_CancelTicket (txn, params, engine);
 
-#if RIPPLE_ENABLE_MULTI_SIGN
-
     case ttSIGNER_LIST_SET:
         return transact_SetSignerList (txn, params, engine);
-
-#endif // RIPPLE_ENABLE_MULTI_SIGN
 
     default:
         return temUNKNOWN;
@@ -236,7 +232,7 @@ TER Transactor::preCheckSigningKey ()
     if (!mTxn.isKnownGood ())
     {
         if (mTxn.isKnownBad () ||
-            (!(mParams & tapNO_CHECK_SIGN) && !mTxn.checkSign()))
+            (!(mParams & tapNO_CHECK_SIGN) && !mTxn.checkSign(mEngine->enableMultiSign())))
         {
             mTxn.setBad ();
             m_journal.debug << "apply: Invalid transaction (bad signature)";
@@ -307,11 +303,12 @@ TER Transactor::apply ()
 
 TER Transactor::checkSign ()
 {
-#if RIPPLE_ENABLE_MULTI_SIGN
-    // If the mSigningPubKey is empty, then we must be multi-signing.
-    if (mSigningPubKey.getAccountPublic ().empty ())
-        return checkMultiSign ();
-#endif
+    if(mEngine->enableMultiSign())
+    {
+        // If the mSigningPubKey is empty, then we must be multi-signing.
+        if (mSigningPubKey.getAccountPublic ().empty ())
+            return checkMultiSign ();
+    }
 
     return checkSingleSign ();
 }
@@ -362,7 +359,7 @@ struct GetSignerListResult
 // We need the SignerList for every SigningFor while multi-signing.
 GetSignerListResult
 getSignerList (
-    Account signingForAcctID, TransactionEngine* engine, beast::Journal journal)
+    AccountID signingForAcctID, TransactionEngine* engine, beast::Journal journal)
 {
     GetSignerListResult ret;
 
@@ -414,7 +411,7 @@ checkSigningAccounts (
     auto signerEntriesItr = signerEntries.begin ();
     for (auto const& signingAccount : signingAccounts)
     {
-        Account const signingAcctID =
+        AccountID const signingAcctID =
             signingAccount.getFieldAccount (sfAccount).getAccountID ();
 
         // Attempt to match the SignerEntry with a SigningAccount;
@@ -448,7 +445,7 @@ checkSigningAccounts (
         // We found the SigningAccount in the list of valid signers.  Now we
         // need to compute the accountID that is associated with the signer's
         // public key.
-        Account const signingAcctIDFromPubKey =
+        AccountID const signingAcctIDFromPubKey =
             RippleAddress::createAccountPublic (
                 signingAccount.getFieldVL (sfSigningPubKey)).getAccountID ();
 
@@ -561,7 +558,7 @@ TER Transactor::checkMultiSign ()
     auto signerEntriesItr = outer.signerEntries.begin ();
     for (auto const& signingFor : multiSigners)
     {
-        Account const signingForID =
+        AccountID const signingForID =
             signingFor.getFieldAccount (sfAccount).getAccountID ();
 
         STArray const& signingAccounts =

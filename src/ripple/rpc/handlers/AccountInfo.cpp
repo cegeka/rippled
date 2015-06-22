@@ -18,6 +18,7 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/app/main/Application.h>
 #include <ripple/protocol/Indexes.h>
 
 namespace ripple {
@@ -55,23 +56,25 @@ Json::Value doAccountInfo (RPC::Context& context)
 
     // Get info on account.
 
-    Json::Value jvAccepted = RPC::accountFromString (
-        ledger, naAccount, bIndex, strIdent, iIndex, bStrict, context.netOps);
+    auto jvAccepted = RPC::accountFromString (
+        naAccount, bIndex, strIdent, iIndex, bStrict);
 
     if (!jvAccepted.empty ())
         return jvAccepted;
 
     AccountState::pointer asAccepted =
-        context.netOps.getAccountState (ledger, naAccount);
+        getAccountState(*ledger, naAccount,
+            getApp().getSLECache());
 
     if (asAccepted)
     {
         asAccepted->addJson (jvAccepted);
 
         // See if there's a SignerEntries for this account.
-        Account const account = naAccount.getAccountID ();
+        AccountID const account = naAccount.getAccountID ();
         uint256 const signerListIndex = getSignerListIndex (account);
-        SLE::pointer signerList = ledger->getSLEi (signerListIndex);
+        auto const signerList = fetch(*ledger, signerListIndex,
+            getApp().getSLECache());
 
         if (signerList)
         {

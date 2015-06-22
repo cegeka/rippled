@@ -116,9 +116,7 @@ const char* WalletDBInit[] =
 
     "CREATE TABLE IF NOT EXISTS NodeIdentity (      \
         PublicKey       CHARACTER(53),              \
-        PrivateKey      CHARACTER(52),              \
-        Dh512           TEXT,                       \
-        Dh1024          TEXT                        \
+        PrivateKey      CHARACTER(52)               \
     );",
 
     // Miscellaneous persistent information
@@ -230,6 +228,13 @@ const char* WalletDBInit[] =
         Referral        TEXT NOT NULL,              \
         PRIMARY KEY (Validator,Entry)               \
     );",
+
+    // Validator Manifests
+    R"(
+        CREATE TABLE IF NOT EXISTS ValidatorManifests (
+        RawData          BLOB NOT NULL
+        );
+    )",
 
     // List of referrals from ripple.txt files.
     // Validator:

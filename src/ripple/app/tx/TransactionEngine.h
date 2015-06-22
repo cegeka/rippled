@@ -22,6 +22,7 @@
 
 #include <ripple/app/ledger/Ledger.h>
 #include <ripple/app/ledger/LedgerEntrySet.h>
+#include <boost/optional.hpp>
 #include <utility>
 
 namespace ripple {
@@ -29,36 +30,71 @@ namespace ripple {
 // A TransactionEngine applies serialized transactions to a ledger
 // It can also, verify signatures, verify fees, and give rejection reasons
 
+struct tx_enable_test_t { tx_enable_test_t() { } };
+static tx_enable_test_t const tx_enable_test;
+
 // One instance per ledger.
 // Only one transaction applied at a time.
 class TransactionEngine
-    : public CountedObject <TransactionEngine>
 {
-public:
-    static char const* getCountedObjectName () { return "TransactionEngine"; }
-
 private:
-    LedgerEntrySet mNodes;
+    bool enableMultiSign_ =
+#if RIPPLE_ENABLE_MULTI_SIGN
+        true;
+#else
+        false;
+#endif
 
-    void txnWrite ();
+    bool enableTickets_ =
+#if RIPPLE_ENABLE_TICKETS
+        true;
+#else
+        false;
+#endif
+
+    boost::optional<LedgerEntrySet> mNodes;
+
+    void txnWrite();
 
 protected:
     Ledger::pointer mLedger;
     int mTxnSeq = 0;
 
 public:
-    TransactionEngine () = default;
+    TransactionEngine() = default;
 
+    explicit
     TransactionEngine (Ledger::ref ledger)
         : mLedger (ledger)
     {
         assert (mLedger);
     }
 
+    TransactionEngine (Ledger::ref ledger,
+            tx_enable_test_t)
+        : enableMultiSign_(true)
+        , enableTickets_(true)
+        , mLedger (ledger)
+    {
+        assert (mLedger);
+    }
+
+    bool
+    enableMultiSign() const
+    {
+        return enableMultiSign_;
+    }
+
+    bool
+    enableTickets() const
+    {
+        return enableTickets_;
+    }
+
     LedgerEntrySet&
     view ()
     {
-        return mNodes;
+        return *mNodes;
     }
 
     Ledger::ref

@@ -30,10 +30,9 @@
 #include <ripple/basics/strHex.h>
 #include <ripple/basics/hardened_hash.h>
 #include <beast/utility/Zero.h>
-
 #include <boost/functional/hash.hpp>
-
 #include <functional>
+#include <type_traits>
 
 using beast::zero;
 using beast::Zero;
@@ -124,7 +123,15 @@ private:
     }
 
 public:
-    base_uint () { *this = beast::zero; }
+    base_uint()
+    {
+        *this = beast::zero;
+    }
+
+    base_uint(beast::Zero)
+    {
+        *this = beast::zero;
+    }
 
     explicit base_uint (Blob const& vch)
     {
@@ -139,13 +146,6 @@ public:
     explicit base_uint (std::uint64_t b)
     {
         *this = b;
-    }
-
-    // NIKB TODO remove the need for this constructor - have a free function
-    //           to handle the hex string parsing.
-    explicit base_uint (std::string const& str)
-    {
-        SetHex (str);
     }
 
     base_uint (base_uint<Bits, Tag> const& other) = default;
@@ -297,38 +297,54 @@ public:
         return *this;
     }
 
-    template <class Hasher>
-    friend void hash_append(Hasher& h, base_uint const& a) noexcept
+    template <class Hasher,
+              class = std::enable_if_t<Hasher::endian != beast::endian::native>>
+    friend void hash_append(
+        Hasher& h, base_uint const& a) noexcept
     {
-        using beast::hash_append;
-        hash_append (h, a.pn);
+        // Do not allow any endian transformations on this memory
+        h(a.pn, sizeof(a.pn));
     }
 
+    /** Parse a hex string into a base_uint
+        The string must contain exactly bytes * 2 hex characters and must not
+        have any leading or trailing whitespace.
+    */
     bool SetHexExact (const char* psz)
     {
-        // must be precisely the correct number of hex digits
         unsigned char* pOut  = begin ();
 
         for (int i = 0; i < sizeof (pn); ++i)
         {
-            auto cHigh = charUnHex(*psz++);
-            auto cLow  = charUnHex(*psz++);
-
-            if (cHigh == -1 || cLow == -1)
+            auto hi = charUnHex(*psz++);
+            if (hi == -1)
                 return false;
 
-            *pOut++ = (cHigh << 4) | cLow;
+            auto lo = charUnHex (*psz++);
+            if (lo == -1)
+                return false;
+
+            *pOut++ = (hi << 4) | lo;
         }
 
-        assert (*psz == 0);
-        assert (pOut == end ());
-
-        return true;
+        // We've consumed exactly as many bytes as we needed at this point
+        // so we should be at the end of the string.
+        return (*psz == 0);
     }
 
-    // Allow leading whitespace.
-    // Allow leading "0x".
-    // To be valid must be '\0' terminated.
+    /** Parse a hex string into a base_uint
+        The input can be:
+            - shorter than the full hex representation by not including leading
+              zeroes.
+            - longer than the full hex representation in which case leading
+              bytes are discarded.
+
+        When finished parsing, the string must be fully consumed with only a
+        null terminator remaining.
+
+        When bStrict is false, the parsing is done in non-strict mode, and, if
+        present, leading whitespace and the 0x prefix will be skipped.
+    */
     bool SetHex (const char* psz, bool bStrict = false)
     {
         // skip leading spaces
@@ -379,9 +395,9 @@ public:
         return SetHex (str.c_str (), bStrict);
     }
 
-    void SetHexExact (std::string const& str)
+    bool SetHexExact (std::string const& str)
     {
-        SetHexExact (str.c_str ());
+        return SetHexExact (str.c_str ());
     }
 
     unsigned int size () const
@@ -513,6 +529,27 @@ inline std::string to_string (base_uint<Bits, Tag> const& a)
     return strHex (a.begin (), a.size ());
 }
 
+// Function templates that return a base_uint given text in hexadecimal.
+// Invoke like:
+//   auto i = from_hex_text<uint256>("AAAAA");
+template <typename T>
+auto from_hex_text (char const* text) -> std::enable_if_t<
+    std::is_same<T, base_uint<T::bytes*8, typename T::tag_type>>::value, T>
+{
+    T ret;
+    ret.SetHex (text);
+    return ret;
+}
+
+template <typename T>
+auto from_hex_text (std::string const& text) -> std::enable_if_t<
+    std::is_same<T, base_uint<T::bytes*8, typename T::tag_type>>::value, T>
+{
+    T ret;
+    ret.SetHex (text);
+    return ret;
+}
+
 template <std::size_t Bits, class Tag>
 inline std::ostream& operator<< (
     std::ostream& out, base_uint<Bits, Tag> const& u)
@@ -520,23 +557,20 @@ inline std::ostream& operator<< (
     return out << to_string (u);
 }
 
+static_assert(sizeof(uint128) == 128/8, "There should be no padding bytes");
+static_assert(sizeof(uint160) == 160/8, "There should be no padding bytes");
+static_assert(sizeof(uint256) == 256/8, "There should be no padding bytes");
+
 } // rippled
 
-namespace boost
+namespace beast
 {
 
 template <std::size_t Bits, class Tag>
-struct hash<ripple::base_uint<Bits, Tag>>
-{
-    using argument_type = ripple::base_uint<Bits, Tag>;
+struct is_uniquely_represented<ripple::base_uint<Bits, Tag>>
+    : public std::true_type
+    {};
 
-    std::size_t
-    operator()(argument_type const& u) const
-    {
-        return ripple::hardened_hash<>{}(u);
-    }
-};
-
-}  // boost
+}  // beast
 
 #endif

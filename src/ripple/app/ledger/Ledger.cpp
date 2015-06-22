@@ -26,15 +26,15 @@
 #include <ripple/app/ledger/LedgerToJson.h>
 #include <ripple/app/ledger/OrderBookDB.h>
 #include <ripple/app/ledger/PendingSaves.h>
-#include <ripple/core/DatabaseCon.h>
-#include <ripple/core/SociDB.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/IHashRouter.h>
 #include <ripple/app/misc/NetworkOPs.h>
 #include <ripple/app/tx/TransactionMaster.h>
 #include <ripple/basics/Log.h>
-#include <ripple/basics/LoggedTimings.h>
+#include <ripple/basics/SHA512Half.h>
 #include <ripple/basics/StringUtilities.h>
+#include <ripple/core/DatabaseCon.h>
+#include <ripple/core/SociDB.h>
 #include <ripple/protocol/Indexes.h>
 #include <ripple/protocol/JsonFields.h>
 #include <ripple/core/Config.h>
@@ -46,12 +46,33 @@
 #include <beast/module/core/text/LexicalCast.h>
 #include <beast/unit_test/suite.h>
 #include <boost/optional.hpp>
+#include <cassert>
 
 namespace ripple {
 
+/*  Create the "genesis" account root.
+    The genesis account root contains all the XRP
+    that will ever exist in the system.
+    @param id The AccountID of the account root
+    @param drops The number of drops to start with
+*/
+static
+std::shared_ptr<SLE const>
+makeGenesisAccount (AccountID const& id,
+    std::uint64_t drops)
+{
+    std::shared_ptr<SLE> sle =
+        std::make_shared<SLE>(ltACCOUNT_ROOT,
+            getAccountRootIndex(id));
+    sle->setFieldAccount (sfAccount, id);
+    sle->setFieldAmount (sfBalance, drops);
+    sle->setFieldU32 (sfSequence, 1);
+    return sle;
+}
+
 Ledger::Ledger (RippleAddress const& masterID, std::uint64_t startAmount)
     : mTotCoins (startAmount)
-    , mLedgerSeq (1) // First Ledger
+    , seq_ (1) // First Ledger
     , mCloseTime (0)
     , mParentCloseTime (0)
     , mCloseResolution (ledgerDefaultTimeResolution)
@@ -62,18 +83,12 @@ Ledger::Ledger (RippleAddress const& masterID, std::uint64_t startAmount)
     , mAccountStateMap (std::make_shared <SHAMap> (SHAMapType::STATE,
         getApp().family(), deprecatedLogs().journal("SHAMap")))
 {
-    // special case: put coins in root account
-    auto startAccount = std::make_shared<AccountState> (masterID);
-    auto& sle = startAccount->peekSLE ();
-    sle.setFieldAmount (sfBalance, startAmount);
-    sle.setFieldU32 (sfSequence, 1);
-
+    auto const sle = makeGenesisAccount(
+        masterID.getAccountID(), startAmount);
     WriteLog (lsTRACE, Ledger)
-            << "root account: " << startAccount->peekSLE ().getJson (0);
-
-    writeBack (lepCREATE, startAccount->getSLE ());
-
-    mAccountStateMap->flushDirty (hotACCOUNT_NODE, mLedgerSeq);
+            << "root account: " << sle->getJson(0);
+    insert(*sle);
+    mAccountStateMap->flushDirty (hotACCOUNT_NODE, seq_);
 }
 
 Ledger::Ledger (uint256 const& parentHash,
@@ -90,7 +105,7 @@ Ledger::Ledger (uint256 const& parentHash,
     , mTransHash (transHash)
     , mAccountHash (accountHash)
     , mTotCoins (totCoins)
-    , mLedgerSeq (ledgerSeq)
+    , seq_ (ledgerSeq)
     , mCloseTime (closeTime)
     , mParentCloseTime (parentCloseTime)
     , mCloseResolution (closeResolution)
@@ -124,11 +139,11 @@ Ledger::Ledger (uint256 const& parentHash,
 }
 
 // Create a new ledger that's a snapshot of this one
-Ledger::Ledger (Ledger& ledger,
+Ledger::Ledger (Ledger const& ledger,
                 bool isMutable)
     : mParentHash (ledger.mParentHash)
     , mTotCoins (ledger.mTotCoins)
-    , mLedgerSeq (ledger.mLedgerSeq)
+    , seq_ (ledger.seq_)
     , mCloseTime (ledger.mCloseTime)
     , mParentCloseTime (ledger.mParentCloseTime)
     , mCloseResolution (ledger.mCloseResolution)
@@ -147,7 +162,7 @@ Ledger::Ledger (Ledger& ledger,
 Ledger::Ledger (bool /* dummy */,
                 Ledger& prevLedger)
     : mTotCoins (prevLedger.mTotCoins)
-    , mLedgerSeq (prevLedger.mLedgerSeq + 1)
+    , seq_ (prevLedger.seq_ + 1)
     , mParentCloseTime (prevLedger.mCloseTime)
     , mCloseResolution (prevLedger.mCloseResolution)
     , mCloseFlags (0)
@@ -163,7 +178,7 @@ Ledger::Ledger (bool /* dummy */,
     assert (mParentHash.isNonZero ());
 
     mCloseResolution = getNextLedgerTimeResolution (prevLedger.mCloseResolution,
-        prevLedger.getCloseAgree (), mLedgerSeq);
+        prevLedger.getCloseAgree (), seq_);
 
     if (prevLedger.mCloseTime == 0)
     {
@@ -186,7 +201,7 @@ Ledger::Ledger (void const* data,
 
 Ledger::Ledger (std::uint32_t ledgerSeq, std::uint32_t closeTime)
     : mTotCoins (0)
-    , mLedgerSeq (ledgerSeq)
+    , seq_ (ledgerSeq)
     , mCloseTime (closeTime)
     , mParentCloseTime (0)
     , mCloseResolution (ledgerDefaultTimeResolution)
@@ -205,15 +220,6 @@ Ledger::Ledger (std::uint32_t ledgerSeq, std::uint32_t closeTime)
 
 Ledger::~Ledger ()
 {
-    if (mTransactionMap)
-    {
-        logTimedDestroy <Ledger> (mTransactionMap, "mTransactionMap");
-    }
-
-    if (mAccountStateMap)
-    {
-        logTimedDestroy <Ledger> (mAccountStateMap, "mAccountStateMap");
-    }
 }
 
 void Ledger::setImmutable ()
@@ -230,9 +236,9 @@ void Ledger::setImmutable ()
         mAccountStateMap->setImmutable ();
 }
 
-void Ledger::updateHash ()
+void Ledger::updateHash()
 {
-    if (!mImmutable)
+    if (! mImmutable)
     {
         if (mTransactionMap)
             mTransHash = mTransactionMap->getHash ();
@@ -245,11 +251,18 @@ void Ledger::updateHash ()
             mAccountHash.zero ();
     }
 
-    // VFALCO TODO Fix this hard coded magic number 122
-    Serializer s (122);
-    s.add32 (HashPrefix::ledgerMaster);
-    addRaw (s);
-    mHash = s.getSHA512Half ();
+    // VFALCO This has to match addRaw
+    mHash = sha512Half(
+        HashPrefix::ledgerMaster,
+        std::uint32_t(seq_),
+        std::uint64_t(mTotCoins),
+        mParentHash,
+        mTransHash,
+        mAccountHash,
+        std::uint32_t(mParentCloseTime),
+        std::uint32_t(mCloseTime),
+        std::uint8_t(mCloseResolution),
+        std::uint8_t(mCloseFlags));
     mValidHash = true;
 }
 
@@ -258,7 +271,7 @@ void Ledger::setRaw (SerialIter& sit, bool hasPrefix)
     if (hasPrefix)
         sit.get32 ();
 
-    mLedgerSeq =        sit.get32 ();
+    seq_ =        sit.get32 ();
     mTotCoins =         sit.get64 ();
     mParentHash =       sit.get256 ();
     mTransHash =        sit.get256 ();
@@ -268,19 +281,15 @@ void Ledger::setRaw (SerialIter& sit, bool hasPrefix)
     mCloseResolution =  sit.get8 ();
     mCloseFlags =       sit.get8 ();
     updateHash ();
-
-    if (mValidHash)
-    {
-        mTransactionMap = std::make_shared<SHAMap> (SHAMapType::TRANSACTION, mTransHash,
-            getApp().family(), deprecatedLogs().journal("SHAMap"));
-        mAccountStateMap = std::make_shared<SHAMap> (SHAMapType::STATE, mAccountHash,
-            getApp().family(), deprecatedLogs().journal("SHAMap"));
-    }
+    mTransactionMap = std::make_shared<SHAMap> (SHAMapType::TRANSACTION, mTransHash,
+        getApp().family(), deprecatedLogs().journal("SHAMap"));
+    mAccountStateMap = std::make_shared<SHAMap> (SHAMapType::STATE, mAccountHash,
+        getApp().family(), deprecatedLogs().journal("SHAMap"));
 }
 
 void Ledger::addRaw (Serializer& s) const
 {
-    s.add32 (mLedgerSeq);
+    s.add32 (seq_);
     s.add64 (mTotCoins);
     s.add256 (mParentHash);
     s.add256 (mTransHash);
@@ -316,34 +325,10 @@ void Ledger::setAccepted ()
     setImmutable ();
 }
 
-bool Ledger::hasAccount (RippleAddress const& accountID) const
-{
-    return mAccountStateMap->hasItem (getAccountRootIndex (accountID));
-}
-
 bool Ledger::addSLE (SLE const& sle)
 {
     SHAMapItem item (sle.getIndex(), sle.getSerializer());
     return mAccountStateMap->addItem(item, false, false);
-}
-
-AccountState::pointer Ledger::getAccountState (RippleAddress const& accountID) const
-{
-    SLE::pointer sle = getSLEi (getAccountRootIndex (accountID));
-
-    if (!sle)
-    {
-        WriteLog (lsDEBUG, Ledger) << "Ledger:getAccountState:" <<
-            " not found: " << accountID.humanAccountID () <<
-            ": " << to_string (getAccountRootIndex (accountID));
-
-        return AccountState::pointer ();
-    }
-
-    if (sle->getType () != ltACCOUNT_ROOT)
-        return AccountState::pointer ();
-
-    return std::make_shared<AccountState> (sle, accountID);
 }
 
 bool Ledger::addTransaction (uint256 const& txID, const Serializer& txn)
@@ -402,7 +387,7 @@ Transaction::pointer Ledger::getTransaction (uint256 const& transID) const
         Blob txnData;
         int txnLength;
 
-        if (!item->peekSerializer ().getVL (txnData, 0, txnLength))
+        if (!item->peekSerializer().getVL (txnData, 0, txnLength))
             return Transaction::pointer ();
 
         txn = Transaction::sharedTransaction (txnData, Validate::NO);
@@ -414,7 +399,7 @@ Transaction::pointer Ledger::getTransaction (uint256 const& transID) const
     }
 
     if (txn->getStatus () == NEW)
-        txn->setStatus (mClosed ? COMMITTED : INCLUDED, mLedgerSeq);
+        txn->setStatus (mClosed ? COMMITTED : INCLUDED, seq_);
 
     getApp().getMasterTransaction ().canonicalize (&txn);
     return txn;
@@ -423,15 +408,16 @@ Transaction::pointer Ledger::getTransaction (uint256 const& transID) const
 STTx::pointer Ledger::getSTransaction (
     std::shared_ptr<SHAMapItem> const& item, SHAMapTreeNode::TNType type)
 {
-    SerialIter sit (item->peekSerializer ());
+    SerialIter sit (item->slice());
 
     if (type == SHAMapTreeNode::tnTRANSACTION_NM)
         return std::make_shared<STTx> (sit);
 
     if (type == SHAMapTreeNode::tnTRANSACTION_MD)
     {
-        Serializer sTxn (sit.getVL ());
-        SerialIter tSit (sTxn);
+        // VFALCO This is making a needless copy
+        auto const vl = sit.getVL();
+        SerialIter tSit (make_Slice(vl));
         return std::make_shared<STTx> (tSit);
     }
 
@@ -442,7 +428,7 @@ STTx::pointer Ledger::getSMTransaction (
     std::shared_ptr<SHAMapItem> const& item, SHAMapTreeNode::TNType type,
     TransactionMetaSet::pointer& txMeta) const
 {
-    SerialIter sit (item->peekSerializer ());
+    SerialIter sit (item->slice());
 
     if (type == SHAMapTreeNode::tnTRANSACTION_NM)
     {
@@ -451,11 +437,12 @@ STTx::pointer Ledger::getSMTransaction (
     }
     else if (type == SHAMapTreeNode::tnTRANSACTION_MD)
     {
-        Serializer sTxn (sit.getVL ());
-        SerialIter tSit (sTxn);
+        // VFALCO This is making a needless copy
+        auto const vl = sit.getVL();
+        SerialIter tSit (make_Slice(vl));
 
         txMeta = std::make_shared<TransactionMetaSet> (
-            item->getTag (), mLedgerSeq, sit.getVL ());
+            item->key(), seq_, sit.getVL ());
         return std::make_shared<STTx> (tSit);
     }
 
@@ -488,7 +475,7 @@ bool Ledger::getTransaction (
     else if (type == SHAMapTreeNode::tnTRANSACTION_MD)
     {
         // in tree with metadata
-        SerialIter it (item->peekSerializer ());
+        SerialIter it (item->slice());
         txn = getApp().getMasterTransaction ().fetch (txID, false);
 
         if (!txn)
@@ -497,13 +484,13 @@ bool Ledger::getTransaction (
             it.getVL (); // skip transaction
 
         meta = std::make_shared<TransactionMetaSet> (
-            txID, mLedgerSeq, it.getVL ());
+            txID, seq_, it.getVL ());
     }
     else
         return false;
 
     if (txn->getStatus () == NEW)
-        txn->setStatus (mClosed ? COMMITTED : INCLUDED, mLedgerSeq);
+        txn->setStatus (mClosed ? COMMITTED : INCLUDED, seq_);
 
     getApp().getMasterTransaction ().canonicalize (&txn);
     return true;
@@ -521,9 +508,9 @@ bool Ledger::getTransactionMeta (
     if (type != SHAMapTreeNode::tnTRANSACTION_MD)
         return false;
 
-    SerialIter it (item->peekSerializer ());
+    SerialIter it (item->slice());
     it.getVL (); // skip transaction
-    meta = std::make_shared<TransactionMetaSet> (txID, mLedgerSeq, it.getVL ());
+    meta = std::make_shared<TransactionMetaSet> (txID, seq_, it.getVL ());
 
     return true;
 }
@@ -539,18 +526,17 @@ bool Ledger::getMetaHex (uint256 const& transID, std::string& hex) const
     if (type != SHAMapTreeNode::tnTRANSACTION_MD)
         return false;
 
-    SerialIter it (item->peekSerializer ());
+    SerialIter it (item->slice());
     it.getVL (); // skip transaction
     hex = strHex (it.getVL ());
     return true;
 }
 
 uint256 const&
-Ledger::getHash ()
+Ledger::getHash()
 {
-    if (!mValidHash)
-        updateHash ();
-
+    if (! mValidHash)
+        updateHash();
     return mHash;
 }
 
@@ -591,7 +577,7 @@ bool Ledger::saveValidatedLedger (bool current)
         WriteLog (lsFATAL, Ledger) << "sAL: " << getAccountHash ()
                                    << " != " << mAccountStateMap->getHash ();
         WriteLog (lsFATAL, Ledger) << "saveAcceptedLedger: seq="
-                                   << mLedgerSeq << ", current=" << current;
+                                   << seq_ << ", current=" << current;
         assert (false);
     }
 
@@ -614,7 +600,7 @@ bool Ledger::saveValidatedLedger (bool current)
     catch (...)
     {
         WriteLog (lsWARNING, Ledger) << "An accepted ledger was missing nodes";
-        getApp().getLedgerMaster().failedSave(mLedgerSeq, mHash);
+        getApp().getLedgerMaster().failedSave(seq_, mHash);
         // Clients can now trust the database for information about this
         // ledger sequence.
         getApp().pendingSaves().erase(getLedgerSeq());
@@ -623,7 +609,7 @@ bool Ledger::saveValidatedLedger (bool current)
 
     {
         auto db = getApp().getLedgerDB ().checkoutDb();
-        *db << boost::str (deleteLedger % mLedgerSeq);
+        *db << boost::str (deleteLedger % seq_);
     }
 
     {
@@ -689,7 +675,7 @@ bool Ledger::saveValidatedLedger (bool current)
             }
             else
                 WriteLog (lsWARNING, Ledger)
-                    << "Transaction in ledger " << mLedgerSeq
+                    << "Transaction in ledger " << seq_
                     << " affects no accounts";
 
             *db <<
@@ -706,7 +692,7 @@ bool Ledger::saveValidatedLedger (bool current)
 
         // TODO(tom): ARG!
         *db << boost::str (addLedger %
-                           to_string (getHash ()) % mLedgerSeq % to_string (mParentHash) %
+                           to_string (getHash ()) % seq_ % to_string (mParentHash) %
                            beast::lexicalCastThrow <std::string> (mTotCoins) % mCloseTime %
                            mParentCloseTime % mCloseResolution % mCloseFlags %
                            to_string (mAccountHash) % to_string (mTransHash));
@@ -726,7 +712,7 @@ bool Ledger::saveValidatedLedger (bool current)
  * @return The ledger, ledger sequence, and ledger hash.
  */
 std::tuple<Ledger::pointer, std::uint32_t, uint256>
-loadHelper(std::string const& sqlSuffix)
+loadLedgerHelper(std::string const& sqlSuffix)
 {
     Ledger::pointer ledger;
     uint256 ledgerHash;
@@ -817,7 +803,7 @@ Ledger::pointer Ledger::loadByIndex (std::uint32_t ledgerIndex)
         std::ostringstream s;
         s << "WHERE LedgerSeq = " << ledgerIndex;
         std::tie (ledger, std::ignore, std::ignore) =
-            loadHelper (s.str ());
+            loadLedgerHelper (s.str ());
     }
 
     finishLoadByIndexOrHash (ledger);
@@ -831,7 +817,7 @@ Ledger::pointer Ledger::loadByHash (uint256 const& ledgerHash)
         std::ostringstream s;
         s << "WHERE LedgerHash = '" << ledgerHash << "'";
         std::tie (ledger, std::ignore, std::ignore) =
-            loadHelper (s.str ());
+            loadLedgerHelper (s.str ());
     }
 
     finishLoadByIndexOrHash (ledger);
@@ -935,52 +921,6 @@ Ledger::getHashesByIndex (std::uint32_t minSeq, std::uint32_t maxSeq)
     return ret;
 }
 
-Ledger::pointer Ledger::getLastFullLedger ()
-{
-    try
-    {
-        Ledger::pointer ledger;
-        std::uint32_t ledgerSeq;
-        uint256 ledgerHash;
-        std::tie (ledger, ledgerSeq, ledgerHash) =
-                loadHelper ("order by LedgerSeq desc limit 1");
-
-        if (!ledger)
-            return ledger;
-
-        ledger->setClosed ();
-
-        if (getApp().getOPs ().haveLedger (ledgerSeq))
-        {
-            ledger->setAccepted ();
-            ledger->setValidated ();
-        }
-
-        if (ledger->getHash () != ledgerHash)
-        {
-            if (ShouldLog (lsERROR, Ledger))
-            {
-                WriteLog (lsERROR, Ledger) << "Failed on ledger";
-                Json::Value p;
-                addJson (p, {*ledger, LedgerFill::full});
-                WriteLog (lsERROR, Ledger) << p;
-            }
-
-            assert (false);
-            return Ledger::pointer ();
-        }
-
-        WriteLog (lsTRACE, Ledger) << "Loaded ledger: " << ledgerHash;
-        return ledger;
-    }
-    catch (SHAMapMissingNode& sn)
-    {
-        WriteLog (lsWARNING, Ledger)
-                << "Database contains ledger with missing nodes: " << sn;
-        return Ledger::pointer ();
-    }
-}
-
 void Ledger::setAcquiring (void)
 {
     if (!mTransactionMap || !mAccountStateMap)
@@ -1016,56 +956,71 @@ void Ledger::setCloseTime (boost::posix_time::ptime ptm)
     mCloseTime = iToSeconds (ptm);
 }
 
-LedgerStateParms Ledger::writeBack (LedgerStateParms parms, SLE::ref entry)
+//------------------------------------------------------------------------------
+
+bool
+Ledger::exists (uint256 const& key) const
 {
-    bool create = false;
-
-    if (!mAccountStateMap->hasItem (entry->getIndex ()))
-    {
-        if ((parms & lepCREATE) == 0)
-        {
-            WriteLog (lsERROR, Ledger)
-                << "WriteBack non-existent node without create";
-            return lepMISSING;
-        }
-
-        create = true;
-    }
-
-    auto item = std::make_shared<SHAMapItem> (entry->getIndex ());
-    entry->add (item->peekSerializer ());
-
-    if (create)
-    {
-        assert (!mAccountStateMap->hasItem (entry->getIndex ()));
-
-        if (!mAccountStateMap->addGiveItem (item, false, false))
-        {
-            assert (false);
-            return lepERROR;
-        }
-
-        return lepCREATED;
-    }
-
-    if (!mAccountStateMap->updateGiveItem (item, false, false))
-    {
-        assert (false);
-        return lepERROR;
-    }
-
-    return lepOKAY;
+    return mAccountStateMap->hasItem(key);
 }
 
-SLE::pointer Ledger::getSLE (uint256 const& uHash) const
+std::shared_ptr<SHAMapItem const>
+Ledger::find (uint256 const& key) const
 {
-    std::shared_ptr<SHAMapItem> node = mAccountStateMap->peekItem (uHash);
-
-    if (!node)
-        return SLE::pointer ();
-
-    return std::make_shared<SLE> (node->peekSerializer (), node->getTag ());
+    return mAccountStateMap->peekItem(key);
 }
+
+void
+Ledger::insert (SLE const& sle)
+{
+    assert(! mAccountStateMap->hasItem(sle.getIndex()));
+    auto item = std::make_shared<SHAMapItem>(
+        sle.getIndex());
+    sle.add(item->peekSerializer());
+    auto const success =
+        mAccountStateMap->addGiveItem(
+            item, false, false);
+    (void)success;
+    assert(success);
+}
+
+std::shared_ptr<SLE>
+Ledger::fetch (uint256 const& key,
+    boost::optional<LedgerEntryType> type) const
+{
+    auto const item =
+        mAccountStateMap->peekItem(key);
+    if (! item)
+        return nullptr;
+    auto const sle = std::make_shared<SLE>(
+        item->peekSerializer(), item->getTag());
+    if (type && sle->getType() != type)
+        return nullptr;
+    return sle;
+}
+
+void
+Ledger::replace (SLE const& sle)
+{
+    assert(mAccountStateMap->hasItem(sle.getIndex()));
+    auto item = std::make_shared<SHAMapItem>(
+        sle.getIndex());
+    sle.add(item->peekSerializer());
+    auto const success =
+        mAccountStateMap->updateGiveItem(
+            item, false, false);
+    (void)success;
+    assert(success);
+}
+
+void
+Ledger::erase (uint256 const& key)
+{
+    assert(mAccountStateMap->hasItem(key));
+    mAccountStateMap->delItem(key);
+}
+
+//------------------------------------------------------------------------------
 
 SLE::pointer Ledger::getSLEi (uint256 const& uId) const
 {
@@ -1080,7 +1035,7 @@ SLE::pointer Ledger::getSLEi (uint256 const& uId) const
 
     if (!ret)
     {
-        ret = std::make_shared<SLE> (node->peekSerializer (), node->getTag ());
+        ret = std::make_shared<SLE> (node->peekSerializer (), node->key());
         ret->setImmutable ();
         getApp().getSLECache ().canonicalize (hash, ret);
     }
@@ -1088,122 +1043,10 @@ SLE::pointer Ledger::getSLEi (uint256 const& uId) const
     return ret;
 }
 
-void Ledger::visitAccountItems (
-    Account const& accountID, std::function<void (SLE::ref)> func) const
-{
-    // Visit each item in this account's owner directory
-    uint256 rootIndex       = getOwnerDirIndex (accountID);
-    uint256 currentIndex    = rootIndex;
-
-    while (1)
-    {
-        SLE::pointer ownerDir   = getSLEi (currentIndex);
-
-        if (!ownerDir || (ownerDir->getType () != ltDIR_NODE))
-            return;
-
-        for (auto const& node : ownerDir->getFieldV256 (sfIndexes))
-        {
-            func (getSLEi (node));
-        }
-
-        std::uint64_t uNodeNext = ownerDir->getFieldU64 (sfIndexNext);
-
-        if (!uNodeNext)
-            return;
-
-        currentIndex = getDirNodeIndex (rootIndex, uNodeNext);
-    }
-
-}
-
-bool Ledger::visitAccountItems (
-    Account const& accountID,
-    uint256 const& startAfter,
-    std::uint64_t const hint,
-    unsigned int limit,
-    std::function <bool (SLE::ref)> func) const
-{
-    // Visit each item in this account's owner directory
-    uint256 const rootIndex (getOwnerDirIndex (accountID));
-    uint256 currentIndex (rootIndex);
-
-    // If startAfter is not zero try jumping to that page using the hint
-    if (startAfter.isNonZero ())
-    {
-        uint256 const hintIndex (getDirNodeIndex (rootIndex, hint));
-        SLE::pointer hintDir (getSLEi (hintIndex));
-        if (hintDir != nullptr)
-        {
-            for (auto const& node : hintDir->getFieldV256 (sfIndexes))
-            {
-                if (node == startAfter)
-                {
-                    // We found the hint, we can start here
-                    currentIndex = hintIndex;
-                    break;
-                }
-            }
-        }
-
-        bool found (false);
-        for (;;)
-        {
-            SLE::pointer ownerDir (getSLEi (currentIndex));
-
-            if (! ownerDir || ownerDir->getType () != ltDIR_NODE)
-                return found;
-
-            for (auto const& node : ownerDir->getFieldV256 (sfIndexes))
-            {
-                if (!found)
-                {
-                    if (node == startAfter)
-                        found = true;
-                }
-                else if (func (getSLEi (node)) && limit-- <= 1)
-                {
-                    return found;
-                }
-            }
-
-            std::uint64_t const uNodeNext (ownerDir->getFieldU64 (sfIndexNext));
-
-            if (uNodeNext == 0)
-                return found;
-
-            currentIndex = getDirNodeIndex (rootIndex, uNodeNext);
-        }
-    }
-    else
-    {
-        for (;;)
-        {
-            SLE::pointer ownerDir (getSLEi (currentIndex));
-
-            if (! ownerDir || ownerDir->getType () != ltDIR_NODE)
-                return true;
-
-            for (auto const& node : ownerDir->getFieldV256 (sfIndexes))
-            {
-                if (func (getSLEi (node)) && limit-- <= 1)
-                    return true;
-            }
-
-            std::uint64_t const uNodeNext (ownerDir->getFieldU64 (sfIndexNext));
-
-            if (uNodeNext == 0)
-                return true;
-
-            currentIndex = getDirNodeIndex (rootIndex, uNodeNext);
-        }
-    }
-}
-
 static void visitHelper (
     std::function<void (SLE::ref)>& function, std::shared_ptr<SHAMapItem> const& item)
 {
-    function (std::make_shared<SLE> (item->peekSerializer (), item->getTag ()));
+    function (std::make_shared<SLE> (item->peekSerializer(), item->key()));
 }
 
 void Ledger::visitStateItems (std::function<void (SLE::ref)> function) const
@@ -1222,245 +1065,20 @@ void Ledger::visitStateItems (std::function<void (SLE::ref)> function) const
         if (mHash.isNonZero ())
         {
             getApp().getInboundLedgers().acquire(
-                mHash, mLedgerSeq, InboundLedger::fcGENERIC);
+                mHash, seq_, InboundLedger::fcGENERIC);
         }
         throw;
     }
 }
 
-uint256 Ledger::getFirstLedgerIndex () const
+uint256 Ledger::getNextLedgerIndex (uint256 const& hash,
+    boost::optional<uint256> const& last) const
 {
-    std::shared_ptr<SHAMapItem> node = mAccountStateMap->peekFirstItem ();
-    return node ? node->getTag () : uint256 ();
-}
-
-uint256 Ledger::getLastLedgerIndex () const
-{
-    std::shared_ptr<SHAMapItem> node = mAccountStateMap->peekLastItem ();
-    return node ? node->getTag () : uint256 ();
-}
-
-uint256 Ledger::getNextLedgerIndex (uint256 const& uHash) const
-{
-    std::shared_ptr<SHAMapItem> node = mAccountStateMap->peekNextItem (uHash);
-    return node ? node->getTag () : uint256 ();
-}
-
-uint256 Ledger::getNextLedgerIndex (uint256 const& uHash, uint256 const& uEnd) const
-{
-    std::shared_ptr<SHAMapItem> node = mAccountStateMap->peekNextItem (uHash);
-
-    if ((!node) || (node->getTag () > uEnd))
-        return uint256 ();
-
-    return node->getTag ();
-}
-
-uint256 Ledger::getPrevLedgerIndex (uint256 const& uHash) const
-{
-    std::shared_ptr<SHAMapItem> node = mAccountStateMap->peekPrevItem (uHash);
-    return node ? node->getTag () : uint256 ();
-}
-
-uint256 Ledger::getPrevLedgerIndex (uint256 const& uHash, uint256 const& uBegin) const
-{
-    std::shared_ptr<SHAMapItem> node = mAccountStateMap->peekNextItem (uHash);
-
-    if ((!node) || (node->getTag () < uBegin))
-        return uint256 ();
-
-    return node->getTag ();
-}
-
-SLE::pointer Ledger::getASNodeI (uint256 const& nodeID, LedgerEntryType let) const
-{
-    SLE::pointer node = getSLEi (nodeID);
-
-    if (node && (node->getType () != let))
-        node.reset ();
-
-    return node;
-}
-
-SLE::pointer Ledger::getASNode (
-    LedgerStateParms& parms, uint256 const& nodeID, LedgerEntryType let) const
-{
-    std::shared_ptr<SHAMapItem> account = mAccountStateMap->peekItem (nodeID);
-
-    if (!account)
-    {
-        if ( (parms & lepCREATE) == 0 )
-        {
-            parms = lepMISSING;
-
-            return SLE::pointer ();
-        }
-
-        parms = parms | lepCREATED | lepOKAY;
-        SLE::pointer sle = std::make_shared<SLE> (let, nodeID);
-
-        return sle;
-    }
-
-    SLE::pointer sle =
-        std::make_shared<SLE> (account->peekSerializer (), nodeID);
-
-    if (sle->getType () != let)
-    {
-        // maybe it's a currency or something
-        parms = parms | lepWRONGTYPE;
-        return SLE::pointer ();
-    }
-
-    parms = parms | lepOKAY;
-
-    return sle;
-}
-
-SLE::pointer Ledger::getAccountRoot (Account const& accountID) const
-{
-    return getASNodeI (getAccountRootIndex (accountID), ltACCOUNT_ROOT);
-}
-
-SLE::pointer Ledger::getAccountRoot (RippleAddress const& naAccountID) const
-{
-    return getASNodeI (getAccountRootIndex (
-        naAccountID.getAccountID ()), ltACCOUNT_ROOT);
-}
-
-SLE::pointer Ledger::getDirNode (uint256 const& uNodeIndex) const
-{
-    return getASNodeI (uNodeIndex, ltDIR_NODE);
-}
-
-SLE::pointer
-Ledger::getOffer (uint256 const& uIndex) const
-{
-    return getASNodeI (uIndex, ltOFFER);
-}
-
-SLE::pointer
-Ledger::getOffer (Account const& account, std::uint32_t uSequence) const
-{
-    return getOffer (getOfferIndex (account, uSequence));
-}
-
-SLE::pointer
-Ledger::getRippleState (uint256 const& uNode) const
-{
-    return getASNodeI (uNode, ltRIPPLE_STATE);
-}
-
-SLE::pointer
-Ledger::getRippleState (
-    Account const& a, Account const& b, Currency const& currency) const
-{
-    return getRippleState (getRippleStateIndex (a, b, currency));
-}
-
-uint256 Ledger::getLedgerHash (std::uint32_t ledgerIndex)
-{
-    // Return the hash of the specified ledger, 0 if not available
-
-    // Easy cases...
-    if (ledgerIndex > mLedgerSeq)
-    {
-        WriteLog (lsWARNING, Ledger) << "Can't get seq " << ledgerIndex
-                                     << " from " << mLedgerSeq << " future";
-        return uint256 ();
-    }
-
-    if (ledgerIndex == mLedgerSeq)
-        return getHash ();
-
-    if (ledgerIndex == (mLedgerSeq - 1))
-        return mParentHash;
-
-    // Within 256...
-    int diff = mLedgerSeq - ledgerIndex;
-
-    if (diff <= 256)
-    {
-        auto hashIndex = getSLEi (getLedgerHashIndex ());
-
-        if (hashIndex)
-        {
-            assert (hashIndex->getFieldU32 (sfLastLedgerSequence) ==
-                    (mLedgerSeq - 1));
-            STVector256 vec = hashIndex->getFieldV256 (sfHashes);
-
-            if (vec.size () >= diff)
-                return vec[vec.size () - diff];
-
-            WriteLog (lsWARNING, Ledger)
-                    << "Ledger " << mLedgerSeq
-                    << " missing hash for " << ledgerIndex
-                    << " (" << vec.size () << "," << diff << ")";
-        }
-        else
-        {
-            WriteLog (lsWARNING, Ledger)
-                    << "Ledger " << mLedgerSeq
-                    << ":" << getHash () << " missing normal list";
-        }
-    }
-
-    if ((ledgerIndex & 0xff) != 0)
-    {
-        WriteLog (lsDEBUG, Ledger) << "Can't get seq " << ledgerIndex
-                                     << " from " << mLedgerSeq << " past";
-        return uint256 ();
-    }
-
-    // in skiplist
-    auto hashIndex = getSLEi (getLedgerHashIndex (ledgerIndex));
-
-    if (hashIndex)
-    {
-        int lastSeq = hashIndex->getFieldU32 (sfLastLedgerSequence);
-        assert (lastSeq >= ledgerIndex);
-        assert ((lastSeq & 0xff) == 0);
-        int sDiff = (lastSeq - ledgerIndex) >> 8;
-
-        STVector256 vec = hashIndex->getFieldV256 (sfHashes);
-
-        if (vec.size () > sDiff)
-            return vec[vec.size () - sDiff - 1];
-    }
-
-    WriteLog (lsWARNING, Ledger) << "Can't get seq " << ledgerIndex
-                                 << " from " << mLedgerSeq << " error";
-    return uint256 ();
-}
-
-Ledger::LedgerHashes Ledger::getLedgerHashes () const
-{
-    LedgerHashes ret;
-    SLE::pointer hashIndex = getSLEi (getLedgerHashIndex ());
-
-    if (hashIndex)
-    {
-        STVector256 vec = hashIndex->getFieldV256 (sfHashes);
-        int size = vec.size ();
-        ret.reserve (size);
-        auto seq = hashIndex->getFieldU32 (sfLastLedgerSequence) - size;
-
-        for (int i = 0; i < size; ++i)
-            ret.push_back (std::make_pair (++seq, vec[i]));
-    }
-
-    return ret;
-}
-
-std::vector<uint256> Ledger::getLedgerAmendments () const
-{
-    std::vector<uint256> amendments;
-    SLE::pointer sleAmendments = getSLEi (getLedgerAmendmentIndex ());
-
-    if (sleAmendments)
-        amendments = static_cast<decltype(amendments)> (sleAmendments->getFieldV256 (sfAmendments));
-
-    return amendments;
+    auto const node =
+        mAccountStateMap->peekNextItem(hash);
+    if ((! node) || (last && node->key() >= *last))
+        return {};
+    return node->key();
 }
 
 bool Ledger::walkLedger () const
@@ -1509,7 +1127,7 @@ bool Ledger::walkLedger () const
     return missingNodes1.empty () && missingNodes2.empty ();
 }
 
-bool Ledger::assertSane () const
+bool Ledger::assertSane ()
 {
     if (mHash.isNonZero () &&
             mAccountHash.isNonZero () &&
@@ -1534,72 +1152,72 @@ bool Ledger::assertSane () const
 }
 
 // update the skip list with the information from our previous ledger
+// VFALCO TODO Document this skip list concept
 void Ledger::updateSkipList ()
 {
-    if (mLedgerSeq == 0) // genesis ledger has no previous ledger
+    if (seq_ == 0) // genesis ledger has no previous ledger
         return;
 
-    std::uint32_t prevIndex = mLedgerSeq - 1;
+    std::uint32_t prevIndex = seq_ - 1;
 
     // update record of every 256th ledger
     if ((prevIndex & 0xff) == 0)
     {
-        uint256 hash = getLedgerHashIndex (prevIndex);
-        SLE::pointer skipList = getSLE (hash);
+        auto const key = getLedgerHashIndex(prevIndex);
+        auto sle = fetch(key, ltLEDGER_HASHES);
         std::vector<uint256> hashes;
 
-        // VFALCO TODO Document this skip list concept
-        if (!skipList)
-            skipList = std::make_shared<SLE> (ltLEDGER_HASHES, hash);
+        bool created;
+        if (! sle)
+        {
+            sle = std::make_shared<SLE>(
+                ltLEDGER_HASHES, key);
+            created = true;
+        }
         else
-            hashes = static_cast<decltype(hashes)> (skipList->getFieldV256 (sfHashes));
+        {
+            hashes = static_cast<decltype(hashes)>(
+                sle->getFieldV256(sfHashes));
+            created = false;
+        }
 
         assert (hashes.size () <= 256);
         hashes.push_back (mParentHash);
-        skipList->setFieldV256 (sfHashes, STVector256 (hashes));
-        skipList->setFieldU32 (sfLastLedgerSequence, prevIndex);
-
-        if (writeBack (lepCREATE, skipList) == lepERROR)
-        {
-            assert (false);
-        }
+        sle->setFieldV256 (sfHashes, STVector256 (hashes));
+        sle->setFieldU32 (sfLastLedgerSequence, prevIndex);
+        if (created)
+            insert(*sle);
+        else
+            replace(*sle);
     }
 
     // update record of past 256 ledger
-    uint256 hash = getLedgerHashIndex ();
-
-    SLE::pointer skipList = getSLE (hash);
-
+    auto const key = getLedgerHashIndex();
+    auto sle = fetch(key, ltLEDGER_HASHES);
     std::vector <uint256> hashes;
-
-    if (!skipList)
-        skipList = std::make_shared<SLE> (ltLEDGER_HASHES, hash);
+    bool created;
+    if (! sle)
+    {
+        sle = std::make_shared<SLE>(
+            ltLEDGER_HASHES, key);
+        created = true;
+    }
     else
-        hashes = static_cast<decltype(hashes)>(skipList->getFieldV256 (sfHashes));
-
+    {
+        hashes = static_cast<decltype(hashes)>(
+            sle->getFieldV256 (sfHashes));
+        created = false;
+    }
     assert (hashes.size () <= 256);
-
     if (hashes.size () == 256)
         hashes.erase (hashes.begin ());
-
     hashes.push_back (mParentHash);
-    skipList->setFieldV256 (sfHashes, STVector256 (hashes));
-    skipList->setFieldU32 (sfLastLedgerSequence, prevIndex);
-
-    if (writeBack (lepCREATE, skipList) == lepERROR)
-    {
-        assert (false);
-    }
-}
-
-std::uint32_t Ledger::roundCloseTime (
-    std::uint32_t closeTime, std::uint32_t closeResolution)
-{
-    if (closeTime == 0)
-        return 0;
-
-    closeTime += (closeResolution / 2);
-    return closeTime - (closeTime % closeResolution);
+    sle->setFieldV256 (sfHashes, STVector256 (hashes));
+    sle->setFieldU32 (sfLastLedgerSequence, prevIndex);
+    if (created)
+        insert(*sle);
+    else
+        replace(*sle);
 }
 
 /** Save, or arrange to save, a fully-validated ledger
@@ -1642,15 +1260,15 @@ bool Ledger::pendSaveValidated (bool isSynchronous, bool isCurrent)
     return true;
 }
 
-void Ledger::ownerDirDescriber (SLE::ref sle, bool, Account const& owner)
+void Ledger::ownerDirDescriber (SLE::ref sle, bool, AccountID const& owner)
 {
     sle->setFieldAccount (sfOwner, owner);
 }
 
 void Ledger::qualityDirDescriber (
     SLE::ref sle, bool isNew,
-    Currency const& uTakerPaysCurrency, Account const& uTakerPaysIssuer,
-    Currency const& uTakerGetsCurrency, Account const& uTakerGetsIssuer,
+    Currency const& uTakerPaysCurrency, AccountID const& uTakerPaysIssuer,
+    Currency const& uTakerGetsCurrency, AccountID const& uTakerGetsIssuer,
     const std::uint64_t& uRate)
 {
     sle->setFieldH160 (sfTakerPaysCurrency, uTakerPaysCurrency);
@@ -1675,9 +1293,9 @@ void Ledger::deprecatedUpdateCachedFees() const
     std::uint32_t reserveBase = getConfig ().FEE_ACCOUNT_RESERVE;
     std::int64_t reserveIncrement = getConfig ().FEE_OWNER_RESERVE;
 
-    LedgerStateParms p = lepNONE;
-    auto sle = getASNode (p, getLedgerFeeIndex (), ltFEE_SETTINGS);
-
+    // VFALCO NOTE this doesn't go through the SLECache
+    auto const sle = this->fetch(
+        getLedgerFeeIndex(), ltFEE_SETTINGS);
     if (sle)
     {
         if (sle->getFieldIndex (sfBaseFee) != -1)
@@ -1737,6 +1355,227 @@ std::vector<uint256> Ledger::getNeededAccountStateHashes (
     }
 
     return ret;
+}
+
+//------------------------------------------------------------------------------
+//
+// API
+//
+//------------------------------------------------------------------------------
+
+std::shared_ptr<SLE const>
+fetch (Ledger const& ledger, uint256 const& key,
+    SLECache& cache, boost::optional<LedgerEntryType> type)
+{
+    uint256 hash;
+    auto const item =
+        ledger.peekAccountStateMap()->peekItem(key, hash);
+    if (! item)
+        return {};
+    if (auto const sle = cache.fetch(hash))
+    {
+        if (type && sle->getType() != type)
+            return {};
+        return sle;
+    }
+    SerialIter sit(make_Slice(item->peekData()));
+    auto sle = std::make_shared<SLE>(sit, item->key());
+    // VFALCO Should we still cache it if the type doesn't match?
+    if (type && sle->getType() != type)
+        return {};
+    sle->setImmutable ();
+    cache.canonicalize(hash, sle);
+    return sle;
+}
+
+void
+forEachItem (Ledger const& ledger, AccountID const& id, SLECache& cache,
+    std::function<void(std::shared_ptr<SLE const> const&)> f)
+{
+    auto rootIndex = getOwnerDirIndex (id);
+    auto currentIndex = rootIndex;
+    for(;;)
+    {
+        auto ownerDir = fetch(
+            ledger, currentIndex, cache, ltDIR_NODE);
+        if (! ownerDir)
+            return;
+        for (auto const& key : ownerDir->getFieldV256 (sfIndexes))
+            f(fetch(ledger, key, cache));
+        auto uNodeNext =
+            ownerDir->getFieldU64 (sfIndexNext);
+        if (! uNodeNext)
+            return;
+        currentIndex = getDirNodeIndex (rootIndex, uNodeNext);
+    }
+}
+
+bool
+forEachItemAfter (Ledger const& ledger, AccountID const& id, SLECache& cache,
+    uint256 const& after, std::uint64_t const hint, unsigned int limit,
+        std::function <bool (std::shared_ptr<SLE const> const&)> f)
+{
+    auto const rootIndex = getOwnerDirIndex(id);
+    auto currentIndex = rootIndex;
+
+    // If startAfter is not zero try jumping to that page using the hint
+    if (after.isNonZero ())
+    {
+        auto const hintIndex = getDirNodeIndex (rootIndex, hint);
+        auto hintDir = fetch(ledger, hintIndex, cache);
+        if (hintDir)
+        {
+            for (auto const& key : hintDir->getFieldV256 (sfIndexes))
+            {
+                if (key == after)
+                {
+                    // We found the hint, we can start here
+                    currentIndex = hintIndex;
+                    break;
+                }
+            }
+        }
+
+        bool found = false;
+        for (;;)
+        {
+            auto const ownerDir = fetch(ledger, currentIndex, cache);
+            if (! ownerDir || ownerDir->getType () != ltDIR_NODE)
+                return found;
+            for (auto const& key : ownerDir->getFieldV256 (sfIndexes))
+            {
+                if (! found)
+                {
+                    if (key == after)
+                        found = true;
+                }
+                else if (f (fetch (ledger, key, cache)) && limit-- <= 1)
+                {
+                    return found;
+                }
+            }
+
+            auto const uNodeNext =
+                ownerDir->getFieldU64(sfIndexNext);
+            if (uNodeNext == 0)
+                return found;
+            currentIndex = getDirNodeIndex (rootIndex, uNodeNext);
+        }
+    }
+    else
+    {
+        for (;;)
+        {
+            auto const ownerDir = fetch(ledger, currentIndex, cache);
+            if (! ownerDir || ownerDir->getType () != ltDIR_NODE)
+                return true;
+            for (auto const& key : ownerDir->getFieldV256 (sfIndexes))
+                if (f (fetch(ledger, key, cache)) && limit-- <= 1)
+                    return true;
+            auto const uNodeNext =
+                ownerDir->getFieldU64 (sfIndexNext);
+            if (uNodeNext == 0)
+                return true;
+            currentIndex = getDirNodeIndex (rootIndex, uNodeNext);
+        }
+    }
+}
+
+AccountState::pointer
+getAccountState (Ledger const& ledger,
+    RippleAddress const& accountID,
+        SLECache& cache)
+{
+    auto const sle = fetch (ledger,
+        getAccountRootIndex(accountID.getAccountID()),
+            cache);
+    if (!sle)
+    {
+        // VFALCO Do we really need to log here?
+        WriteLog (lsDEBUG, Ledger) << "Ledger:getAccountState:" <<
+            " not found: " << accountID.humanAccountID () <<
+            ": " << to_string (getAccountRootIndex (accountID));
+
+        return {};
+    }
+
+    // VFALCO Does this ever really happen?
+    if (sle->getType () != ltACCOUNT_ROOT)
+        return {};
+
+    return std::make_shared<AccountState>(sle, accountID);
+}
+
+boost::optional<uint256>
+hashOfSeq (Ledger& ledger, LedgerIndex seq,
+    SLECache& cache, beast::Journal journal)
+{
+    // Easy cases...
+    if (seq > ledger.seq())
+    {
+        if (journal.warning) journal.warning <<
+            "Can't get seq " << seq <<
+            " from " << ledger.seq() << " future";
+        return boost::none;
+    }
+    if (seq == ledger.seq())
+        return ledger.getHash();
+    if (seq == (ledger.seq() - 1))
+        return ledger.getParentHash();
+
+    // Within 256...
+    {
+        int diff = ledger.seq() - seq;
+        if (diff <= 256)
+        {
+            auto const hashIndex = fetch(
+                ledger, getLedgerHashIndex(), cache);
+            if (hashIndex)
+            {
+                assert (hashIndex->getFieldU32 (sfLastLedgerSequence) ==
+                        (ledger.seq() - 1));
+                STVector256 vec = hashIndex->getFieldV256 (sfHashes);
+                if (vec.size () >= diff)
+                    return vec[vec.size () - diff];
+                if (journal.warning) journal.warning <<
+                    "Ledger " << ledger.seq() <<
+                    " missing hash for " << seq <<
+                    " (" << vec.size () << "," << diff << ")";
+            }
+            else
+            {
+                if (journal.warning) journal.warning <<
+                    "Ledger " << ledger.seq() <<
+                    ":" << ledger.getHash () << " missing normal list";
+            }
+        }
+        if ((seq & 0xff) != 0)
+        {
+            if (journal.debug) journal.debug <<
+                "Can't get seq " << seq <<
+                " from " << ledger.seq() << " past";
+            return boost::none;
+        }
+    }
+
+    // in skiplist
+    auto const hashIndex = fetch(ledger,
+        getLedgerHashIndex(seq), cache);
+    if (hashIndex)
+    {
+        auto const lastSeq =
+            hashIndex->getFieldU32 (sfLastLedgerSequence);
+        assert (lastSeq >= seq);
+        assert ((lastSeq & 0xff) == 0);
+        auto const diff = (lastSeq - seq) >> 8;
+        STVector256 vec = hashIndex->getFieldV256 (sfHashes);
+        if (vec.size () > diff)
+            return vec[vec.size () - diff - 1];
+    }
+    if (journal.warning) journal.warning <<
+        "Can't get seq " << seq <<
+        " from " << ledger.seq() << " error";
+    return boost::none;
 }
 
 } // ripple

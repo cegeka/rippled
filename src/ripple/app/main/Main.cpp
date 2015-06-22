@@ -19,6 +19,7 @@
 
 #include <BeastConfig.h>
 #include <ripple/basics/Log.h>
+#include <ripple/basics/SHA512Half.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/basics/CheckLibraryVersions.h>
 #include <ripple/basics/StringUtilities.h>
@@ -34,6 +35,7 @@
 #include <ripple/server/Role.h>
 #include <ripple/protocol/BuildInfo.h>
 #include <beast/chrono/basic_seconds_clock.h>
+#include <beast/module/core/time/Time.h>
 #include <beast/unit_test.h>
 #include <beast/utility/Debug.h>
 #include <beast/streams/debug_ostream.h>
@@ -168,7 +170,6 @@ setupConfigForUnitTests (Config& config)
     config.overwrite (ConfigSection::nodeDatabase (), "type", "memory");
     config.overwrite (ConfigSection::nodeDatabase (), "path", "main");
 
-    config.deprecatedClearSection (ConfigSection::tempNodeDatabase ());
     config.deprecatedClearSection (ConfigSection::importNodeDatabase ());
     config.legacy("database_path", "DummyForUnitTests");
 }
@@ -511,6 +512,10 @@ int main (int argc, char** argv)
     // Workaround for Boost.Context / Boost.Coroutine
     // https://svn.boost.org/trac/boost/ticket/10657
     (void)beast::Time::currentTimeMillis();
+
+#ifdef _MSC_VER
+    ripple::sha512_deprecatedMSVCWorkaround();
+#endif
 
 #if defined(__GNUC__) && !defined(__clang__)
     auto constexpr gccver = (__GNUC__ * 100 * 100) +

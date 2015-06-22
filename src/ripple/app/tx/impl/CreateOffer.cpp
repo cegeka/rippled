@@ -26,6 +26,8 @@
 #include <ripple/json/to_string.h>
 
 #include <beast/cxx14/memory.h>
+#include <beast/utility/Journal.h>
+#include <beast/utility/WrappedSink.h>
 #include <stdexcept>
 
 namespace ripple {
@@ -99,11 +101,9 @@ private:
     {
         if (offer.fully_consumed ())
             return true;
-
-        auto const funds (view.accountFunds (offer.owner(),
-            offer.amount().out, fhZERO_IF_FROZEN));
-
-        return (funds <= zero);
+        auto const amount = funds(view, offer.owner(),
+            offer.amount().out, fhZERO_IF_FROZEN);
+        return (amount <= zero);
     }
 
     static
@@ -200,7 +200,7 @@ private:
                     m_journal.debug << "     in: " << offers_direct.tip ().amount().in;
                     m_journal.debug << "    out: " << offers_direct.tip ().amount ().out;
                     m_journal.debug << "  owner: " << offers_direct.tip ().owner ();
-                    m_journal.debug << "  funds: " << view.accountFunds (
+                    m_journal.debug << "  funds: " << funds(view,
                         offers_direct.tip ().owner (),
                         offers_direct.tip ().amount ().out,
                         fhIGNORE_FREEZE);
@@ -220,12 +220,12 @@ private:
             {
                 if (m_journal.debug)
                 {
-                    auto const owner1_funds_before = view.accountFunds (
+                    auto const owner1_funds_before = funds(view,
                         offers_leg1.tip ().owner (),
                         offers_leg1.tip ().amount ().out,
                         fhIGNORE_FREEZE);
 
-                    auto const owner2_funds_before = view.accountFunds (
+                    auto const owner2_funds_before = funds(view,
                         offers_leg2.tip ().owner (),
                         offers_leg2.tip ().amount ().out,
                         fhIGNORE_FREEZE);
@@ -319,7 +319,7 @@ private:
                 m_journal.debug << "     in: " << offer.amount ().in;
                 m_journal.debug << "    out: " << offer.amount ().out;
                 m_journal.debug << "  owner: " << offer.owner ();
-                m_journal.debug << "  funds: " << view.accountFunds (
+                m_journal.debug << "  funds: " << funds(view,
                     offer.owner (), offer.amount ().out, fhIGNORE_FREEZE);
             }
 
@@ -393,20 +393,13 @@ private:
         Clock::time_point const when (
             mEngine->getLedger ()->getParentCloseTimeNC ());
 
-        Taker taker (cross_type_, view, mTxnAccountID, taker_amount, mTxn.getFlags());
+        beast::WrappedSink takerSink (m_journal, "Taker ");
+
+        Taker taker (cross_type_, view, mTxnAccountID, taker_amount,
+            mTxn.getFlags(), beast::Journal (takerSink));
 
         try
         {
-            if (m_journal.debug)
-            {
-                auto const funds = view.accountFunds (
-                    taker.account(), taker_amount.in, fhIGNORE_FREEZE);
-
-                m_journal.debug << "Crossing:";
-                m_journal.debug << "      Taker: " << to_string (mTxnAccountID);
-                m_journal.debug << "    Balance: " << format_amount (funds);
-            }
-
             if (cross_type_ == CrossType::IouToIou)
                 return bridged_cross (taker, view, cancel_view, when);
 
@@ -609,7 +602,7 @@ public:
 
             result = tecFROZEN;
         }
-        else if (view.accountFunds (
+        else if (funds(view,
             mTxnAccountID, saTakerGets, fhZERO_IF_FROZEN) <= zero)
         {
             if (m_journal.debug) m_journal.debug <<
@@ -800,7 +793,7 @@ public:
         if (result == tesSUCCESS)
         {
             // Update owner count.
-            view.incrementOwnerCount (sleCreator);
+            adjustOwnerCount(view, sleCreator, 1);
 
             if (m_journal.trace) m_journal.trace <<
                 "adding to book: " << to_string (saTakerPays.issue ()) <<
@@ -823,8 +816,7 @@ public:
 
         if (result == tesSUCCESS)
         {
-            SLE::pointer sleOffer (mEngine->view().entryCreate (ltOFFER, offer_index));
-
+            auto sleOffer = std::make_shared<SLE>(ltOFFER, offer_index);
             sleOffer->setFieldAccount (sfAccount, mTxnAccountID);
             sleOffer->setFieldU32 (sfSequence, uSequence);
             sleOffer->setFieldH256 (sfBookDirectory, uDirectory);
@@ -832,15 +824,13 @@ public:
             sleOffer->setFieldAmount (sfTakerGets, saTakerGets);
             sleOffer->setFieldU64 (sfOwnerNode, uOwnerNode);
             sleOffer->setFieldU64 (sfBookNode, uBookNode);
-
             if (uExpiration)
                 sleOffer->setFieldU32 (sfExpiration, uExpiration);
-
             if (bPassive)
                 sleOffer->setFlag (lsfPassive);
-
             if (bSell)
                 sleOffer->setFlag (lsfSell);
+            mEngine->view().entryCreate(sleOffer);
         }
 
         if (result != tesSUCCESS)

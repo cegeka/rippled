@@ -36,7 +36,7 @@ convertBlobsToTxResult (
     Blob const& rawTxn,
     Blob const& rawMeta)
 {
-    SerialIter it (rawTxn);
+    SerialIter it (make_Slice(rawTxn));
     STTx::pointer txn = std::make_shared<STTx> (it);
     std::string reason;
 
@@ -45,9 +45,10 @@ convertBlobsToTxResult (
     tr->setStatus (Transaction::sqlTransactionStatus(status));
     tr->setLedger (ledger_index);
 
-    to.emplace_back(std::make_pair(std::move(tr),
-        std::make_shared<TransactionMetaSet> (
-            tr->getID (), tr->getLedger (), rawMeta)));
+    auto metaset = std::make_shared<TransactionMetaSet> (
+        tr->getID (), tr->getLedger (), rawMeta);
+
+    to.emplace_back(std::move(tr), metaset);
 };
 
 void

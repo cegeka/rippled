@@ -33,9 +33,9 @@ namespace ripple {
 
 struct LedgerFill
 {
-    LedgerFill (Ledger const& l,
+    LedgerFill (Ledger& l,
                 int o = 0,
-                RPC::Yield const& y = {},
+                RPC::Callback const& y = {},
                 RPC::YieldStrategy const& ys = {})
             : ledger (l),
               options (o),
@@ -47,9 +47,9 @@ struct LedgerFill
     enum Options {
         dumpTxrp = 1, dumpState = 2, expand = 4, full = 8, binary = 16};
 
-    Ledger const& ledger;
+    Ledger& ledger;
     int options;
-    RPC::Yield yield;
+    RPC::Callback yield;
     RPC::YieldStrategy yieldStrategy;
 };
 
@@ -75,7 +75,7 @@ void fillJson (Object& json, LedgerFill const& fill)
 {
     using namespace ripple::RPC;
 
-    auto const& ledger = fill.ledger;
+    auto& ledger = fill.ledger;
 
     bool const bFull (fill.options & LedgerFill::full);
     bool const bExpand (fill.options & LedgerFill::expand);
@@ -92,11 +92,11 @@ void fillJson (Object& json, LedgerFill const& fill)
             json[jss::closed] = true;
 
         // DEPRECATED
-        json[jss::hash] = to_string (ledger.getRawHash());
+        json[jss::hash] = to_string (ledger.getHash());
 
         // DEPRECATED
         json[jss::totalCoins]        = to_string (ledger.getTotalCoins());
-        json[jss::ledger_hash]       = to_string (ledger.getRawHash());
+        json[jss::ledger_hash]       = to_string (ledger.getHash());
         json[jss::transaction_hash]  = to_string (ledger.getTransHash());
         json[jss::account_hash]      = to_string (ledger.getAccountHash());
         json[jss::accepted]          = ledger.isAccepted();
@@ -136,14 +136,14 @@ void fillJson (Object& json, LedgerFill const& fill)
             {
                 if (type == SHAMapTreeNode::tnTRANSACTION_NM)
                 {
-                     if (bBinary)
+                    if (bBinary)
                     {
                         auto&& obj = appendObject (txns);
                         obj[jss::tx_blob] = strHex (item->peekData ());
                     }
                     else
                     {
-                        SerialIter sit (item->peekSerializer ());
+                        SerialIter sit (item->slice ());
                         STTx txn (sit);
                         txns.append (txn.getJson (0));
                     }
@@ -152,7 +152,7 @@ void fillJson (Object& json, LedgerFill const& fill)
                 {
                     if (bBinary)
                     {
-                        SerialIter sit (item->peekSerializer ());
+                        SerialIter sit (item->slice ());
 
                         auto&& obj = appendObject (txns);
                         obj[jss::tx_blob] = strHex (sit.getVL ());
@@ -160,10 +160,10 @@ void fillJson (Object& json, LedgerFill const& fill)
                     }
                     else
                     {
-                        SerialIter sit (item->peekSerializer ());
-                        Serializer sTxn (sit.getVL ());
-
-                        SerialIter tsit (sTxn);
+                        // VFALCO This is making a needless copy
+                        SerialIter sit (item->slice ());
+                        auto const vl = sit.getVL();
+                        SerialIter tsit (make_Slice(vl));
                         STTx txn (tsit);
 
                         TransactionMetaSet meta (

@@ -18,6 +18,7 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/app/main/Application.h>
 #include <ripple/rpc/impl/Tuning.h>
 #include <ripple/app/paths/RippleState.h>
 
@@ -26,9 +27,9 @@ namespace ripple {
 struct VisitData
 {
     std::vector <RippleState::pointer> items;
-    Account const& accountID;
+    AccountID const& accountID;
     RippleAddress const& rippleAddressPeer;
-    Account const& raPeerAccount;
+    AccountID const& raPeerAccount;
 };
 
 void addLine (Json::Value& jsonLines, RippleState const& line)
@@ -90,17 +91,18 @@ Json::Value doAccountLines (RPC::Context& context)
     int iIndex (bIndex ? params[jss::account_index].asUInt () : 0);
     RippleAddress rippleAddress;
 
-    Json::Value const jv (RPC::accountFromString (ledger, rippleAddress, bIndex,
-        strIdent, iIndex, false, context.netOps));
+    auto jv = RPC::accountFromString (
+        rippleAddress, bIndex, strIdent, iIndex, false);
     if (! jv.empty ())
     {
-        for (Json::Value::const_iterator it (jv.begin ()); it != jv.end (); ++it)
+        for (auto it = jv.begin (); it != jv.end (); ++it)
             result[it.memberName ()] = it.key ();
 
         return result;
     }
 
-    if (! ledger->hasAccount (rippleAddress))
+    if (! ledger->exists(getAccountRootIndex(
+            rippleAddress.getAccountID())))
         return rpcError (rpcACT_NOT_FOUND);
 
     std::string strPeer (params.isMember (jss::peer)
@@ -117,14 +119,14 @@ Json::Value doAccountLines (RPC::Context& context)
         if (bPeerIndex)
             result[jss::peer_index] = iPeerIndex;
 
-        result = RPC::accountFromString (ledger, rippleAddressPeer, bPeerIndex,
-            strPeer, iPeerIndex, false, context.netOps);
+        result = RPC::accountFromString (
+            rippleAddressPeer, bPeerIndex, strPeer, iPeerIndex, false);
 
         if (! result.empty ())
             return result;
     }
 
-    Account raPeerAccount;
+    AccountID raPeerAccount;
     if (rippleAddressPeer.isValid ())
         raPeerAccount = rippleAddressPeer.getAccountID ();
 
@@ -150,7 +152,7 @@ Json::Value doAccountLines (RPC::Context& context)
     }
 
     Json::Value& jsonLines (result[jss::lines] = Json::arrayValue);
-    Account const& raAccount(rippleAddress.getAccountID ());
+    AccountID const& raAccount(rippleAddress.getAccountID ());
     VisitData visitData = { {}, raAccount, rippleAddressPeer, raPeerAccount };
     unsigned int reserve (limit);
     uint256 startAfter;
@@ -166,7 +168,8 @@ Json::Value doAccountLines (RPC::Context& context)
             return RPC::expected_field_error (jss::marker, "string");
 
         startAfter.SetHex (marker.asString ());
-        SLE::pointer sleLine (ledger->getSLEi (startAfter));
+        auto const sleLine = fetch(*ledger, startAfter,
+            getApp().getSLECache());
 
         if (sleLine == nullptr || sleLine->getType () != ltRIPPLE_STATE)
             return rpcError (rpcINVALID_PARAMS);
@@ -179,7 +182,7 @@ Json::Value doAccountLines (RPC::Context& context)
             return rpcError (rpcINVALID_PARAMS);
 
         // Caller provided the first line (startAfter), add it as first result
-        auto const line (RippleState::makeItem (raAccount, sleLine));
+        auto const line = RippleState::makeItem (raAccount, sleLine);
         if (line == nullptr)
             return rpcError (rpcINVALID_PARAMS);
 
@@ -193,10 +196,12 @@ Json::Value doAccountLines (RPC::Context& context)
         visitData.items.reserve (++reserve);
     }
 
-    if (! ledger->visitAccountItems (raAccount, startAfter, startHint, reserve,
-        [&visitData](SLE::ref sleCur)
+    if (! forEachItemAfter(*ledger, raAccount, getApp().getSLECache(),
+            startAfter, startHint, reserve,
+        [&visitData](std::shared_ptr<SLE const> const& sleCur)
         {
-            auto const line (RippleState::makeItem (visitData.accountID, sleCur));
+            auto const line =
+                RippleState::makeItem (visitData.accountID, sleCur);
             if (line != nullptr &&
                 (! visitData.rippleAddressPeer.isValid () ||
                 visitData.raPeerAccount == line->getAccountIDPeer ()))
@@ -216,7 +221,7 @@ Json::Value doAccountLines (RPC::Context& context)
         result[jss::limit] = limit;
 
         RippleState::pointer line (visitData.items.back ());
-        result[jss::marker] = to_string (line->peekSLE ().getIndex ());
+        result[jss::marker] = to_string (line->key());
         visitData.items.pop_back ();
     }
 

@@ -43,13 +43,16 @@ JSS ( Invalid );                    // out: app/misc/AccountState
 JSS ( LimitAmount );                // field.
 JSS ( OfferSequence );              // field.
 JSS ( Paths );                      // in/out: TransactionSign
+JSS ( TransferRate );               // in: TransferRate
 JSS ( historical_perminute );       // historical_perminute
 JSS ( SLE_hit_rate );               // out: GetCounts
 JSS ( SendMax );                    // in: TransactionSign
 JSS ( Sequence );                   // in/out: TransactionSign; field.
 JSS ( SetFlag );                    // field.
+JSS ( SigningPubKey );              // field
 JSS ( TakerGets );                  // field.
 JSS ( TakerPays );                  // field.
+JSS ( TxnSignature );               // field
 JSS ( TransactionType );            // in: TransactionSign
 JSS ( aborted );                    // out: InboundLedger
 JSS ( accepted );                   // out: LedgerToJson, OwnerInfo
@@ -76,8 +79,10 @@ JSS ( age );                        // out: UniqueNodeList, NetworkOPs
 JSS ( alternatives );               // out: PathRequest, RipplePathFind
 JSS ( amendment_blocked );          // out: NetworkOPs
 JSS ( asks );                       // out: Subscribe
+JSS ( assets );                     // out: GatewayBalances
 JSS ( authorized );                 // out: AccountLines
 JSS ( balance );                    // out: AccountLines
+JSS ( balances );                   // out: GatewayBalances
 JSS ( base );                       // out: LogLevel
 JSS ( base_fee );                   // out: NetworkOPs
 JSS ( base_fee_xrp );               // out: NetworkOPs
@@ -249,6 +254,7 @@ JSS ( node_reads_total );           // out: GetCounts
 JSS ( node_writes );                // out: GetCounts
 JSS ( node_written_bytes );         // out: GetCounts
 JSS ( nodes );                      // out: LedgerEntrySet, PathState
+JSS ( obligations );                // out: GatewayBalances
 JSS ( offer );                      // in: LedgerEntry
 JSS ( offers );                     // out: NetworkOPs, AccountOffers, Subscribe
 JSS ( offline );                    // in: TransactionSign

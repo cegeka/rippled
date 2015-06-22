@@ -45,11 +45,12 @@ static
 std::uint64_t const
 SYSTEM_CURRENCY_USERS = 100000000;
 
+/** Number of drops per 1 XRP */
 static
 std::uint64_t const
 SYSTEM_CURRENCY_PARTS = 1000000;
 
-/** Calculate the amount of native currency created at genesis. */
+/** Number of drops in the genesis account. */
 static
 std::uint64_t const
 SYSTEM_CURRENCY_START = SYSTEM_CURRENCY_GIFT * SYSTEM_CURRENCY_USERS * SYSTEM_CURRENCY_PARTS;

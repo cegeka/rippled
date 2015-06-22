@@ -19,6 +19,7 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/ledger/LedgerFees.h>
+#include <ripple/app/main/Application.h>
 #include <ripple/rpc/impl/TransactionSign.h>
 #include <ripple/rpc/impl/KeypairForSignature.h>
 #include <ripple/app/paths/FindPaths.h>
@@ -111,7 +112,8 @@ void TxnSignApiFacade::snapshotAccountState (RippleAddress const& accountID)
 
     ledger_ = netOPs_->getCurrentLedger ();
     accountID_ = accountID;
-    accountState_ = netOPs_->getAccountState (ledger_, accountID_);
+    accountState_ = getAccountState (
+        *ledger_, accountID_, getApp().getSLECache());
 }
 
 bool TxnSignApiFacade::isValidAccount () const
@@ -127,19 +129,19 @@ std::uint32_t TxnSignApiFacade::getSeq () const
     if (!ledger_) // Unit testing.
         return 0;
 
-    return accountState_->getSeq ();
+    return accountState_->sle().getFieldU32(sfSequence);
 }
 
-Transaction::pointer TxnSignApiFacade::processTransaction (
+void TxnSignApiFacade::processTransaction (
     Transaction::ref tpTrans,
     bool bAdmin,
     bool bLocal,
     NetworkOPs::FailHard failType)
 {
     if (!netOPs_) // Unit testing.
-        return tpTrans;
+        return;
 
-    return netOPs_->processTransaction (tpTrans, bAdmin, bLocal, failType);
+    netOPs_->processTransaction (tpTrans, bAdmin, bLocal, failType);
 }
 
 bool TxnSignApiFacade::findPathsForOneIssuer (
@@ -192,11 +194,8 @@ bool TxnSignApiFacade::hasAccountRoot () const
 {
     if (!netOPs_) // Unit testing.
         return true;
-
-    SLE::pointer const sleAccountRoot =
-        ledger_->getSLEi(getAccountRootIndex(accountID_));
-
-    return static_cast <bool> (sleAccountRoot);
+    return ledger_->exists(
+        getAccountRootIndex(accountID_));
 }
 
 error_code_i acctMatchesPubKey (
@@ -204,7 +203,7 @@ error_code_i acctMatchesPubKey (
     RippleAddress const& accountID,
     RippleAddress const& publicKey)
 {
-    Account const publicKeyAcctID = publicKey.getAccountID ();
+    AccountID const publicKeyAcctID = publicKey.getAccountID ();
     bool const isMasterKey = publicKeyAcctID == accountID.getAccountID ();
 
     // If we can't get the accountRoot, but the accountIDs match, that's
@@ -217,7 +216,7 @@ error_code_i acctMatchesPubKey (
     }
 
     // If we *can* get to the accountRoot, check for MASTER_DISABLED
-    STLedgerEntry const& sle = accountState->peekSLE ();
+    auto const& sle = accountState->sle();
     if (isMasterKey)
     {
         if (sle.isFlag(lsfDisableMaster))
@@ -248,11 +247,13 @@ error_code_i TxnSignApiFacade::multiAcctMatchesPubKey (
     RippleAddress const& publicKey) const
 {
     AccountState::pointer accountState;
+    // VFALCO Do we need to check netOPs_?
     if (netOPs_ && ledger_)
         // If it's available, get the AccountState for the multi-signer's
         // accountID.  It's okay if the AccountState is not available,
         // since they might be signing with a phantom (unfunded) account.
-        accountState = netOPs_->getAccountState (ledger_, accountID);
+        accountState = getAccountState (
+            *ledger_, accountID, getApp().getSLECache());
 
     return acctMatchesPubKey (accountState, accountID, publicKey);
 }
@@ -1209,7 +1210,7 @@ Json::Value transactionSubmitMultiSigned (
                     b.getFieldAccount (sfAccount).getAccountID ()); };
 
     {
-        // MultiSigners are submitted sorted in Account order.  This
+        // MultiSigners are submitted sorted in AccountID order.  This
         // assures that the same list will always have the same hash.
         multiSigners.sort (byFieldAccountID);
 

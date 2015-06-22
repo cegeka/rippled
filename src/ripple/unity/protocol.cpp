@@ -31,6 +31,7 @@
 #include <ripple/protocol/impl/RippleAddress.cpp>
 #include <ripple/protocol/impl/Serializer.cpp>
 #include <ripple/protocol/impl/SField.cpp>
+#include <ripple/protocol/impl/Sign.cpp>
 #include <ripple/protocol/impl/SOTemplate.cpp>
 #include <ripple/protocol/impl/TER.cpp>
 #include <ripple/protocol/impl/TxFormats.cpp>
@@ -58,7 +59,6 @@
 #include <ripple/protocol/tests/Issue.test.cpp>
 #include <ripple/protocol/tests/Quality.test.cpp>
 #include <ripple/protocol/tests/RippleAddress.test.cpp>
-#include <ripple/protocol/tests/Serializer.test.cpp>
 #include <ripple/protocol/tests/STAmount.test.cpp>
 #include <ripple/protocol/tests/STObject.test.cpp>
 #include <ripple/protocol/tests/STTx.test.cpp>

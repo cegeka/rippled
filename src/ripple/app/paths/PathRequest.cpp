@@ -32,7 +32,7 @@
 #include <ripple/protocol/ErrorCodes.h>
 #include <ripple/protocol/UintTypes.h>
 #include <beast/module/core/text/LexicalCast.h>
-#include <boost/log/trivial.hpp>
+#include <boost/optional.hpp>
 #include <tuple>
 
 namespace ripple {
@@ -149,8 +149,9 @@ bool PathRequest::isValid (RippleLineCache::ref crCache)
 
     if (bValid)
     {
-        auto asSrc = getApp().getOPs ().getAccountState (
-            crCache->getLedger(), raSrcAccount);
+        auto asSrc = getAccountState(
+            *crCache->getLedger(), raSrcAccount,
+                getApp().getSLECache());
 
         if (!asSrc)
         {
@@ -160,8 +161,8 @@ bool PathRequest::isValid (RippleLineCache::ref crCache)
         }
         else
         {
-            auto asDst = getApp().getOPs ().getAccountState (
-                lrLedger, raDstAccount);
+            auto asDst = getAccountState(*lrLedger,
+                raDstAccount, getApp().getSLECache());
 
             Json::Value& jvDestCur =
                     (jvStatus[jss::destination_currencies] = Json::arrayValue);
@@ -187,7 +188,7 @@ bool PathRequest::isValid (RippleLineCache::ref crCache)
             else
             {
                 bool const disallowXRP (
-                    asDst->peekSLE ().getFlags() & lsfDisallowXRP);
+                    asDst->sle().getFlags() & lsfDisallowXRP);
 
                 auto usDestCurrID = accountDestCurrencies (
                         raDstAccount, crCache, !disallowXRP);
@@ -196,7 +197,7 @@ bool PathRequest::isValid (RippleLineCache::ref crCache)
                     jvDestCur.append (to_string (currency));
 
                 jvStatus["destination_tag"] =
-                        (asDst->peekSLE ().getFlags () & lsfRequireDestTag)
+                        (asDst->sle().getFlags () & lsfRequireDestTag)
                         != 0;
             }
         }
@@ -320,7 +321,7 @@ int PathRequest::parseJson (Json::Value const& jvParams, bool complete)
         {
             Json::Value const& jvCur = jvSrcCur[i];
             Currency uCur;
-            Account uIss;
+            AccountID uIss;
 
             if (!jvCur.isObject() || !jvCur.isMember (jss::currency) ||
                 !to_currency (uCur, jvCur[jss::currency].asString ()))
@@ -479,7 +480,8 @@ Json::Value PathRequest::doUpdate (RippleLineCache::ref cache, bool fast)
 
         if (valid)
         {
-            LedgerEntrySet lesSandbox (cache->getLedger (), tapNONE);
+            LedgerEntrySet lesSandbox(
+                cache->getLedger(), tapNONE);
             auto& sourceAccount = !isXRP (currIssuer.account)
                     ? currIssuer.account
                     : isXRP (currIssuer.currency)
@@ -504,7 +506,7 @@ Json::Value PathRequest::doUpdate (RippleLineCache::ref cache, bool fast)
                 m_journal.debug
                         << iIdentifier << " Trying with an extra path element";
                 spsPaths.push_back (fullLiquidityPath);
-                lesSandbox.clear();
+                reconstruct(lesSandbox, cache->getLedger (), tapNONE);
                 rc = path::RippleCalc::rippleCalculate (
                     lesSandbox,
                     saMaxAmount,

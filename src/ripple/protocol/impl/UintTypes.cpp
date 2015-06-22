@@ -22,18 +22,17 @@
 #include <ripple/protocol/SystemParameters.h>
 #include <ripple/protocol/RippleAddress.h>
 #include <ripple/protocol/UintTypes.h>
+#include <beast/utility/static_initializer.h>
 
 namespace ripple {
 
-std::string to_string(Account const& account)
+std::string to_string(AccountID const& account)
 {
     return RippleAddress::createAccountID (account).humanAccountID ();
 }
 
 std::string to_string(Currency const& currency)
 {
-    static Currency const sIsoBits ("FFFFFFFFFFFFFFFFFFFFFFFF000000FFFFFFFFFF");
-
     // Characters we are willing to allow in the ASCII representation of a
     // three-letter currency code.
     static std::string const allowed_characters =
@@ -48,7 +47,10 @@ std::string to_string(Currency const& currency)
     if (currency == noCurrency())
         return "1";
 
-    if ((currency & sIsoBits).isZero ())
+    static beast::static_initializer<Currency> const sIsoBits (
+        from_hex_text<Currency>("FFFFFFFFFFFFFFFFFFFFFFFF000000FFFFFFFFFF"));
+
+    if ((currency & *sIsoBits).isZero ())
     {
         // The offset of the 3 character ISO code in the currency descriptor
         int const isoOffset = 12;
@@ -109,7 +111,7 @@ Currency to_currency(std::string const& code)
     return currency;
 }
 
-bool to_issuer(Account& issuer, std::string const& s)
+bool to_issuer(AccountID& issuer, std::string const& s)
 {
     if (s.size () == (160 / 4))
     {
@@ -123,9 +125,9 @@ bool to_issuer(Account& issuer, std::string const& s)
     return success;
 }
 
-Account const& xrpAccount()
+AccountID const& xrpAccount()
 {
-    static Account const account(0);
+    static AccountID const account(0);
     return account;
 }
 
@@ -135,9 +137,9 @@ Currency const& xrpCurrency()
     return currency;
 }
 
-Account const& noAccount()
+AccountID const& noAccount()
 {
-    static Account const account(1);
+    static AccountID const account(1);
     return account;
 }
 

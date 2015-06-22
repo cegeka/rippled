@@ -91,7 +91,7 @@ public:
     {
         testcase ("parse json array");
         std::string const json (
-            "{\"Template\":[{\"ModifiedNode\":{\"Sequence\":1}}]}\n");
+            "{\"Template\":[{\"ModifiedNode\":{\"Sequence\":1}}]}");
 
         Json::Value jsonObject;
         bool parsedOK (parseJSONString(json, jsonObject));
@@ -183,7 +183,7 @@ public:
 
             Serializer s;
             object1.add (s);
-            SerialIter it (s);
+            SerialIter it (s.slice());
 
             STObject object3 (elements, it, sfTestObject);
 

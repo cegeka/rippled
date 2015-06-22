@@ -102,8 +102,15 @@ private:
 
 public:
     AnyPublicKey() = delete;
-    AnyPublicKey (AnyPublicKey const&) = delete;
     AnyPublicKey& operator= (AnyPublicKey const&) = delete;
+
+    AnyPublicKey (AnyPublicKey const& other)
+        : buffer_type(other.buffer_type::member.data(),
+            other.buffer_type::member.size())
+        , AnyPublicKeySlice (buffer_type::member.data(),
+            buffer_type::member.size())
+    {
+    }
 
 #ifdef _MSC_VER
     AnyPublicKey (AnyPublicKey&& other)
@@ -116,7 +123,8 @@ public:
     AnyPublicKey& operator= (AnyPublicKey&& other)
     {
         buffer_type::member =
-            std::move(other.buffer_type::member);
+            std::move (other.buffer_type::member);
+        AnyPublicKeySlice::operator= (other);
         return *this;
     }
 #else
@@ -171,6 +179,9 @@ struct STExchange<STBlob, AnyPublicKey>
             f, t.releaseBuffer());
     }
 };
+
+std::string
+toString (AnyPublicKey const& pk);
 
 } // ripple
 

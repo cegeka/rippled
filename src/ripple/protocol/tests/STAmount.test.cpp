@@ -33,7 +33,7 @@ public:
         Serializer ser;
         s.add (ser);
 
-        SerialIter sit (ser);
+        SerialIter sit (ser.slice());
         return STAmount(sit, sfGeneric);
     }
 
@@ -175,7 +175,7 @@ public:
         {
             testcase ("set value (iou)");
 
-            Issue const usd (Currency (0x5553440000000000), Account (0x4985601));
+            Issue const usd (Currency (0x5553440000000000), AccountID (0x4985601));
 
             testSetValue ("1", usd);
             testSetValue ("10", usd);
@@ -281,7 +281,8 @@ public:
         const std::string cur = "015841551A748AD2C1F76FF6ECB0CCCD00000000";
         unexpected (!to_currency (c, cur), "create custom currency");
         unexpected (to_string (c) != cur, "check custom currency");
-        unexpected (c != Currency (cur), "check custom currency");
+        unexpected (c != Currency (
+            from_hex_text<Currency>(cur)), "check custom currency");
     }
 
     //--------------------------------------------------------------------------

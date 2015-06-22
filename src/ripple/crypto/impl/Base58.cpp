@@ -22,6 +22,7 @@
 #include <ripple/crypto/CAutoBN_CTX.h>
 #include <ripple/crypto/CBigNum.h>
 #include <openssl/sha.h>
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 
@@ -99,7 +100,7 @@ std::string Base58::raw_encode (unsigned char const* begin,
         str += alphabet [0];
 
     // Convert little endian std::string to big endian
-    reverse (str.begin (), str.end ());
+    std::reverse (str.begin (), str.end ());
     return str;
 }
 
@@ -203,7 +204,7 @@ bool Base58::decode (const char* psz, Blob& vchRet, Alphabet const& alphabet)
         bn += bnChar;
     }
 
-    // Get bignum as little endian data
+    // Get bignum as big endian data
     Blob vchTmp = bn.getvch ();
 
     // Trim off sign byte if present
@@ -218,7 +219,7 @@ bool Base58::decode (const char* psz, Blob& vchRet, Alphabet const& alphabet)
 
     vchRet.assign (nLeadingZeros + vchTmp.size (), 0);
 
-    // Convert little endian data to big endian
+    // Convert big endian data to little endian
     std::reverse_copy (vchTmp.begin (), vchTmp.end (), vchRet.end () - vchTmp.size ());
     return true;
 }

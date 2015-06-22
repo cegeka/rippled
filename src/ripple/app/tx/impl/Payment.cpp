@@ -90,7 +90,7 @@ public:
         if (!isLegalNet (saDstAmount) || !isLegalNet (maxSourceAmount))
             return temBAD_AMOUNT;
 
-        Account const uDstAccountID (mTxn.getFieldAccount160 (sfDestination));
+        AccountID const uDstAccountID (mTxn.getFieldAccount160 (sfDestination));
 
         if (!uDstAccountID)
         {
@@ -173,7 +173,7 @@ public:
         bool const defaultPathsAllowed = !(uTxFlags & tfNoRippleDirect);
         bool const bPaths = mTxn.isFieldPresent (sfPaths);
         bool const bMax = mTxn.isFieldPresent (sfSendMax);
-        Account const uDstAccountID (mTxn.getFieldAccount160 (sfDestination));
+        AccountID const uDstAccountID (mTxn.getFieldAccount160 (sfDestination));
         STAmount const saDstAmount (mTxn.getFieldAmount (sfAmount));
         STAmount maxSourceAmount;
         if (bMax)
@@ -233,10 +233,11 @@ public:
             }
 
             // Create the account.
-            auto const newIndex = getAccountRootIndex (uDstAccountID);
-            sleDst = mEngine->view().entryCreate (ltACCOUNT_ROOT, newIndex);
+            sleDst = std::make_shared<SLE>(ltACCOUNT_ROOT,
+                getAccountRootIndex (uDstAccountID));
             sleDst->setFieldAccount (sfAccount, uDstAccountID);
             sleDst->setFieldU32 (sfSequence, 1);
+            mEngine->view().entryCreate(sleDst);
         }
         else if ((sleDst->getFlags () & lsfRequireDestTag) &&
                  !mTxn.isFieldPresent (sfDestinationTag))

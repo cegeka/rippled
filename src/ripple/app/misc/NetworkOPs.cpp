@@ -36,11 +36,11 @@
 #include <ripple/app/misc/NetworkOPs.h>
 #include <ripple/app/misc/Validations.h>
 #include <ripple/app/misc/impl/AccountTxPaging.h>
-#include <ripple/overlay/ClusterNodeStatus.h>
 #include <ripple/app/misc/UniqueNodeList.h>
 #include <ripple/app/tx/TransactionMaster.h>
 #include <ripple/basics/Log.h>
 #include <ripple/basics/Time.h>
+#include <ripple/basics/SHA512Half.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/basics/UptimeTimer.h>
 #include <ripple/protocol/JsonFields.h>
@@ -49,6 +49,7 @@
 #include <ripple/crypto/RandomNumbers.h>
 #include <ripple/crypto/RFC1751.h>
 #include <ripple/json/to_string.h>
+#include <ripple/overlay/ClusterNodeStatus.h>
 #include <ripple/overlay/Overlay.h>
 #include <ripple/overlay/predicates.h>
 #include <ripple/protocol/BuildInfo.h>
@@ -64,6 +65,7 @@
 #include <beast/utility/make_lock.h>
 #include <boost/optional.hpp>
 #include <tuple>
+#include <condition_variable>
 
 namespace ripple {
 
@@ -71,12 +73,39 @@ class NetworkOPsImp final
     : public NetworkOPs
     , public beast::DeadlineTimer::Listener
 {
-public:
-    enum Fault
+    /**
+     * Transaction with input flags and results to be applied in batches.
+     */
+    class TransactionStatus
     {
-        // Exceptions these functions can throw.
-        IO_ERROR    = 1,
-        NO_NETWORK  = 2,
+    public:
+        Transaction::pointer transaction;
+        bool admin;
+        bool local;
+        FailHard failType;
+        bool applied;
+        TER result;
+
+        TransactionStatus (
+                Transaction::pointer t,
+                bool a,
+                bool l,
+                FailHard f)
+            : transaction (t)
+            , admin (a)
+            , local (l)
+            , failType (f)
+        {}
+    };
+
+    /**
+     * Synchronization states for transaction batches.
+     */
+    enum class DispatchState : unsigned char
+    {
+        none,
+        scheduled,
+        running,
     };
 
 public:
@@ -101,8 +130,8 @@ public:
         , m_clusterTimer (this)
         , m_ledgerMaster (ledgerMaster)
         , mCloseTimeOffset (0)
-        , mLastCloseProposers (0)
-        , mLastCloseConvergeTime (1000 * LEDGER_IDLE_INTERVAL)
+        , lastCloseProposers_ (0)
+        , lastCloseConvergeTook_ (1000 * LEDGER_IDLE_INTERVAL)
         , mLastCloseTime (0)
         , mLastValidationTime (0)
         , mFetchPack ("FetchPack", 65536, 45, clock,
@@ -206,35 +235,60 @@ public:
     //
 
     // Must complete immediately.
-    using stCallback = std::function<void (Transaction::pointer, TER)>;
-    void submitTransaction (
-        Job&, STTx::pointer,
-        stCallback callback = stCallback ()) override;
+    void submitTransaction (Job&, STTx::pointer) override;
 
-    Transaction::pointer processTransactionCb (
-        Transaction::pointer,
-        bool bAdmin, bool bLocal, FailHard failType, stCallback) override;
-
-    Transaction::pointer processTransaction (
+    void processTransaction (
         Transaction::pointer transaction,
-        bool bAdmin, bool bLocal, FailHard failType) override
-    {
-        return processTransactionCb (
-            transaction, bAdmin, bLocal, failType, stCallback ());
-    }
+        bool bAdmin, bool bLocal, FailHard failType) override;
 
-    // VFALCO Workaround for MSVC std::function which doesn't swallow return
-    // types.
-    //
-private:
-    void processTransactionCbVoid (
-        Transaction::pointer p,
-        bool bAdmin, bool bLocal, FailHard failType, stCallback cb)
-    {
-        processTransactionCb (p, bAdmin, bLocal, failType, cb);
-    }
+    /**
+     * For transactions submitted directly by a client, apply batch of
+     * transactions and wait for this transaction to complete.
+     *
+     * @param transaction Transaction object.
+     * @param bAdmin Whether an administrative client connection submitted it.
+     * @param failType fail_hard setting from transaction submission.
+     */
+    void doTransactionSync (Transaction::pointer transaction,
+        bool bAdmin, FailHard failType);
 
-public:
+    /**
+     * For transactions not submitted by a locally connected client, fire and
+     * forget. Add to batch and trigger it to be processed if there's no batch
+     * currently being applied.
+     *
+     * @param transaction Transaction object
+     * @param bAdmin Whether an administrative client connection submitted it.
+     * @param failType fail_hard setting from transaction submission.
+     */
+    void doTransactionAsync (Transaction::pointer transaction,
+        bool bAdmin, FailHard failtype);
+
+    /**
+     * Apply transactions in batches. Continue until none are queued.
+     */
+    void transactionBatch();
+
+    /**
+     * Attempt to apply transactions and post-process based on the results.
+     *
+     * @param Lock that protects the transaction batching
+     */
+    void apply (std::unique_lock<std::mutex>& lock);
+
+    /**
+     * Apply each transaction to open ledger.
+     *
+     * @param ledger Open ledger.
+     * @param engine Engine that applies transactions to open ledger.
+     * @param transactions Batch of transactions to apply.
+     * @return Whether any transactions in batch succeeded.
+     */
+    bool batchApply (
+         Ledger::pointer& ledger,
+         TransactionEngine& engine,
+         std::vector<TransactionStatus>& transactions);
+
     Transaction::pointer findTransactionByID (
         uint256 const& transactionID) override;
 
@@ -243,13 +297,6 @@ public:
         RippleAddress const& destinationAccount,
         std::uint32_t startLedgerSeq, std::uint32_t endLedgerSeq,
         int maxTransactions) override;
-
-    //
-    // Account functions.
-    //
-
-    AccountState::pointer getAccountState (
-        Ledger::ref lrLedger, RippleAddress const& accountID) override;
 
     //
     // Directory functions.
@@ -271,14 +318,14 @@ public:
     //
 
     void getBookPage (bool bAdmin, Ledger::pointer lpLedger, Book const&,
-        Account const& uTakerID, const bool bProof, const unsigned int iLimit,
+        AccountID const& uTakerID, const bool bProof, const unsigned int iLimit,
             Json::Value const& jvMarker, Json::Value& jvResult) override;
 
     // Ledger proposal/close functions.
     void processTrustedProposal (
         LedgerProposal::pointer proposal,
         std::shared_ptr<protocol::TMProposeSet> set,
-        RippleAddress nodePublic, uint256 checkLedger, bool sigGood) override;
+        RippleAddress const &nodePublic) override;
 
     bool recvValidation (
         STValidation::ref val, std::string const& source) override;
@@ -314,7 +361,7 @@ private:
         Ledger::pointer newLedger, bool duringConsensus);
     bool checkLastClosedLedger (
         const Overlay::PeerSequence&, uint256& networkClosed);
-    int beginConsensus (
+    bool beginConsensus (
         uint256 const& networkClosed, Ledger::pointer closingLedger);
     void tryStartConsensus ();
 
@@ -367,14 +414,6 @@ public:
     }
     void setAmendmentBlocked () override;
     void consensusViewChange () override;
-    int getPreviousProposers () override
-    {
-        return mLastCloseProposers;
-    }
-    int getPreviousConvergeTime () override
-    {
-        return mLastCloseConvergeTime;
-    }
     std::uint32_t getLastCloseTime () override
     {
         return mLastCloseTime;
@@ -537,7 +576,7 @@ private:
 private:
     clock_type& m_clock;
 
-    using SubInfoMapType = hash_map <Account, SubMapType>;
+    using SubInfoMapType = hash_map <AccountID, SubMapType>;
     using subRpcMapType = hash_map<std::string, InfoSub::pointer>;
 
     // XXX Split into more locks.
@@ -558,8 +597,6 @@ private:
     bool mValidating;
     bool m_amendmentBlocked;
 
-    boost::posix_time::ptime mConnectTime;
-
     beast::DeadlineTimer m_heartbeatTimer;
     beast::DeadlineTimer m_clusterTimer;
 
@@ -571,10 +608,14 @@ private:
 
     int mCloseTimeOffset;
 
-    // last ledger close
-    int mLastCloseProposers;
-    int mLastCloseConvergeTime;
-    uint256 mLastCloseHash;
+    // The number of proposers who participated in the last ledger close
+    int lastCloseProposers_;
+
+    // How long the last ledger close took, in milliseconds
+    int lastCloseConvergeTook_;
+
+    // The hash of the last closed ledger
+    uint256 lastCloseHash_;
 
     std::uint32_t mLastCloseTime;
     std::uint32_t mLastValidationTime;
@@ -606,6 +647,12 @@ private:
 
     // The number of nodes that we need to consider ourselves connected.
     std::size_t const m_network_quorum;
+
+    // Transaction batching.
+    std::condition_variable mCond;
+    std::mutex mMutex;
+    DispatchState mDispatchState = DispatchState::none;
+    std::vector <TransactionStatus> mTransactions;
 };
 
 //------------------------------------------------------------------------------
@@ -613,7 +660,7 @@ std::string
 NetworkOPsImp::getHostId (bool forAdmin)
 {
     if (forAdmin)
-        return beast::SystemStats::getComputerName ();
+        return beast::getComputerName ();
 
     // For non-admin uses we hash the node ID into a single RFC1751 word:
     // (this could be cached instead of recalculated every time)
@@ -877,8 +924,7 @@ bool NetworkOPsImp::isValidated (std::uint32_t seq)
             seq <= m_ledgerMaster.getValidatedLedger ()->getLedgerSeq ();
 }
 
-void NetworkOPsImp::submitTransaction (
-    Job&, STTx::pointer iTrans, stCallback callback)
+void NetworkOPsImp::submitTransaction (Job&, STTx::pointer iTrans)
 {
     if (isNeedNetworkLedger ())
     {
@@ -890,7 +936,7 @@ void NetworkOPsImp::submitTransaction (
     Serializer s;
     iTrans->add (s);
 
-    SerialIter sit (s);
+    SerialIter sit (s.slice());
     auto trans = std::make_shared<STTx> (std::ref (sit));
 
     uint256 suppress = trans->getTransactionID ();
@@ -935,28 +981,26 @@ void NetworkOPsImp::submitTransaction (
     }
 
     m_job_queue.addJob (jtTRANSACTION, "submitTxn",
-        std::bind (&NetworkOPsImp::processTransactionCbVoid,
+        std::bind (&NetworkOPsImp::processTransaction,
                    this,
                    std::make_shared<Transaction> (trans, Validate::NO, reason),
                    false,
                    false,
-                   FailHard::no,
-                   callback));
+                   FailHard::no));
 }
 
-Transaction::pointer NetworkOPsImp::processTransactionCb (
-    Transaction::pointer trans,
-    bool bAdmin, bool bLocal, FailHard failType, stCallback callback)
+void NetworkOPsImp::processTransaction (Transaction::pointer transaction,
+        bool bAdmin, bool bLocal, FailHard failType)
 {
     auto ev = m_job_queue.getLoadEventAP (jtTXN_PROC, "ProcessTXN");
-    int newFlags = getApp().getHashRouter ().getFlags (trans->getID ());
+    int newFlags = getApp().getHashRouter ().getFlags (transaction->getID ());
 
     if ((newFlags & SF_BAD) != 0)
     {
         // cached bad
-        trans->setStatus (INVALID);
-        trans->setResult (temBAD_SIGNATURE);
-        return trans;
+        transaction->setStatus (INVALID);
+        transaction->setResult (temBAD_SIGNATURE);
+        return;
     }
 
     if ((newFlags & SF_SIGGOOD) == 0)
@@ -964,112 +1008,236 @@ Transaction::pointer NetworkOPsImp::processTransactionCb (
         // signature not checked
         std::string reason;
 
-        if (! trans->checkSign (reason))
+        if (! transaction->checkSign (reason))
         {
             m_journal.info << "Transaction has bad signature: " << reason;
-            trans->setStatus (INVALID);
-            trans->setResult (temBAD_SIGNATURE);
-            getApp().getHashRouter ().setFlag (trans->getID (), SF_BAD);
-            return trans;
+            transaction->setStatus (INVALID);
+            transaction->setResult (temBAD_SIGNATURE);
+            getApp().getHashRouter ().setFlag (transaction->getID (), SF_BAD);
+            return;
         }
-
-        getApp().getHashRouter ().setFlag (trans->getID (), SF_SIGGOOD);
     }
+
+    getApp().getHashRouter ().setFlag (transaction->getID (), SF_SIGGOOD);
+
+    if (bLocal)
+        doTransactionSync (transaction, bAdmin, failType);
+    else
+        doTransactionAsync (transaction, bAdmin, failType);
+}
+
+void NetworkOPsImp::doTransactionAsync (Transaction::pointer transaction,
+        bool bAdmin, FailHard failType)
+{
+    std::lock_guard<std::mutex> lock (mMutex);
+
+    if (transaction->getApplying())
+        return;
+
+    mTransactions.push_back (TransactionStatus (transaction, bAdmin, false,
+        failType));
+    transaction->setApplying();
+
+    if (mDispatchState == DispatchState::none)
+    {
+        m_job_queue.addJob (jtBATCH, "transactionBatch",
+                std::bind (&NetworkOPsImp::transactionBatch, this));
+        mDispatchState = DispatchState::scheduled;
+    }
+}
+
+void NetworkOPsImp::doTransactionSync (Transaction::pointer transaction,
+        bool bAdmin, FailHard failType)
+{
+    std::unique_lock<std::mutex> lock (mMutex);
+
+    if (! transaction->getApplying())
+    {
+        mTransactions.push_back (TransactionStatus (transaction, bAdmin, true,
+        failType));
+        transaction->setApplying();
+    }
+
+    do
+    {
+        if (mDispatchState == DispatchState::running)
+        {
+            // A batch processing job is already running, so wait.
+            mCond.wait (lock);
+        }
+        else
+        {
+            apply (lock);
+
+            if (mTransactions.size())
+            {
+                // More transactions need to be applied, but by another job.
+                m_job_queue.addJob (jtBATCH, "transactionBatch",
+                        std::bind (&NetworkOPsImp::transactionBatch, this));
+                mDispatchState = DispatchState::scheduled;
+            }
+        }
+    }
+    while (transaction->getApplying());
+}
+
+void NetworkOPsImp::transactionBatch()
+{
+    std::unique_lock<std::mutex> lock (mMutex);
+
+    if (mDispatchState == DispatchState::running)
+        return;
+
+    while (mTransactions.size())
+    {
+        apply (lock);
+    }
+}
+
+void NetworkOPsImp::apply (std::unique_lock<std::mutex>& lock)
+{
+    std::vector<TransactionStatus> transactions;
+    mTransactions.swap (transactions);
+    assert (! transactions.empty());
+
+    assert (mDispatchState != DispatchState::running);
+    mDispatchState = DispatchState::running;
+
+    lock.unlock();
+
+    Ledger::pointer ledger;
+    TransactionEngine engine;
 
     {
         auto lock = beast::make_lock(getApp().getMasterMutex());
 
-        bool didApply;
-        TER r = m_ledgerMaster.doTransaction (
-            trans->getSTransaction (),
-            bAdmin ? (tapOPEN_LEDGER | tapNO_CHECK_SIGN | tapADMIN)
-            : (tapOPEN_LEDGER | tapNO_CHECK_SIGN), didApply);
-        trans->setResult (r);
-
-        if (isTemMalformed (r)) // malformed, cache bad
-            getApp().getHashRouter ().setFlag (trans->getID (), SF_BAD);
-
-#ifdef BEAST_DEBUG
-        if (r != tesSUCCESS)
+        if (batchApply (ledger, engine, transactions))
         {
-            std::string token, human;
-            if (transResultInfo (r, token, human))
-                m_journal.info << "TransactionResult: "
-                               << token << ": " << human;
+            ledger->setImmutable();
+            m_ledgerMaster.getCurrentLedgerHolder().set (ledger);
         }
 
-#endif
-
-        if (callback)
-            callback (trans, r);
-
-        if (r == tefFAILURE)
-            throw Fault (IO_ERROR);
-
-        bool addLocal = bLocal;
-
-        if (r == tesSUCCESS)
+        for (TransactionStatus& e : transactions)
         {
-            m_journal.debug << "Transaction is now included in open ledger";
-            trans->setStatus (INCLUDED);
+            if (e.applied)
+            {
+                pubProposedTransaction (ledger,
+                    e.transaction->getSTransaction(), e.result);
+            }
 
-            // VFALCO NOTE The value of trans can be changed here!
-            getApp().getMasterTransaction ().canonicalize (&trans);
-        }
-        else if (r == tefPAST_SEQ)
-        {
-            // duplicate or conflict
-            m_journal.info << "Transaction is obsolete";
-            trans->setStatus (OBSOLETE);
-        }
-        else if (isTerRetry (r))
-        {
-            if (failType == FailHard::yes)
-                addLocal = false;
+            e.transaction->setResult (e.result);
+
+            if (isTemMalformed (e.result))
+                getApp().getHashRouter().setFlag (e.transaction->getID(), SF_BAD);
+
+    #ifdef BEAST_DEBUG
+            if (e.result != tesSUCCESS)
+            {
+                std::string token, human;
+
+                if (transResultInfo (e.result, token, human))
+                    m_journal.info << "TransactionResult: "
+                            << token << ": " << human;
+            }
+    #endif
+
+            bool addLocal = e.local;
+
+            if (e.result == tesSUCCESS)
+            {
+                m_journal.debug << "Transaction is now included in open ledger";
+                e.transaction->setStatus (INCLUDED);
+
+                // VFALCO NOTE The value of trans can be changed here!
+                getApp().getMasterTransaction ().canonicalize (&e.transaction);
+            }
+            else if (e.result == tefPAST_SEQ)
+            {
+                // duplicate or conflict
+                m_journal.info << "Transaction is obsolete";
+                e.transaction->setStatus (OBSOLETE);
+            }
+            else if (isTerRetry (e.result))
+            {
+                if (e.failType == FailHard::yes)
+                {
+                    addLocal = false;
+                }
+                else
+                {
+                    // transaction should be held
+                    m_journal.debug << "Transaction should be held: " << e.result;
+                    e.transaction->setStatus (HELD);
+                    getApp().getMasterTransaction().canonicalize (&e.transaction);
+                    m_ledgerMaster.addHeldTransaction (e.transaction);
+                }
+            }
             else
             {
-                // transaction should be held
-                m_journal.debug << "Transaction should be held: " << r;
-                trans->setStatus (HELD);
-                getApp().getMasterTransaction ().canonicalize (&trans);
-                m_ledgerMaster.addHeldTransaction (trans);
+                m_journal.debug << "Status other than success " << e.result;
+                e.transaction->setStatus (INVALID);
             }
-        }
-        else
-        {
-            m_journal.debug << "Status other than success " << r;
-            trans->setStatus (INVALID);
-        }
 
-        if (addLocal)
-        {
-            addLocalTx (m_ledgerMaster.getCurrentLedger (),
-                        trans->getSTransaction ());
-        }
-
-        if (didApply ||
-            ((mMode != omFULL) && (failType != FailHard::yes) && bLocal))
-        {
-            std::set<Peer::id_t> peers;
-
-            if (getApp().getHashRouter ().swapSet (
-                    trans->getID (), peers, SF_RELAYED))
+            if (addLocal)
             {
-                protocol::TMTransaction tx;
-                Serializer s;
-                trans->getSTransaction ()->add (s);
-                tx.set_rawtransaction (&s.getData ().front (), s.getLength ());
-                tx.set_status (protocol::tsCURRENT);
-                tx.set_receivetimestamp (getNetworkTimeNC ());
-                // FIXME: This should be when we received it
-                getApp ().overlay ().foreach (send_if_not (
-                    std::make_shared<Message> (tx, protocol::mtTRANSACTION),
-                    peer_in_set(peers)));
+                addLocalTx (m_ledgerMaster.getCurrentLedger(),
+                            e.transaction->getSTransaction());
+            }
+
+            if (e.applied ||
+                    ((mMode != omFULL) && (e.failType != FailHard::yes) && e.local))
+            {
+                std::set<Peer::id_t> peers;
+
+                if (getApp().getHashRouter().swapSet (
+                        e.transaction->getID(), peers, SF_RELAYED))
+                {
+                    protocol::TMTransaction tx;
+                    Serializer s;
+
+                    e.transaction->getSTransaction()->add (s);
+                    tx.set_rawtransaction (&s.getData().front(), s.getLength());
+                    tx.set_status (protocol::tsCURRENT);
+                    tx.set_receivetimestamp (getApp().getOPs().getNetworkTimeNC());
+                    // FIXME: This should be when we received it
+                    getApp().overlay().foreach (send_if_not (
+                        std::make_shared<Message> (tx, protocol::mtTRANSACTION),
+                        peer_in_set(peers)));
+                }
             }
         }
     }
 
-    return trans;
+    lock.lock();
+
+    for (TransactionStatus& e : transactions)
+        e.transaction->clearApplying();
+
+    mCond.notify_all();
+
+    mDispatchState = DispatchState::none;
+}
+
+bool NetworkOPsImp::batchApply (Ledger::pointer& ledger,
+        TransactionEngine& engine,
+        std::vector<TransactionStatus>& transactions)
+{
+    bool applied = false;
+    std::lock_guard <std::recursive_mutex> lock (m_ledgerMaster.peekMutex());
+
+    ledger = m_ledgerMaster.getCurrentLedgerHolder().getMutable();
+    engine.setLedger (ledger);
+
+    for (TransactionStatus& e : transactions)
+    {
+        std::tie (e.result, e.applied) = engine.applyTransaction (
+            *e.transaction->getSTransaction(),
+            e.admin ? (tapOPEN_LEDGER | tapNO_CHECK_SIGN | tapADMIN) : (
+            tapOPEN_LEDGER | tapNO_CHECK_SIGN));
+        applied |= e.applied;
+    }
+
+    return applied;
 }
 
 Transaction::pointer NetworkOPsImp::findTransactionByID (
@@ -1088,16 +1256,6 @@ int NetworkOPsImp::findTransactionsByDestination (
 }
 
 //
-// Account functions
-//
-
-AccountState::pointer NetworkOPsImp::getAccountState (
-    Ledger::ref lrLedger, RippleAddress const& accountID)
-{
-    return lrLedger->getAccountState (accountID);
-}
-
-//
 // Directory functions
 //
 
@@ -1109,7 +1267,8 @@ STVector256 NetworkOPsImp::getDirNodeInfo (
     std::uint64_t&      uNodeNext)
 {
     STVector256         svIndexes;
-    SLE::pointer        sleNode     = lrLedger->getDirNode (uNodeIndex);
+    auto const sleNode = fetch(*lrLedger, uNodeIndex,
+        getApp().getSLECache(), ltDIR_NODE);
 
     if (sleNode)
     {
@@ -1154,8 +1313,8 @@ Json::Value NetworkOPsImp::getOwnerInfo (
 {
     Json::Value jvObjects (Json::objectValue);
     auto uRootIndex = getOwnerDirIndex (naAccount.getAccountID ());
-    auto sleNode = lpLedger->getDirNode (uRootIndex);
-
+    auto sleNode = fetch(*lpLedger, uRootIndex,
+        getApp().getSLECache(), ltDIR_NODE);
     if (sleNode)
     {
         std::uint64_t  uNodeDir;
@@ -1164,7 +1323,8 @@ Json::Value NetworkOPsImp::getOwnerInfo (
         {
             for (auto const& uDirEntry : sleNode->getFieldV256 (sfIndexes))
             {
-                auto sleCur = lpLedger->getSLEi (uDirEntry);
+                auto sleCur = fetch(*lpLedger, uDirEntry,
+                    getApp().getSLECache());
 
                 switch (sleCur->getType ())
                 {
@@ -1197,8 +1357,9 @@ Json::Value NetworkOPsImp::getOwnerInfo (
 
             if (uNodeDir)
             {
-                sleNode = lpLedger->getDirNode (
-                    getDirNodeIndex (uRootIndex, uNodeDir));
+                sleNode = fetch(*lpLedger, getDirNodeIndex(
+                    uRootIndex, uNodeDir), getApp().getSLECache(),
+                        ltDIR_NODE);
                 assert (sleNode);
             }
         }
@@ -1316,10 +1477,9 @@ bool NetworkOPsImp::checkLastClosedLedger (
         auto current = getApp().getValidations ().getCurrentValidations (
             closedLedger, prevClosedLedger);
 
-        using u256_cvc_pair = std::map<uint256, ValidationCounter>::value_type;
-        for (auto & it: current)
+        for (auto& it: current)
         {
-            ValidationCount& vc = ledgers[it.first];
+            auto& vc = ledgers[it.first];
             vc.trustedValidations += it.second.first;
 
             if (it.second.second > vc.highValidation)
@@ -1327,7 +1487,7 @@ bool NetworkOPsImp::checkLastClosedLedger (
         }
     }
 
-    ValidationCount& ourVC = ledgers[closedLedger];
+    auto& ourVC = ledgers[closedLedger];
 
     if (mMode >= omTRACKING)
     {
@@ -1347,7 +1507,7 @@ bool NetworkOPsImp::checkLastClosedLedger (
         {
             try
             {
-                ValidationCount& vc = ledgers[peerLedger];
+                auto& vc = ledgers[peerLedger];
 
                 if (vc.nodesUsing == 0 ||
                     peer->getNodePublic ().getNodeID () > vc.highNodeUsing)
@@ -1364,7 +1524,7 @@ bool NetworkOPsImp::checkLastClosedLedger (
         }
     }
 
-    ValidationCount bestVC = ledgers[closedLedger];
+    auto bestVC = ledgers[closedLedger];
 
     // 3) Is there a network ledger we'd like to switch to? If so, do we have
     // it?
@@ -1458,16 +1618,15 @@ void NetworkOPsImp::switchLastClosedLedger (
         std::make_shared<Message> (s, protocol::mtSTATUS_CHANGE)));
 }
 
-int NetworkOPsImp::beginConsensus (
+bool NetworkOPsImp::beginConsensus (
     uint256 const& networkClosed, Ledger::pointer closingLedger)
 {
-    m_journal.info
-        << "Consensus time for ledger " << closingLedger->getLedgerSeq ();
-    m_journal.info
-        << " LCL is " << closingLedger->getParentHash ();
+    if (m_journal.info) m_journal.info <<
+        "Consensus time for #" << closingLedger->getLedgerSeq () <<
+        " with LCL " << closingLedger->getParentHash ();
 
-    auto prevLedger
-            = m_ledgerMaster.getLedgerByHash (closingLedger->getParentHash ());
+    auto prevLedger = m_ledgerMaster.getLedgerByHash (
+        closingLedger->getParentHash ());
 
     if (!prevLedger)
     {
@@ -1478,7 +1637,7 @@ int NetworkOPsImp::beginConsensus (
             setMode (omTRACKING);
         }
 
-        return 3;
+        return false;
     }
 
     assert (prevLedger->getHash () == closingLedger->getParentHash ());
@@ -1489,12 +1648,18 @@ int NetworkOPsImp::beginConsensus (
     assert (!mConsensus);
     prevLedger->setImmutable ();
 
-    mConsensus = make_LedgerConsensus (*m_localTX, networkClosed,
-        prevLedger, m_ledgerMaster.getCurrentLedger ()->getCloseTimeNC (),
-            *m_feeVote);
+    mConsensus = make_LedgerConsensus (
+        lastCloseProposers_,
+        lastCloseConvergeTook_,
+        getApp().getInboundTransactions(),
+        *m_localTX,
+        networkClosed,
+        prevLedger,
+        m_ledgerMaster.getCurrentLedger ()->getCloseTimeNC (),
+        *m_feeVote);
 
     m_journal.debug << "Initiating consensus engine";
-    return mConsensus->startup ();
+    return true;
 }
 
 bool NetworkOPsImp::haveConsensusObject ()
@@ -1517,7 +1682,7 @@ bool NetworkOPsImp::haveConsensusObject ()
         {
             m_journal.info << "Beginning consensus due to peer action";
             if ( ((mMode == omTRACKING) || (mMode == omSYNCING)) &&
-                 (getPreviousProposers() >= m_ledgerMaster.getMinValidations()) )
+                 (lastCloseProposers_ >= m_ledgerMaster.getMinValidations()) )
                 setMode (omFULL);
             beginConsensus (networkClosed, m_ledgerMaster.getCurrentLedger ());
         }
@@ -1536,8 +1701,7 @@ uint256 NetworkOPsImp::getConsensusLCL ()
 
 void NetworkOPsImp::processTrustedProposal (
     LedgerProposal::pointer proposal,
-    std::shared_ptr<protocol::TMProposeSet> set, RippleAddress nodePublic,
-    uint256 checkLedger, bool sigGood)
+    std::shared_ptr<protocol::TMProposeSet> set, const RippleAddress& nodePublic)
 {
     {
         auto lock = beast::make_lock(getApp().getMasterMutex());
@@ -1555,21 +1719,7 @@ void NetworkOPsImp::processTrustedProposal (
         {
             storeProposal (proposal, nodePublic);
 
-            uint256 consensusLCL = mConsensus->getLCL ();
-
-            if (!set->has_previousledger () && (checkLedger != consensusLCL))
-            {
-                m_journal.warning
-                    << "Have to re-check proposal signature due to "
-                    << "consensus view change";
-                assert (proposal->hasSignature ());
-                proposal->setPrevLedger (consensusLCL);
-
-                if (proposal->checkSign ())
-                    sigGood = true;
-            }
-
-            if (sigGood && (consensusLCL == proposal->getPrevLedger ()))
+            if (mConsensus->getLCL () == proposal->getPrevLedger ())
             {
                 relay = mConsensus->peerPosition (proposal);
                 m_journal.trace
@@ -1685,7 +1835,6 @@ void NetworkOPsImp::pubServer ()
 
 void NetworkOPsImp::setMode (OperatingMode om)
 {
-
     if (om == omCONNECTED)
     {
         if (getApp().getLedgerMaster ().getValidatedLedgerAge () < 60)
@@ -1703,14 +1852,9 @@ void NetworkOPsImp::setMode (OperatingMode om)
     if (mMode == om)
         return;
 
-    if ((om >= omCONNECTED) && (mMode == omDISCONNECTED))
-        mConnectTime = boost::posix_time::second_clock::universal_time ();
-
     mMode = om;
 
-    m_journal.stream((om < mMode)
-                     ? beast::Journal::kWarning : beast::Journal::kInfo)
-        << "STATE->" << strOperatingMode ();
+    m_journal.info << "STATE->" << strOperatingMode ();
     pubServer ();
 }
 
@@ -2060,17 +2204,17 @@ Json::Value NetworkOPsImp::getServerInfo (bool human, bool admin)
     info[jss::peers] = Json::UInt (getApp ().overlay ().size ());
 
     Json::Value lastClose = Json::objectValue;
-    lastClose[jss::proposers] = getApp().getOPs ().getPreviousProposers ();
+    lastClose[jss::proposers] = lastCloseProposers_;
 
     if (human)
     {
         lastClose[jss::converge_time_s] = static_cast<double> (
-            getApp().getOPs ().getPreviousConvergeTime ()) / 1000.0;
+            lastCloseConvergeTook_) / 1000.0;
     }
     else
     {
         lastClose[jss::converge_time] =
-                Json::Int (getApp().getOPs ().getPreviousConvergeTime ());
+                Json::Int (lastCloseConvergeTook_);
     }
 
     info[jss::last_close] = lastClose;
@@ -2352,9 +2496,10 @@ Json::Value NetworkOPsImp::transJson(
         // If the offer create is not self funded then add the owner balance
         if (account != amount.issue ().account)
         {
+            // VFALCO Why are we doing this hack?
             LedgerEntrySet les (lpCurrent, tapNONE, true);
-            auto const ownerFunds (les.accountFunds (account, amount, fhIGNORE_FREEZE));
-
+            auto const ownerFunds = funds(
+                les,account, amount, fhIGNORE_FREEZE);
             jvObj[jss::transaction][jss::owner_funds] = ownerFunds.getText ();
         }
     }
@@ -2592,14 +2737,22 @@ void NetworkOPsImp::newLCL (
     int proposers, int convergeTime, uint256 const& ledgerHash)
 {
     assert (convergeTime);
-    mLastCloseProposers = proposers;
-    mLastCloseConvergeTime = convergeTime;
-    mLastCloseHash = ledgerHash;
+    lastCloseProposers_ = proposers;
+    lastCloseConvergeTook_ = convergeTime;
+    lastCloseHash_ = ledgerHash;
 }
 
 std::uint32_t NetworkOPsImp::acceptLedger ()
 {
-    // accept the current transaction tree, return the new ledger's sequence
+    // This code-path is exclusively used when the server is in standalone
+    // mode via `ledger_accept`
+    assert (m_standalone);
+
+    if (!m_standalone)
+        throw std::runtime_error ("Operation only possible in STANDALONE mode.");
+
+    // FIXME Could we improve on this and remove the need for a specialized
+    // API in LedgerConsensus?
     beginConsensus (
         m_ledgerMaster.getClosedLedger ()->getHash (),
         m_ledgerMaster.getCurrentLedger ());
@@ -2612,7 +2765,7 @@ void NetworkOPsImp::storeProposal (
 {
     auto& props = mStoredProposals[peerPublic.getNodeID ()];
 
-    if (props.size () >= (unsigned) (mLastCloseProposers + 10))
+    if (props.size () >= (unsigned) (lastCloseProposers_ + 10))
         props.pop_front ();
 
     props.push_back (proposal);
@@ -2746,7 +2899,7 @@ void NetworkOPsImp::getBookPage (
     bool bAdmin,
     Ledger::pointer lpLedger,
     Book const& book,
-    Account const& uTakerID,
+    AccountID const& uTakerID,
     bool const bProof,
     const unsigned int iLimit,
     Json::Value const& jvMarker,
@@ -2755,7 +2908,7 @@ void NetworkOPsImp::getBookPage (
     Json::Value& jvOffers =
             (jvResult[jss::offers] = Json::Value (Json::arrayValue));
 
-    std::map<Account, STAmount> umBalance;
+    std::map<AccountID, STAmount> umBalance;
     const uint256   uBookBase   = getBookBase (book);
     const uint256   uBookEnd    = getQualityNext (uBookBase);
     uint256         uTipIndex   = uBookBase;
@@ -2795,8 +2948,13 @@ void NetworkOPsImp::getBookPage (
 
             m_journal.trace << "getBookPage: bDirectAdvance";
 
-            sleOfferDir = lesActive.entryCache (
-                ltDIR_NODE, lpLedger->getNextLedgerIndex (uTipIndex, uBookEnd));
+            uint256 const ledgerIndex = 
+                    lpLedger->getNextLedgerIndex (uTipIndex, uBookEnd);
+            if (ledgerIndex.isNonZero())
+                sleOfferDir = lesActive.entryCache (
+                    ltDIR_NODE, ledgerIndex);
+            else
+                sleOfferDir.reset();
 
             if (!sleOfferDir)
             {
@@ -2965,7 +3123,7 @@ void NetworkOPsImp::getBookPage (
     bool bAdmin,
     Ledger::pointer lpLedger,
     Book const& book,
-    Account const& uTakerID,
+    AccountID const& uTakerID,
     bool const bProof,
     const unsigned int iLimit,
     Json::Value const& jvMarker,
@@ -2973,7 +3131,7 @@ void NetworkOPsImp::getBookPage (
 {
     auto& jvOffers = (jvResult[jss::offers] = Json::Value (Json::arrayValue));
 
-    std::map<Account, STAmount> umBalance;
+    std::map<AccountID, STAmount> umBalance;
 
     LedgerEntrySet  lesActive (lpLedger, tapNONE, true);
     OrderBookIterator obIterator (lesActive, book);
@@ -3259,7 +3417,7 @@ bool NetworkOPsImp::getFetchPack (uint256 const& hash, Blob& data)
 
     mFetchPack.del (hash, false);
 
-    if (hash != getSHA512Half (data))
+    if (hash != sha512Half(make_Slice(data)))
     {
         m_journal.warning << "Bad entry in fetch pack";
         return false;
