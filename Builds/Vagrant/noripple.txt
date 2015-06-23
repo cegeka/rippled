@@ -1,0 +1,15 @@
+{
+    "method": "submit",
+    "params": [
+        {
+            "secret": "masterpassphrase",
+            
+            "tx_json": {
+                "TransactionType": "AccountSet",
+                "Account" : "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+                "SetFlag": "8"
+            }
+        }
+    ]
+}
+

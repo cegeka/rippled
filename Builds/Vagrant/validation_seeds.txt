@@ -1,0 +1,37 @@
+one:
+{
+   "result" : {
+      "status" : "success",
+      "validation_key" : "NEST GUN LARD DATE SLUG DEAD ADA HOLT RILL THEN SARA HEY",
+      "validation_public_key" : "n9MqYNiCydizzjMZCWpXbvQgQbjhLdw945iZ2cR52ifL6YLLhbYa",
+      "validation_seed" : "ssRCek4tLyFrFnKBP5tciJDLvuNiT"
+   }
+}
+two:
+{
+   "result" : {
+      "status" : "success",
+      "validation_key" : "EYE WAR TAKE KLAN BARR HESS HULK COCO RAIL DEE BEAM FOOL",
+      "validation_public_key" : "n9LqKwVB2hPnvQTMSR2mo5SLTRCLbDF1TnfFDvPE8Pb2B42efpp8",
+      "validation_seed" : "spFokbB6TPNmdmCHvt3N92e1c5MTF"
+   }
+}
+three:
+{
+   "result" : {
+      "status" : "success",
+      "validation_key" : "HOWL DOE LOFT MAST MEAL APE MOON DOT ARCH FOUR FAWN AMOK",
+      "validation_public_key" : "n9LnXV5iK9L9XBnPez7M2dzhHEc71ZfufuWeLLoNAUvPjQqfUVkZ",
+      "validation_seed" : "shFqzXpz4dUjDXp4QjH2xtKuWVApQ"
+   }
+}
+
+extra:
+{
+   "result" : {
+      "status" : "success",
+      "validation_key" : "HALF FOWL TOLD SUD FLAG FIGS HIRE LEA JACK MUCH DEAL DENT",
+      "validation_public_key" : "n9LfxmkrdenV2V1B3D1j5DeBpMTU4nJdRTkQGTSav2baGBZJgGia",
+      "validation_seed" : "sn12CrGbgko99SpvGnxzAhr5JiSa9"
+   }
+}
