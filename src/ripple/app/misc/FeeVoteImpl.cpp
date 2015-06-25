@@ -128,7 +128,7 @@ FeeVoteImpl::doValidation (Ledger::ref lastClosedLedger,
     if (lastClosedLedger->getReserve (0) != target_.account_reserve)
     {
         if (journal_.info) journal_.info <<
-            "Voting for base resrve of " << target_.account_reserve;
+            "Voting for base reserve of " << target_.account_reserve;
 
         baseValidation.setFieldU32(sfReserveBase, target_.account_reserve);
     }
