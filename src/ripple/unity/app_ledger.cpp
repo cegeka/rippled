@@ -24,25 +24,24 @@
 #include <ripple/app/ledger/AccountStateSF.cpp>
 #include <ripple/app/ledger/BookListeners.cpp>
 #include <ripple/app/ledger/ConsensusTransSetSF.cpp>
-#include <ripple/app/ledger/DeferredCredits.cpp>
-#include <ripple/app/ledger/DirectoryEntryIterator.cpp>
 #include <ripple/app/ledger/Ledger.cpp>
-#include <ripple/app/ledger/LedgerEntrySet.cpp>
 #include <ripple/app/ledger/LedgerHistory.cpp>
 #include <ripple/app/ledger/LedgerProposal.cpp>
 #include <ripple/app/ledger/OrderBookDB.cpp>
-#include <ripple/app/ledger/OrderBookIterator.cpp>
 #include <ripple/app/ledger/TransactionStateSF.cpp>
 
+#include <ripple/app/ledger/impl/ConsensusImp.cpp>
 #include <ripple/app/ledger/impl/DisputedTx.cpp>
 #include <ripple/app/ledger/impl/InboundLedger.cpp>
 #include <ripple/app/ledger/impl/InboundLedgers.cpp>
 #include <ripple/app/ledger/impl/LedgerCleaner.cpp>
-#include <ripple/app/ledger/impl/LedgerConsensus.cpp>
+#include <ripple/app/ledger/impl/LedgerConsensusImp.cpp>
 #include <ripple/app/ledger/impl/LedgerFees.cpp>
 #include <ripple/app/ledger/impl/LedgerMaster.cpp>
 #include <ripple/app/ledger/impl/LedgerTiming.cpp>
+#include <ripple/app/ledger/impl/MetaView.cpp>
 
 #include <ripple/app/ledger/tests/common_ledger.cpp>
 #include <ripple/app/ledger/tests/DeferredCredits.test.cpp>
 #include <ripple/app/ledger/tests/Ledger_test.cpp>
+#include <ripple/app/ledger/tests/MetaView_test.cpp>

@@ -195,7 +195,7 @@ TER PathCursor::deliverNodeForward (
 
                 // Output: Debit offer owner, send XRP or non-XPR to next
                 // account.
-                resultCode = ledger().accountSend (
+                resultCode = accountSend(view(),
                     node().offerOwnerAccount_,
                     nextNode().account_,
                     saOutPassAct);
@@ -252,7 +252,7 @@ TER PathCursor::deliverNodeForward (
                 auto const& id = isXRP(node().issue_) ?
                         xrpAccount() : node().issue_.account;
                 auto outPassTotal = saOutPassAct + saOutPassFees;
-                ledger().accountSend (
+                accountSend(view(),
                     node().offerOwnerAccount_,
                     id,
                     outPassTotal);
@@ -286,7 +286,7 @@ TER PathCursor::deliverNodeForward (
             {
                 auto id = !isXRP(previousNode().issue_.currency) ?
                         uInAccountID : xrpAccount();
-                resultCode = ledger().accountSend (
+                resultCode = accountSend(view(),
                     id,
                     node().offerOwnerAccount_,
                     saInPassAct);
@@ -316,7 +316,7 @@ TER PathCursor::deliverNodeForward (
             node().sleOffer->setFieldAmount (sfTakerGets, saTakerGetsNew);
             node().sleOffer->setFieldAmount (sfTakerPays, saTakerPaysNew);
 
-            ledger().entryModify (node().sleOffer);
+            view().update (node().sleOffer);
 
             if (saOutPassAct == saOutFunded || saTakerGetsNew == zero)
             {

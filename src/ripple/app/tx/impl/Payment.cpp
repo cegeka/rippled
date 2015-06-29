@@ -90,7 +90,7 @@ public:
         if (!isLegalNet (saDstAmount) || !isLegalNet (maxSourceAmount))
             return temBAD_AMOUNT;
 
-        AccountID const uDstAccountID (mTxn.getFieldAccount160 (sfDestination));
+        AccountID const uDstAccountID (mTxn.getAccountID (sfDestination));
 
         if (!uDstAccountID)
         {
@@ -173,7 +173,7 @@ public:
         bool const defaultPathsAllowed = !(uTxFlags & tfNoRippleDirect);
         bool const bPaths = mTxn.isFieldPresent (sfPaths);
         bool const bMax = mTxn.isFieldPresent (sfSendMax);
-        AccountID const uDstAccountID (mTxn.getFieldAccount160 (sfDestination));
+        AccountID const uDstAccountID (mTxn.getAccountID (sfDestination));
         STAmount const saDstAmount (mTxn.getFieldAmount (sfAmount));
         STAmount maxSourceAmount;
         if (bMax)
@@ -191,8 +191,8 @@ public:
             " saDstAmount=" << saDstAmount.getFullText ();
 
         // Open a ledger for editing.
-        auto const index = getAccountRootIndex (uDstAccountID);
-        SLE::pointer sleDst (mEngine->view().entryCache (ltACCOUNT_ROOT, index));
+        auto const k = keylet::account(uDstAccountID);
+        SLE::pointer sleDst = mEngine->view().peek (k);
 
         if (!sleDst)
         {
@@ -233,11 +233,10 @@ public:
             }
 
             // Create the account.
-            sleDst = std::make_shared<SLE>(ltACCOUNT_ROOT,
-                getAccountRootIndex (uDstAccountID));
-            sleDst->setFieldAccount (sfAccount, uDstAccountID);
+            sleDst = std::make_shared<SLE>(k);
+            sleDst->setAccountID (sfAccount, uDstAccountID);
             sleDst->setFieldU32 (sfSequence, 1);
-            mEngine->view().entryCreate(sleDst);
+            mEngine->view().insert(sleDst);
         }
         else if ((sleDst->getFlags () & lsfRequireDestTag) &&
                  !mTxn.isFieldPresent (sfDestinationTag))
@@ -256,7 +255,7 @@ public:
             // Tell the engine that we are intending to change the the destination
             // account.  The source account gets always charged a fee so it's always
             // marked as modified.
-            mEngine->view().entryModify (sleDst);
+            mEngine->view().update (sleDst);
         }
 
         TER terResult;
@@ -293,24 +292,27 @@ public:
                 }
                 else
                 {
-
                     path::RippleCalc::Output rc;
                     {
-                        ScopedDeferCredits g (mEngine->view ());
+                        PaymentView view (mEngine->view());
                         rc = path::RippleCalc::rippleCalculate (
-                            mEngine->view (),
+                            view,
                             maxSourceAmount,
                             saDstAmount,
                             uDstAccountID,
                             mTxnAccountID,
                             spsPaths,
                             &rcInput);
+                        // VFALCO NOTE We might not need to apply, depending
+                        //             on the TER. But always applying *should*
+                        //             be safe.
+                        view.apply();
                     }
 
                     // TODO: is this right?  If the amount is the correct amount, was
                     // the delivered amount previously set?
                     if (rc.result () == tesSUCCESS && rc.actualAmountOut != saDstAmount)
-                        mEngine->view ().setDeliveredAmount (rc.actualAmountOut);
+                        mEngine->deliverAmount (rc.actualAmountOut);
 
                     terResult = rc.result ();
                 }

@@ -75,11 +75,11 @@ Json::Value doLedgerData (RPC::Context& context)
     jvResult[jss::ledger_index] = std::to_string( lpLedger->getLedgerSeq ());
 
     Json::Value& nodes = (jvResult[jss::state] = Json::arrayValue);
-    SHAMap& map = *(lpLedger->peekAccountStateMap ());
+    auto& map = lpLedger->stateMap();
 
     for (;;)
     {
-       std::shared_ptr<SHAMapItem> item = map.peekNextItem (resumePoint);
+       auto item = map.peekNextItem (resumePoint);
        if (!item)
            break;
        resumePoint = item->getTag();

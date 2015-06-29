@@ -60,7 +60,6 @@ ServerHandlerImp::ServerHandlerImp (Stoppable& parent,
     : ServerHandler (parent)
     , m_resourceManager (resourceManager)
     , m_journal (deprecatedLogs().journal("Server"))
-    , m_jobQueue (jobQueue)
     , m_networkOPs (networkOPs)
     , m_server (HTTP::make_Server(
         *this, io_service, deprecatedLogs().journal("Server")))
@@ -181,24 +180,12 @@ ServerHandlerImp::onRequest (HTTP::Session& session)
 
     auto detach = session.detach();
 
-    if (setup_.yieldStrategy.useCoroutines ==
-        RPC::YieldStrategy::UseCoroutines::yes)
-    {
-        RPC::SuspendCallback suspend (
-            [this, detach] (RPC::Suspend const& suspend) {
-                processSession (detach, suspend);
-            });
-        RPC::Coroutine coroutine (suspend);
-        coroutine.run();
-    }
-    else
-    {
-        m_jobQueue.addJob (
-            jtCLIENT, "RPC-Client",
-            [=] (Job&) {
-                processSession (detach, RPC::Suspend());
-            });
-    }
+    RPC::SuspendCallback suspend (
+        [this, detach] (RPC::Suspend const& suspend) {
+            processSession (detach, suspend);
+        });
+    RPC::Coroutine coroutine (suspend);
+    coroutine.run();
 }
 
 void
@@ -255,7 +242,7 @@ ServerHandlerImp::processRequest (
         Json::Reader reader;
         if ((request.size () > 1000000) ||
             ! reader.parse (request, jsonRPC) ||
-            jsonRPC.isNull () ||
+            ! jsonRPC ||
             ! jsonRPC.isObject ())
         {
             HTTPReply (400, "Unable to parse request", output);
@@ -271,7 +258,7 @@ ServerHandlerImp::processRequest (
 
     Json::Value const& method = jsonRPC ["method"];
 
-    if (method.isNull ()) {
+    if (! method) {
         HTTPReply (400, "Null method", output);
         return;
     }
@@ -326,7 +313,7 @@ ServerHandlerImp::processRequest (
     // and we take that first entry and validate that it's an object.
     Json::Value params = jsonRPC [jss::params];
 
-    if (params.isNull () || params.empty())
+    if (! params)
         params = Json::Value (Json::objectValue);
 
     else if (!params.isArray () || params.size() != 1)

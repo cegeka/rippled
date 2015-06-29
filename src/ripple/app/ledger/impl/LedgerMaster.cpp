@@ -397,13 +397,6 @@ public:
         mBuildingLedgerSeq.store (i);
     }
 
-    bool haveLedgerRange (std::uint32_t from, std::uint32_t to)
-    {
-        ScopedLockType sl (mCompleteLock);
-        std::uint32_t prevMissing = mCompleteLedgers.prevMissing (to + 1);
-        return (prevMissing == RangeSet::absent) || (prevMissing < from);
-    }
-
     bool haveLedger (std::uint32_t seq)
     {
         ScopedLockType sl (mCompleteLock);
@@ -661,7 +654,7 @@ public:
     {
         // A new ledger has been accepted as part of the trusted chain
         WriteLog (lsDEBUG, LedgerMaster) << "Ledger " << ledger->getLedgerSeq () << " accepted :" << ledger->getHash ();
-        assert (ledger->peekAccountStateMap ()->getHash ().isNonZero ());
+        assert (ledger->stateMap().getHash ().isNonZero ());
 
         ledger->setValidated();
         ledger->setFull();
@@ -1024,8 +1017,9 @@ public:
                                     setFullLedger(ledger, false, false);
                                     mHistLedger = ledger;
                                     if ((mFillInProgress == 0) && (Ledger::getHashByIndex(ledger->getLedgerSeq() - 1) == ledger->getParentHash()))
-                                    { // Previous ledger is in DB
-                                        ScopedLockType sl(m_mutex);
+                                    {
+                                        // Previous ledger is in DB
+                                        ScopedLockType lock (m_mutex);
                                         mFillInProgress = ledger->getLedgerSeq();
                                         getApp().getJobQueue().addJob(jtADVANCE, "tryFill", std::bind (
                                             &LedgerMasterImp::tryFill, this,

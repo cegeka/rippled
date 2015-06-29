@@ -42,7 +42,6 @@ getLedgerHashIndex (std::uint32_t desiredLedgerIndex)
         std::uint16_t(spaceSkipList),
         std::uint32_t(desiredLedgerIndex >> 16));
 }
-
 // get the index of the node that holds the enabled amendments
 uint256
 getLedgerAmendmentIndex ()
@@ -63,12 +62,6 @@ getAccountRootIndex (AccountID const& account)
     return sha512Half(
         std::uint16_t(spaceAccount),
         account);
-}
-
-uint256
-getAccountRootIndex (const RippleAddress & account)
-{
-    return getAccountRootIndex (account.getAccountID ());
 }
 
 uint256
@@ -204,18 +197,9 @@ Keylet account_t::operator()(
         getAccountRootIndex(id) };
 }
 
-Keylet account_t::operator()(
-    RippleAddress const& ra) const
+Keylet child (uint256 const& key)
 {
-    return { ltACCOUNT_ROOT,
-        getAccountRootIndex(ra.getAccountID()) };
-}
-
-Keylet owndir_t::operator()(
-    AccountID const& id) const
-{
-    return { ltDIR_NODE,
-        getOwnerDirIndex(id) };
+    return { ltCHILD, key };
 }
 
 Keylet skip_t::operator()() const
@@ -236,7 +220,7 @@ Keylet amendments_t::operator()() const
         getLedgerAmendmentIndex() };
 }
 
-Keylet fee_t::operator()() const
+Keylet fees_t::operator()() const
 {
     return { ltFEE_SETTINGS,
         getLedgerFeeIndex() };
@@ -248,19 +232,25 @@ Keylet book_t::operator()(Book const& b) const
         getBookBase(b) };
 }
 
+Keylet line_t::operator()(AccountID const& id0,
+    AccountID const& id1, Currency const& currency) const
+{
+    return { ltRIPPLE_STATE,
+        getRippleStateIndex(id0, id1, currency) };
+}
+
+Keylet line_t::operator()(AccountID const& id,
+    Issue const& issue) const
+{
+    return { ltRIPPLE_STATE,
+        getRippleStateIndex(id, issue) };
+}
+
 Keylet offer_t::operator()(AccountID const& id,
     std::uint32_t seq) const
 {
     return { ltOFFER,
         getOfferIndex(id, seq) };
-}
-
-Keylet item_t::operator()(Keylet const& k,
-    std::uint64_t index,
-        LedgerEntryType type) const
-{
-    return { type,
-        getDirNodeIndex(k.key, index) };
 }
 
 Keylet quality_t::operator()(Keylet const& k,
@@ -285,24 +275,37 @@ Keylet ticket_t::operator()(AccountID const& id,
         getTicketIndex(id, seq) };
 }
 
-Keylet trust_t::operator()(AccountID const& id0,
-    AccountID const& id1, Currency const& currency) const
-{
-    return { ltRIPPLE_STATE,
-        getRippleStateIndex(id0, id1, currency) };
-}
-
-Keylet trust_t::operator()(AccountID const& id,
-    Issue const& issue) const
-{
-    return { ltRIPPLE_STATE,
-        getRippleStateIndex(id, issue) };
-}
-
 Keylet signers_t::operator()(AccountID const& id) const
 {
     return { ltSIGNER_LIST,
         getSignerListIndex(id) };
+}
+
+//------------------------------------------------------------------------------
+
+Keylet unchecked (uint256 const& key)
+{
+    return { ltANY, key };
+}
+
+Keylet ownerDir(AccountID const& id)
+{
+    return { ltDIR_NODE,
+        getOwnerDirIndex(id) };
+}
+
+Keylet page(uint256 const& key,
+    std::uint64_t index)
+{
+    return { ltDIR_NODE,
+        getDirNodeIndex(key, index) };
+}
+
+Keylet page(Keylet const& root,
+    std::uint64_t index)
+{
+    assert(root.type == ltDIR_NODE);
+    return page(root.key, index);
 }
 
 } // keylet

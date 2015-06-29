@@ -24,6 +24,7 @@
 #include <ripple/app/tx/impl/SignerEntries.h>
 #include <ripple/core/Config.h>
 #include <ripple/protocol/Indexes.h>
+#include <ripple/protocol/types.h>
 
 namespace ripple {
 
@@ -171,7 +172,7 @@ TER Transactor::checkSeq ()
             return terPRE_SEQ;
         }
 
-        if (mEngine->getLedger ()->hasTransaction (mTxn.getTransactionID ()))
+        if (hasTransaction (*mEngine->getLedger (), mTxn.getTransactionID ()))
             return tefALREADY;
 
         m_journal.trace << "applyTransaction: has past sequence number " <<
@@ -207,7 +208,7 @@ TER Transactor::preCheck ()
 
 TER Transactor::preCheckAccount ()
 {
-    mTxnAccountID = mTxn.getSourceAccount ().getAccountID ();
+    mTxnAccountID = mTxn.getAccountID(sfAccount);
 
     if (!mTxnAccountID)
     {
@@ -259,8 +260,7 @@ TER Transactor::apply ()
         return terResult;
 
     // Find source account
-    mTxnAccount = mEngine->view().entryCache (ltACCOUNT_ROOT,
-        getAccountRootIndex (mTxnAccountID));
+    mTxnAccount = mEngine->view().peek (keylet::account(mTxnAccountID));
 
     calculateFee ();
 
@@ -272,7 +272,7 @@ TER Transactor::apply ()
         {
             m_journal.trace <<
                 "applyTransaction: delay: source account does not exist " <<
-                mTxn.getSourceAccount ().humanAccountID ();
+                toBase58(mTxn.getAccountID(sfAccount));
             return terNO_ACCOUNT;
         }
     }
@@ -296,7 +296,7 @@ TER Transactor::apply ()
     if (terResult != tesSUCCESS) return (terResult);
 
     if (mTxnAccount)
-        mEngine->view().entryModify (mTxnAccount);
+        mEngine->view().update (mTxnAccount);
 
     return doApply ();
 }
@@ -315,9 +315,12 @@ TER Transactor::checkSign ()
 
 TER Transactor::checkSingleSign ()
 {
+    // VFALCO NOTE This is needlessly calculating the
+    //             AccountID multiple times.
+
     // Consistency: Check signature
     // Verify the transaction's signing public key is authorized for signing.
-    if (mSigningPubKey.getAccountID () == mTxnAccountID)
+    if (calcAccountID(mSigningPubKey) == mTxnAccountID)
     {
         // Authorized to continue.
         mSigMaster = true;
@@ -325,8 +328,8 @@ TER Transactor::checkSingleSign ()
             return tefMASTER_DISABLED;
     }
     else if (mHasAuthKey &&
-        (mSigningPubKey.getAccountID () ==
-            mTxnAccount->getFieldAccount160 (sfRegularKey)))
+        (calcAccountID(mSigningPubKey) ==
+            mTxnAccount->getAccountID (sfRegularKey)))
     {
         // Authorized to continue.
     }
@@ -363,9 +366,9 @@ getSignerList (
 {
     GetSignerListResult ret;
 
-    uint256 const index = getSignerListIndex (signingForAcctID);
+    auto const k = keylet::signers(signingForAcctID);
     SLE::pointer accountSignersList =
-        engine->view ().entryCache (ltSIGNER_LIST, index);
+        engine->view().peek (k);
 
     // If the signer list doesn't exist the account is not multi-signing.
     if (!accountSignersList)
@@ -411,8 +414,8 @@ checkSigningAccounts (
     auto signerEntriesItr = signerEntries.begin ();
     for (auto const& signingAccount : signingAccounts)
     {
-        AccountID const signingAcctID =
-            signingAccount.getFieldAccount (sfAccount).getAccountID ();
+        auto const signingAcctID =
+            signingAccount.getAccountID(sfAccount);
 
         // Attempt to match the SignerEntry with a SigningAccount;
         while (signerEntriesItr->account < signingAcctID)
@@ -446,8 +449,8 @@ checkSigningAccounts (
         // need to compute the accountID that is associated with the signer's
         // public key.
         AccountID const signingAcctIDFromPubKey =
-            RippleAddress::createAccountPublic (
-                signingAccount.getFieldVL (sfSigningPubKey)).getAccountID ();
+            calcAccountID(RippleAddress::createAccountPublic (
+                signingAccount.getFieldVL (sfSigningPubKey)));
 
         // Verify that the signingAcctID and the signingAcctIDFromPubKey
         // belong together.  Here is are the rules:
@@ -474,10 +477,8 @@ checkSigningAccounts (
 
         // In any of these cases we need to know whether the account is in
         // the ledger.  Determine that now.
-        uint256 const signerAccountIndex = getAccountRootIndex (signingAcctID);
-
         SLE::pointer signersAccountRoot =
-            engine->view ().entryCache (ltACCOUNT_ROOT, signerAccountIndex);
+            engine->view().peek (keylet::account(signingAcctID));
 
         if (signingAcctIDFromPubKey == signingAcctID)
         {
@@ -517,7 +518,7 @@ checkSigningAccounts (
                 return ret;
             }
             if (signingAcctIDFromPubKey !=
-                signersAccountRoot->getFieldAccount160 (sfRegularKey))
+                signersAccountRoot->getAccountID (sfRegularKey))
             {
                 journal.trace <<
                     "applyTransaction: Account doesn't match RegularKey.";
@@ -558,10 +559,10 @@ TER Transactor::checkMultiSign ()
     auto signerEntriesItr = outer.signerEntries.begin ();
     for (auto const& signingFor : multiSigners)
     {
-        AccountID const signingForID =
-            signingFor.getFieldAccount (sfAccount).getAccountID ();
+        auto const signingForID =
+            signingFor.getAccountID(sfAccount);
 
-        STArray const& signingAccounts =
+        auto const& signingAccounts =
             signingFor.getFieldArray (sfSigningAccounts);
 
         // There are two possibilities:

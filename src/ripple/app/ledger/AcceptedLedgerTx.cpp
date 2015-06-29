@@ -18,10 +18,12 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/app/main/Application.h>
 #include <ripple/app/ledger/AcceptedLedgerTx.h>
-#include <ripple/app/ledger/LedgerEntrySet.h>
+#include <ripple/ledger/CachedView.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/protocol/JsonFields.h>
+#include <ripple/protocol/types.h>
 
 namespace ripple {
 
@@ -81,27 +83,25 @@ void AcceptedLedgerTx::buildJson ()
 
     mJson[jss::result] = transHuman (mResult);
 
-    if (!mAffected.empty ())
+    if (! mAffected.empty ())
     {
         Json::Value& affected = (mJson[jss::affected] = Json::arrayValue);
-        for (auto const& ra : mAffected)
-        {
-            affected.append (ra.humanAccountID ());
-        }
+        for (auto const& account: mAffected)
+            affected.append (getApp().accountIDCache().toBase58(account));
     }
 
     if (mTxn->getTxnType () == ttOFFER_CREATE)
     {
-        auto const account (mTxn->getSourceAccount ().getAccountID ());
-        auto const amount (mTxn->getFieldAmount (sfTakerGets));
+        auto const& account = mTxn->getAccountID(sfAccount);
+        auto const amount = mTxn->getFieldAmount (sfTakerGets);
 
         // If the offer create is not self funded then add the owner balance
         if (account != amount.issue ().account)
         {
-            LedgerEntrySet les (mLedger, tapNONE, true);
-            auto const ownerFunds (funds(
-                les, account, amount, fhIGNORE_FREEZE));
-
+            CachedView const view(
+                *mLedger, getApp().getSLECache());
+            auto const ownerFunds = accountFunds(view,
+                account, amount, fhIGNORE_FREEZE, getConfig());
             mJson[jss::transaction][jss::owner_funds] = ownerFunds.getText ();
         }
     }

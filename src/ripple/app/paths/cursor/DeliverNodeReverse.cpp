@@ -279,7 +279,7 @@ TER PathCursor::deliverNodeReverse (
         // visited.  However, these deductions and adjustments are tenative.
         //
         // Must reset balances when going forward to perform actual transfers.
-        resultCode   = ledger().accountSend (
+        resultCode   = accountSend(view(),
             node().offerOwnerAccount_, node().issue_.account, saOutPassAct);
 
         if (resultCode != tesSUCCESS)
@@ -303,7 +303,7 @@ TER PathCursor::deliverNodeReverse (
         node().sleOffer->setFieldAmount (sfTakerGets, saTakerGetsNew);
         node().sleOffer->setFieldAmount (sfTakerPays, saTakerPaysNew);
 
-        ledger().entryModify (node().sleOffer);
+        view().update (node().sleOffer);
 
         if (saOutPassAct == node().saTakerGets)
         {

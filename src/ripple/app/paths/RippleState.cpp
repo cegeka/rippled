@@ -18,6 +18,7 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/ledger/CachedView.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/paths/RippleState.h>
 #include <ripple/protocol/STAmount.h>
@@ -75,8 +76,10 @@ getRippleStateItems (
     AccountID const& accountID,
     Ledger::ref ledger)
 {
+    CachedView const view(
+        *ledger, getApp().getSLECache());
     std::vector <RippleState::pointer> items;
-    forEachItem(*ledger, accountID, getApp().getSLECache(),
+    forEachItem(view, accountID,
         [&items,&accountID](
         std::shared_ptr<SLE const> const&sleCur)
         {

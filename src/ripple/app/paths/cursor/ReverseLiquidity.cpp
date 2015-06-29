@@ -56,7 +56,7 @@ TER PathCursor::reverseLiquidity () const
 
     // node.transferRate_ caches the output transfer rate for this node.
     node().transferRate_ = amountFromRate (
-        rippleTransferRate (ledger(), node().issue_.account));
+        rippleTransferRate (view(), node().issue_.account));
 
     if (node().isAccount ())
         return reverseLiquidityForAccount ();

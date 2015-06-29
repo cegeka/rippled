@@ -50,7 +50,7 @@ public:
     {
     }
 
-    void nextIncrement(LedgerEntrySet const& checkpoint) const;
+    void nextIncrement() const;
 
 private:
     PathCursor(PathCursor const&) = default;
@@ -60,7 +60,7 @@ private:
         return {rippleCalc_, pathState_, multiQuality_, nodeIndex_ + delta};
     }
 
-    TER liquidity(LedgerEntrySet const& lesCheckpoint) const;
+    TER liquidity() const;
     TER reverseLiquidity () const;
     TER forwardLiquidity () const;
 
@@ -91,9 +91,11 @@ private:
         STAmount& saInAct,
         STAmount& saInFees) const;
 
-    LedgerEntrySet& ledger() const
+    // VFALCO TODO Rename this to view()
+    PaymentView&
+    view() const
     {
-        return rippleCalc_.mActiveLedger;
+        return pathState_.view();
     }
 
     NodeIndex nodeSize() const

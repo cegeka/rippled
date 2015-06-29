@@ -47,20 +47,22 @@ public:
 
         uint256 const ticketId = mTxn.getFieldH256 (sfTicketID);
 
-        SLE::pointer sleTicket = mEngine->view ().entryCache (ltTICKET, ticketId);
+        // VFALCO This is highly suspicious, we're requiring that the
+        //        transaction provide the return value of getTicketIndex?
+        SLE::pointer sleTicket = mEngine->view().peek (keylet::ticket(ticketId));
 
         if (!sleTicket)
             return tecNO_ENTRY;
 
         auto const ticket_owner =
-            sleTicket->getFieldAccount160 (sfAccount);
+            sleTicket->getAccountID (sfAccount);
 
         bool authorized =
             mTxnAccountID == ticket_owner;
 
         // The target can also always remove a ticket
         if (!authorized && sleTicket->isFieldPresent (sfTarget))
-            authorized = (mTxnAccountID == sleTicket->getFieldAccount160 (sfTarget));
+            authorized = (mTxnAccountID == sleTicket->getAccountID (sfTarget));
 
         // And finally, anyone can remove an expired ticket
         if (!authorized && sleTicket->isFieldPresent (sfExpiration))
@@ -76,12 +78,12 @@ public:
 
         std::uint64_t const hint (sleTicket->getFieldU64 (sfOwnerNode));
 
-        TER const result = mEngine->view ().dirDelete (false, hint,
+        TER const result = dirDelete (mEngine->view (), false, hint,
             getOwnerDirIndex (ticket_owner), ticketId, false, (hint == 0));
 
-        adjustOwnerCount(mEngine->view(), mEngine->view().entryCache(
-            ltACCOUNT_ROOT, getAccountRootIndex(ticket_owner)), -1);
-        mEngine->view ().entryDelete (sleTicket);
+        adjustOwnerCount(mEngine->view(), mEngine->view().peek(
+            keylet::account(ticket_owner)), -1);
+        mEngine->view ().erase (sleTicket);
 
         return result;
     }

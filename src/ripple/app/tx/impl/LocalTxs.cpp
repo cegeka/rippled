@@ -20,7 +20,6 @@
 #include <BeastConfig.h>
 #include <ripple/app/tx/LocalTxs.h>
 #include <ripple/app/main/Application.h>
-#include <ripple/app/misc/CanonicalTXSet.h>
 #include <ripple/protocol/Indexes.h>
 
 /*
@@ -64,7 +63,7 @@ public:
         : m_txn (txn)
         , m_expire (index + holdLedgers)
         , m_id (txn->getTransactionID ())
-        , m_account (txn->getSourceAccount ())
+        , m_account (txn->getAccountID(sfAccount))
         , m_seq (txn->getSequence())
     {
         if (txn->isFieldPresent (sfLastLedgerSequence))
@@ -91,7 +90,7 @@ public:
         return m_txn;
     }
 
-    RippleAddress const& getAccount () const
+    AccountID const& getAccount () const
     {
         return m_account;
     }
@@ -101,16 +100,17 @@ private:
     STTx::pointer m_txn;
     LedgerIndex                    m_expire;
     uint256                        m_id;
-    RippleAddress                  m_account;
+    AccountID                      m_account;
     std::uint32_t                  m_seq;
 };
 
-class LocalTxsImp : public LocalTxs
+//------------------------------------------------------------------------------
+
+class LocalTxsImp
+    : public LocalTxs
 {
 public:
-
-    LocalTxsImp()
-    { }
+    LocalTxsImp() = default;
 
     // Add a new transaction to the set of local transactions
     void push_back (LedgerIndex index, STTx::ref txn) override
@@ -124,11 +124,11 @@ public:
     {
         if (txn.isExpired (ledger->getLedgerSeq ()))
             return true;
-        if (ledger->hasTransaction (txn.getID ()))
+        if (hasTransaction (*ledger, txn.getID ()))
             return true;
-        auto const sle = fetch(*ledger,
-            getAccountRootIndex(txn.getAccount().getAccountID()),
-                getApp().getSLECache());
+        auto const sle = cachedRead(*ledger,
+            keylet::account(txn.getAccount()).key,
+                getApp().getSLECache(), ltACCOUNT_ROOT);
         if (! sle)
             return false;
         if (sle->getFieldU32 (sfSequence) > txn.getSeq ())
@@ -136,9 +136,9 @@ public:
         return false;
     }
 
-    void apply (TransactionEngine& engine) override
+    CanonicalTXSet
+    getTxSet () override
     {
-
         CanonicalTXSet tset (uint256 {});
 
         // Get the set of local transactions as a canonical
@@ -146,24 +146,11 @@ public:
         {
             std::lock_guard <std::mutex> lock (m_lock);
 
-            for (auto& it : m_txns)
+            for (auto const& it : m_txns)
                 tset.push_back (it.getTX());
         }
 
-        for (auto it : tset)
-        {
-            try
-            {
-                engine.applyTransaction (*it.second, tapOPEN_LEDGER);
-            }
-            catch (...)
-            {
-                // Nothing special we need to do.
-                // It's possible a cleverly malformed transaction or
-                // corrupt back end database could cause an exception
-                // during transaction processing.
-            }
-        }
+        return tset;
     }
 
     // Remove transactions that have either been accepted into a fully-validated
@@ -189,14 +176,14 @@ public:
     }
 
 private:
-
     std::mutex m_lock;
     std::list <LocalTx> m_txns;
 };
 
-std::unique_ptr <LocalTxs> LocalTxs::New()
+std::unique_ptr<LocalTxs>
+make_LocalTxs ()
 {
-    return std::make_unique <LocalTxsImp> ();
+    return std::make_unique<LocalTxsImp> ();
 }
 
 } // ripple

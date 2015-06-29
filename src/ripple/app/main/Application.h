@@ -23,11 +23,11 @@
 #include <ripple/shamap/FullBelowCache.h>
 #include <ripple/shamap/TreeNodeCache.h>
 #include <ripple/basics/TaggedCache.h>
-#include <ripple/app/ledger/SLECache.h>
+#include <ripple/ledger/SLECache.h>
 #include <beast/utility/PropertyStream.h>
 #include <beast/cxx14/memory.h> // <memory>
 #include <mutex>
-   
+
 namespace boost { namespace asio { class io_service; } }
 
 namespace ripple {
@@ -58,6 +58,7 @@ class OrderBookDB;
 class Overlay;
 class PathRequests;
 class PendingSaves;
+class AccountIDCache;
 class STLedgerEntry;
 class TransactionMaster;
 class Validations;
@@ -116,6 +117,7 @@ public:
     virtual PathRequests&           getPathRequests () = 0;
     virtual SHAMapStore&            getSHAMapStore () = 0;
     virtual PendingSaves&           pendingSaves() = 0;
+    virtual AccountIDCache const&   accountIDCache() const = 0;
     virtual DatabaseCon& getTxnDB () = 0;
     virtual DatabaseCon& getLedgerDB () = 0;
 

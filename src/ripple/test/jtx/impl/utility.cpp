@@ -24,6 +24,7 @@
 #include <ripple/protocol/Indexes.h>
 #include <ripple/protocol/JsonFields.h>
 #include <ripple/protocol/STParsedJSON.h>
+#include <ripple/protocol/types.h>
 #include <cstring>
 
 namespace ripple {
@@ -71,14 +72,16 @@ fill_seq (Json::Value& jv,
 {
     if (jv.isMember(jss::Sequence))
         return;
-    RippleAddress ra;
-    ra.setAccountID(jv[jss::Account].asString());
-    auto const ar = ledger.fetch(
-        getAccountRootIndex(ra.getAccountID()));
-
+    auto const account =
+        parseBase58<AccountID>(
+            jv[jss::Account].asString());
+    if (! account)
+        throw parse_error(
+            "unexpected invalid Account");
+    auto const ar = ledger.read(
+        keylet::account(*account));
     if (!ar)
         return;
-
     jv[jss::Sequence] =
         ar->getFieldU32(sfSequence);
 }

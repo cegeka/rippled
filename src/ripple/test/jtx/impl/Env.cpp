@@ -41,6 +41,7 @@
 #include <ripple/protocol/SystemParameters.h>
 #include <ripple/protocol/TER.h>
 #include <ripple/protocol/TxFlags.h>
+#include <ripple/protocol/types.h>
 #include <memory>
 // VFALCO TODO Use AnyPublicKey, AnySecretKey, AccountID
 
@@ -80,11 +81,12 @@ Env::lookup (AccountID const& id) const
 Account const&
 Env::lookup (std::string const& base58ID) const
 {
-    RippleAddress ra;
-    if (! ra.setAccountID(base58ID))
+    auto const account =
+        parseBase58<AccountID>(base58ID);
+    if (! account)
         throw std::runtime_error(
             "Env::lookup: invalid account ID");
-    return lookup(ra.getAccountID());
+    return lookup(*account);
 }
 
 PrettyAmount
@@ -104,7 +106,7 @@ Env::balance (Account const& account,
 {
     if (isXRP(issue.currency))
         return balance(account);
-    auto const sle = le(getRippleStateIndex(
+    auto const sle = le(keylet::line(
         account.id(), issue));
     if (! sle)
         return { STAmount( issue, 0 ),
@@ -130,14 +132,13 @@ Env::seq (Account const& account) const
 std::shared_ptr<SLE const>
 Env::le (Account const& account) const
 {
-    return ledger->fetch(
-        getAccountRootIndex(account.id()));
+    return le(keylet::account(account.id()));
 }
 
 std::shared_ptr<SLE const>
-Env::le (uint256 const& key) const
+Env::le (Keylet const& k) const
 {
-    return ledger->fetch(key);
+    return ledger->read(k);
 }
 
 void
@@ -241,7 +242,7 @@ Env::autofill_sig (JTx& jt)
         auto const ar = le(account);
         if (ar && ar->isFieldPresent(sfRegularKey))
             jtx::sign(jv, lookup(
-                ar->getFieldAccount160(sfRegularKey)));
+                ar->getAccountID(sfRegularKey)));
         else
             jtx::sign(jv, account);
     }

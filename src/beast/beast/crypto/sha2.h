@@ -1,7 +1,7 @@
 //------------------------------------------------------------------------------
 /*
-    This file is part of rippled: https://github.com/ripple/rippled
-    Copyright (c) 2015 Ripple Labs Inc.
+    This file is part of Beast: https://github.com/vinniefalco/Beast
+    Copyright 2013, Vinnie Falco <vinnie.falco@gmail.com>
 
     Permission to use, copy, modify, and/or distribute this software for any
     purpose  with  or without fee is hereby granted, provided that the above
@@ -17,22 +17,27 @@
 */
 //==============================================================================
 
-#ifndef RIPPLE_RPC_RIPPLEPATHFIND_H_INCLUDED
-#define RIPPLE_RPC_RIPPLEPATHFIND_H_INCLUDED
+#ifndef BEAST_CRYPTO_SHA2_H_INCLUDED
+#define BEAST_CRYPTO_SHA2_H_INCLUDED
 
-#include <ripple/app/paths/RippleLineCache.h>
-#include <ripple/app/ledger/Ledger.h>
+#include <beast/crypto/detail/mac_facade.h>
+#include <beast/crypto/detail/sha2_context.h>
 
-namespace ripple {
+namespace beast {
 
-class RippleAddress;
+using sha256_hasher = detail::mac_facade<
+    detail::sha256_context, false>;
 
-Json::Value
-buildSrcCurrencies(RippleAddress const& raSrc, RippleLineCache::pointer const& cache);
+// secure version
+using sha256_hasher_s = detail::mac_facade<
+    detail::sha256_context, true>;
 
-std::pair<bool, Json::Value>
-ripplePathFind(RippleLineCache::pointer const& cache, RippleAddress const& raSrc, RippleAddress const& raDst,
-    STAmount const& saDstAmount, Ledger::pointer const& lpLedger, Json::Value const& jvSrcCurrencies, boost::optional<Json::Value> const& contextPaths, int const& level);
+using sha512_hasher = detail::mac_facade<
+    detail::sha512_context, false>;
+
+// secure version
+using sha512_hasher_s = detail::mac_facade<
+    detail::sha512_context, true>;
 
 }
 

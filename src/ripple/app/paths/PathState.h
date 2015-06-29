@@ -20,9 +20,10 @@
 #ifndef RIPPLE_APP_PATHS_PATHSTATE_H_INCLUDED
 #define RIPPLE_APP_PATHS_PATHSTATE_H_INCLUDED
 
-#include <ripple/app/ledger/LedgerEntrySet.h>
+#include <ripple/app/ledger/MetaView.h>
 #include <ripple/app/paths/Node.h>
 #include <ripple/app/paths/Types.h>
+#include <ripple/app/paths/impl/PaymentView.h>
 #include <boost/optional.hpp>
 
 namespace ripple {
@@ -35,23 +36,23 @@ class PathState : public CountedObject <PathState>
     using Ptr = std::shared_ptr<PathState>;
     using List = std::vector<Ptr>;
 
-    PathState (STAmount const& saSend, STAmount const& saSendMax)
+    PathState (PaymentView& parent,
+            STAmount const& saSend,
+                STAmount const& saSendMax)
         : mIndex (0)
         , uQuality (0)
         , saInReq (saSendMax)
         , saOutReq (saSend)
     {
+        view_.emplace(&parent);
     }
-
-    explicit PathState (const PathState& psSrc) = default;
 
     void reset(STAmount const& in, STAmount const& out);
 
     TER expandPath (
-        LedgerEntrySet const&   lesSource,
-        STPath const&           spSourcePath,
-        AccountID const&          uReceiverID,
-        AccountID const&          uSenderID
+        STPath const&    spSourcePath,
+        AccountID const& uReceiverID,
+        AccountID const& uSenderID
     );
 
     path::Node::List& nodes() { return nodes_; }
@@ -103,10 +104,15 @@ class PathState : public CountedObject <PathState>
 
     static bool lessPriority (PathState const& lhs, PathState const& rhs);
 
-    // VFALCO Remove or rename to view, 
-    LedgerEntrySet& ledgerEntries()
+    PaymentView&
+    view()
     {
-        return *lesEntries_;
+        return *view_;
+    }
+
+    void resetView (PaymentView& view)
+    {
+        view_.emplace(&view);
     }
 
     bool isDry() const
@@ -134,23 +140,8 @@ private:
     
     Json::Value getJson () const;
 
-    TER terStatus;
-    path::Node::List nodes_;
-
-    // When processing, don't want to complicate directory walking with
-    // deletion.  Offers that became unfunded or were completely consumed go
-    // here and are deleted at the end.
-    OfferIndexList unfundedOffers_;
-
-    // First time scanning foward, as part of path construction, a funding
-    // source was mentioned for accounts. Source may only be used there.
-    AccountIssueToNodeIndex umForward;
-
-    // First time working in reverse a funding source was used.
-    // Source may only be used there if not mentioned by an account.
-    AccountIssueToNodeIndex umReverse;
-
-    boost::optional<LedgerEntrySet> lesEntries_;
+private:
+    boost::optional<PaymentView> view_;
 
     int                         mIndex;    // Index/rank amoung siblings.
     std::uint64_t               uQuality;  // 0 = no quality/liquity left.
@@ -165,6 +156,23 @@ private:
 
     // If true, all liquidity on this path has been consumed.
     bool allLiquidityConsumed_ = false;
+
+    TER terStatus;
+    
+    path::Node::List nodes_;
+
+    // When processing, don't want to complicate directory walking with
+    // deletion.  Offers that became unfunded or were completely consumed go
+    // here and are deleted at the end.
+    OfferIndexList unfundedOffers_;
+
+    // First time scanning foward, as part of path construction, a funding
+    // source was mentioned for accounts. Source may only be used there.
+    AccountIssueToNodeIndex umForward;
+
+    // First time working in reverse a funding source was used.
+    // Source may only be used there if not mentioned by an account.
+    AccountIssueToNodeIndex umReverse;
 };
 
 } // ripple

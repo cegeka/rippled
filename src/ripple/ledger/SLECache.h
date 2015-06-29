@@ -17,48 +17,21 @@
 */
 //==============================================================================
 
-#ifndef RIPPLE_APP_MISC_ACCOUNTSTATE_H_INCLUDED
-#define RIPPLE_APP_MISC_ACCOUNTSTATE_H_INCLUDED
+#ifndef RIPPLE_LEDGER_SLECACHE_H_INCLUDED
+#define RIPPLE_LEDGER_SLECACHE_H_INCLUDED
 
-#include <ripple/basics/Blob.h>
-#include <ripple/protocol/RippleAddress.h>
-#include <ripple/protocol/STAmount.h>
+#include <ripple/basics/TaggedCache.h>
 #include <ripple/protocol/STLedgerEntry.h>
 
 namespace ripple {
 
-//
-// Provide abstract access to an account's state, such that
-// access to the serialized format is hidden.
-//
+/** STLedgerEntry cache.
+    This maps keys to the deserialized ledger entries,
+    to improve performance where the same item in
+    the ledger is accessed often.
+*/
+using SLECache = TaggedCache <uint256, STLedgerEntry>;
 
-// VFALCO TODO Remove this class, its redundant and hardly used
-class AccountState
-{
-public:
-    // VFALCO TODO Figure out if we need this to be shared
-    using pointer = std::shared_ptr<AccountState>;
-
-    // For accounts in a ledger
-    AccountState (std::shared_ptr<SLE const> sle,
-        RippleAddress const& naAccountI);
-
-    SLE const&
-    sle() const
-    {
-        return *mLedgerEntry;
-    }
-
-    void addJson (Json::Value& value);
-
-private:
-    // VFALCO TODO Remove this
-    static std::string createGravatarUrl (uint128 uEmailHash);
-
-    bool mValid = false;
-    std::shared_ptr<SLE const> mLedgerEntry;
-};
-
-} // ripple
+}
 
 #endif

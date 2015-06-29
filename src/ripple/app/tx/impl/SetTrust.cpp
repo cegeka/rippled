@@ -152,18 +152,16 @@ public:
             // trust line to oneself to be deleted. If no such trust
             // lines exist now, why not remove this code and simply
             // return an error?
-            SLE::pointer selDelete (
-                mEngine->view().entryCache (ltRIPPLE_STATE,
-                    getRippleStateIndex (
-                        mTxnAccountID, uDstAccountID, currency)));
+            SLE::pointer sleDelete = mEngine->view().peek (
+                keylet::line(mTxnAccountID, uDstAccountID, currency));
 
-            if (selDelete)
+            if (sleDelete)
             {
                 m_journal.warning <<
                     "Clearing redundant line.";
 
-                return mEngine->view ().trustDelete (
-                    selDelete, mTxnAccountID, uDstAccountID);
+                return trustDelete (mEngine->view(),
+                    sleDelete, mTxnAccountID, uDstAccountID);
             }
             else
             {
@@ -173,8 +171,8 @@ public:
             }
         }
 
-        SLE::pointer sleDst (mEngine->view().entryCache (
-            ltACCOUNT_ROOT, getAccountRootIndex (uDstAccountID)));
+        SLE::pointer sleDst =
+            mEngine->view().peek (keylet::account(uDstAccountID));
 
         if (!sleDst)
         {
@@ -186,8 +184,8 @@ public:
         STAmount saLimitAllow = saLimitAmount;
         saLimitAllow.setIssuer (mTxnAccountID);
 
-        SLE::pointer sleRippleState (mEngine->view().entryCache (ltRIPPLE_STATE,
-            getRippleStateIndex (mTxnAccountID, uDstAccountID, currency)));
+        SLE::pointer sleRippleState = mEngine->view().peek (
+            keylet::line(mTxnAccountID, uDstAccountID, currency));
 
         if (sleRippleState)
         {
@@ -381,7 +379,8 @@ public:
             {
                 // Delete.
 
-                terResult = mEngine->view ().trustDelete (sleRippleState, uLowAccountID, uHighAccountID);
+                terResult = trustDelete (mEngine->view(),
+                    sleRippleState, uLowAccountID, uHighAccountID);
             }
             // Reserve is not scaled by load.
             else if (bReserveIncrease && mPriorBalance < reserveCreate)
@@ -395,7 +394,7 @@ public:
             }
             else
             {
-                mEngine->view().entryModify (sleRippleState);
+                mEngine->view().update (sleRippleState);
 
                 m_journal.trace << "Modify ripple line";
             }
@@ -430,19 +429,19 @@ public:
                 to_string (index);
 
             // Create a new ripple line.
-            terResult = mEngine->view ().trustCreate (
-                              bHigh,
-                              mTxnAccountID,
-                              uDstAccountID,
-                              index,
-                              mTxnAccount,
-                              bSetAuth,
-                              bSetNoRipple && !bClearNoRipple,
-                              bSetFreeze && !bClearFreeze,
-                              saBalance,
-                              saLimitAllow,       // Limit for who is being charged.
-                              uQualityIn,
-                              uQualityOut);
+            terResult = trustCreate (mEngine->view(),
+                bHigh,
+                mTxnAccountID,
+                uDstAccountID,
+                index,
+                mTxnAccount,
+                bSetAuth,
+                bSetNoRipple && !bClearNoRipple,
+                bSetFreeze && !bClearFreeze,
+                saBalance,
+                saLimitAllow,       // Limit for who is being charged.
+                uQualityIn,
+                uQualityOut);
         }
 
         return terResult;

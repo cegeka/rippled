@@ -19,13 +19,16 @@
 
 #include <BeastConfig.h>
 
+#include <ripple/protocol/impl/AccountID.cpp>
 #include <ripple/protocol/impl/AnyPublicKey.cpp>
 #include <ripple/protocol/impl/AnySecretKey.cpp>
 #include <ripple/protocol/impl/BuildInfo.cpp>
 #include <ripple/protocol/impl/ByteOrder.cpp>
+#include <ripple/protocol/impl/digest.cpp>
 #include <ripple/protocol/impl/ErrorCodes.cpp>
 #include <ripple/protocol/impl/HashPrefix.cpp>
 #include <ripple/protocol/impl/Indexes.cpp>
+#include <ripple/protocol/impl/Keylet.cpp>
 #include <ripple/protocol/impl/LedgerFormats.cpp>
 #include <ripple/protocol/impl/Quality.cpp>
 #include <ripple/protocol/impl/RippleAddress.cpp>
@@ -34,6 +37,7 @@
 #include <ripple/protocol/impl/Sign.cpp>
 #include <ripple/protocol/impl/SOTemplate.cpp>
 #include <ripple/protocol/impl/TER.cpp>
+#include <ripple/protocol/impl/tokens.cpp>
 #include <ripple/protocol/impl/TxFormats.cpp>
 #include <ripple/protocol/impl/UintTypes.cpp>
 
@@ -62,6 +66,7 @@
 #include <ripple/protocol/tests/STAmount.test.cpp>
 #include <ripple/protocol/tests/STObject.test.cpp>
 #include <ripple/protocol/tests/STTx.test.cpp>
+#include <ripple/protocol/tests/types_test.cpp>
 
 #if DOXYGEN
 #include <ripple/protocol/README.md>

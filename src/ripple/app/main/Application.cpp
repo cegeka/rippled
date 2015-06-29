@@ -58,6 +58,7 @@
 #include <ripple/overlay/make_Overlay.h>
 #include <ripple/protocol/Indexes.h>
 #include <ripple/protocol/STParsedJSON.h>
+#include <ripple/protocol/types.h>
 #include <ripple/rpc/Manager.h>
 #include <ripple/server/make_ServerHandler.h>
 #include <ripple/shamap/Family.h>
@@ -259,6 +260,7 @@ public:
     std::unique_ptr <SHAMapStore> m_shaMapStore;
     std::unique_ptr <NodeStore::Database> m_nodeStore;
     PendingSaves pendingSaves_;
+    AccountIDCache accountIDCache_;
 
     // These are not Stoppable-derived
     NodeCache m_tempNodeCache;
@@ -333,6 +335,8 @@ public:
                 m_txMaster, getConfig()))
 
         , m_nodeStore (m_shaMapStore->makeDatabase ("NodeStore.main", 4))
+
+        , accountIDCache_(128000)
 
         , m_tempNodeCache ("NodeCache", 16384, 90, get_seconds_clock (),
             m_logs.journal("TaggedCache"))
@@ -596,6 +600,12 @@ public:
     PendingSaves& pendingSaves() override
     {
         return pendingSaves_;
+    }
+
+    AccountIDCache const&
+    accountIDCache() const override
+    {
+        return accountIDCache_;
     }
 
     Overlay& overlay ()
@@ -904,7 +914,6 @@ public:
 
         m_overlay->saveValidatorKeyManifests (getWalletDB ());
 
-        RippleAddress::clearCache ();
         stopped ();
     }
 
@@ -1038,11 +1047,12 @@ void ApplicationImp::startNewLedger ()
 
     // Print enough information to be able to claim root account.
     m_journal.info << "Root master seed: " << rootSeedMaster.humanSeed ();
-    m_journal.info << "Root account: " << rootAddress.humanAccountID ();
+    m_journal.info << "Root account: " << toBase58(calcAccountID(rootAddress));
 
     {
         Ledger::pointer firstLedger = std::make_shared<Ledger> (rootAddress, SYSTEM_CURRENCY_START);
-        assert (firstLedger->exists(getAccountRootIndex(rootAddress.getAccountID())));
+        assert (firstLedger->exists(keylet::account(
+            calcAccountID(rootAddress))));
         // TODO(david): Add any default amendments
         // TODO(david): Set default fee/reserve
         firstLedger->getHash(); // updates the hash
@@ -1054,7 +1064,8 @@ void ApplicationImp::startNewLedger ()
         secondLedger->setClosed ();
         secondLedger->setAccepted ();
         m_ledgerMaster->pushLedger (secondLedger, std::make_shared<Ledger> (true, std::ref (*secondLedger)));
-        assert (secondLedger->exists(getAccountRootIndex(rootAddress.getAccountID())));
+        assert (secondLedger->exists(keylet::account(
+            calcAccountID(rootAddress))));
         m_networkOPs->setLastCloseTime (secondLedger->getCloseTimeNC ());
     }
 }
@@ -1310,22 +1321,23 @@ bool ApplicationImp::loadOldLedger (
         if (replay)
         {
             // inject transaction(s) from the replayLedger into our open ledger
-            std::shared_ptr<SHAMap> const& txns = replayLedger->peekTransactionMap();
+            auto const& txns = replayLedger->txMap();
 
             // Get a mutable snapshot of the open ledger
             Ledger::pointer cur = getLedgerMaster().getCurrentLedger();
             cur = std::make_shared <Ledger> (*cur, true);
             assert (!cur->isImmutable());
 
-            for (auto const& item : *txns)
+            for (auto const& item : txns)
             {
                 auto const txn =
-                    replayLedger->getTransaction(item->getTag());
+                    getTransaction(*replayLedger, item->getTag(),
+                        getApp().getMasterTransaction());
                 if (m_journal.info) m_journal.info <<
                     txn->getJson(0);
                 Serializer s;
                 txn->getSTransaction()->add(s);
-                if (! cur->addTransaction(item->getTag(), s))
+                if (! addTransaction(*cur, item->getTag(), s))
                     if (m_journal.warning) m_journal.warning <<
                         "Unable to add transaction " << item->getTag();
                 getApp().getHashRouter().setFlag (item->getTag(), SF_SIGGOOD);

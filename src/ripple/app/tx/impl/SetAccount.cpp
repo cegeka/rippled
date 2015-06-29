@@ -18,11 +18,11 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/protocol/Quality.h>
 #include <ripple/app/tx/impl/Transactor.h>
 #include <ripple/basics/Log.h>
 #include <ripple/core/Config.h>
 #include <ripple/protocol/Indexes.h>
+#include <ripple/protocol/Quality.h>
 #include <ripple/protocol/TxFlags.h>
 
 namespace ripple {
@@ -140,7 +140,8 @@ public:
         //
         if (bSetRequireAuth && !(uFlagsIn & lsfRequireAuth))
         {
-            if (!mEngine->view().dirIsEmpty (getOwnerDirIndex (mTxnAccountID)))
+            if (! dirIsEmpty (mEngine->view(),
+                keylet::ownerDir(mTxnAccountID)))
             {
                 m_journal.trace << "Retry: Owner directory not empty.";
                 return (mParams & tapRETRY) ? terOWNERS : tecOWNERS;

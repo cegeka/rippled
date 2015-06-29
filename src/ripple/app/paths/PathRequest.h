@@ -23,6 +23,8 @@
 #include <ripple/app/paths/RippleLineCache.h>
 #include <ripple/json/json_value.h>
 #include <ripple/net/InfoSub.h>
+#include <ripple/protocol/types.h>
+#include <boost/optional.hpp>
 #include <map>
 #include <set>
 
@@ -59,6 +61,12 @@ public:
         PathRequests&,
         beast::Journal journal);
 
+    PathRequest (
+        std::function <void (void)> const& completion,
+        int id,
+        PathRequests&,
+        beast::Journal journal);
+
     ~PathRequest ();
 
     bool        isValid ();
@@ -78,6 +86,7 @@ public:
     // update jvStatus
     Json::Value doUpdate (const std::shared_ptr<RippleLineCache>&, bool fast);
     InfoSub::pointer getSubscriber ();
+    bool hasCompletion ();
 
 private:
     bool isValid (RippleLineCache::ref crCache);
@@ -94,13 +103,14 @@ private:
     PathRequests& mOwner;
 
     std::weak_ptr<InfoSub> wpSubscriber; // Who this request came from
+    std::function <void (void)> fCompletion;
 
     Json::Value jvId;
     Json::Value jvStatus;                   // Last result
 
     // Client request parameters
-    RippleAddress raSrcAccount;
-    RippleAddress raDstAccount;
+    boost::optional<AccountID> raSrcAccount;
+    boost::optional<AccountID> raDstAccount;
     STAmount saDstAmount;
 
     std::set<Issue> sciSourceCurrencies;

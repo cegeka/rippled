@@ -24,8 +24,10 @@
 #include <ripple/basics/DecayingSample.h>
 #include <ripple/basics/Log.h>
 #include <ripple/core/JobQueue.h>
+#include <ripple/protocol/JsonFields.h>
 #include <beast/cxx14/memory.h> // <memory>
 #include <beast/module/core/text/LexicalCast.h>
+#include <beast/container/aged_map.h>
 
 namespace ripple {
 
@@ -41,15 +43,14 @@ private:
 public:
     using u256_acq_pair = std::pair<uint256, InboundLedger::pointer>;
     // How long before we try again to acquire the same ledger
-    static const int kReacquireIntervalSeconds = 300;
+    static const std::chrono::minutes kReacquireInterval;
 
     InboundLedgersImp (clock_type& clock, Stoppable& parent,
                        beast::insight::Collector::ptr const& collector)
         : Stoppable ("InboundLedgers", parent)
         , fetchRate_(clock.now())
         , m_clock (clock)
-        , mRecentFailures ("LedgerAcquireRecentFailures",
-            clock, 0, kReacquireIntervalSeconds)
+        , mRecentFailures (clock)
         , mCounter(collector->make_counter("ledger_fetches"))
     {
     }
@@ -57,6 +58,7 @@ public:
     Ledger::pointer acquire (uint256 const& hash, std::uint32_t seq, InboundLedger::fcReason reason)
     {
         assert (hash.isNonZero ());
+        bool isNew = true;
         InboundLedger::pointer inbound;
         {
             ScopedLockType sl (mLock);
@@ -66,12 +68,8 @@ public:
                 auto it = mLedgers.find (hash);
                 if (it != mLedgers.end ())
                 {
+                    isNew = false;
                     inbound = it->second;
-
-                    // If the acquisition failed, don't mark the item as
-                    // recently accessed so that it can expire.
-                    if (! inbound->isFailed ())
-                        inbound->update (seq);
                 }
                 else
                 {
@@ -83,6 +81,9 @@ public:
                 }
             }
         }
+        if (inbound && ! isNew && ! inbound->isFailed ())
+            inbound->update (seq);
+
         if (inbound && inbound->isComplete ())
             return inbound->getLedger();
         return {};
@@ -200,14 +201,19 @@ public:
         return ret;
     }
 
-    void logFailure (uint256 const& h)
+    void logFailure (uint256 const& h, std::uint32_t seq)
     {
-        mRecentFailures.insert (h);
+        ScopedLockType sl (mLock);
+
+        mRecentFailures.emplace(h, seq);
     }
 
     bool isFailure (uint256 const& h)
     {
-        return mRecentFailures.exists (h);
+        ScopedLockType sl (mLock);
+
+        beast::expire (mRecentFailures, kReacquireInterval);
+        return mRecentFailures.find (h) != mRecentFailures.end();
     }
 
     void doLedgerData (Job&, LedgerHash hash)
@@ -292,10 +298,19 @@ public:
                 assert (it.second);
                 acquires.push_back (it);
             }
+            for (auto const& it : mRecentFailures)
+            {
+                if (it.second > 1)
+                    ret[beast::lexicalCastThrow <std::string>(
+                        it.second)][jss::failed] = true;
+                else
+                    ret[to_string (it.first)][jss::failed] = true;
+            }
         }
 
         for (auto const& it : acquires)
         {
+            // getJson is expensive, so call without the lock
             std::uint32_t seq = it.second->getSeq();
             if (seq > 1)
                 ret[beast::lexicalCastThrow <std::string>(seq)] = it.second->getJson(0);
@@ -328,8 +343,6 @@ public:
 
     void sweep ()
     {
-        mRecentFailures.sweep ();
-
         clock_type::time_point const now (m_clock.now());
 
         // Make a list of things to sweep, while holding the lock
@@ -360,6 +373,9 @@ public:
                     ++it;
                 }
             }
+
+            beast::expire (mRecentFailures, kReacquireInterval);
+
         }
 
         WriteLog (lsDEBUG, InboundLedger) <<
@@ -387,12 +403,14 @@ private:
     LockType mLock;
 
     MapType mLedgers;
-    KeyCache <uint256> mRecentFailures;
+    beast::aged_map <uint256, std::uint32_t> mRecentFailures;
 
     beast::insight::Counter mCounter;
 };
 
 //------------------------------------------------------------------------------
+
+decltype(InboundLedgersImp::kReacquireInterval) InboundLedgersImp::kReacquireInterval{5};
 
 InboundLedgers::~InboundLedgers()
 {

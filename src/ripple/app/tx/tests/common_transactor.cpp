@@ -31,7 +31,7 @@ UserAccount::UserAccount (KeyType kType, std::string const& passphrase)
 {
     RippleAddress const seed = RippleAddress::createSeedGeneric (passphrase);
     master_ = generateKeysFromSeed (kType, seed);
-    acctID_ = master_.publicKey.getAccountID ();
+    acctID_ = calcAccountID(master_.publicKey);
 }
 
 void UserAccount::setRegKey (
@@ -42,7 +42,8 @@ void UserAccount::setRegKey (
     KeyPair regular = generateKeysFromSeed (kType, seed);
 
     // Tell the ledger what we're up to.
-    STTx tx = getSetRegularKeyTx (*this, regular.publicKey.getAccountID());
+    STTx tx = getSetRegularKeyTx (*this,
+        calcAccountID(regular.publicKey));
     singleSign (tx, *this);
     ledger.applyGoodTransaction (tx);
 
@@ -78,14 +79,14 @@ TestLedger::TestLedger (
         std::uint64_t startAmountDrops,
         UserAccount const& master,
         beast::unit_test::suite& suite)
-: lastClosedLedger_()
+: lastClosedLedger()
 , openLedger_()
 , suite_(suite)
 {
     // To leverage createGenesisLedger from the Ledger tests, we must match
     // its interface.
     TestAccount const masterAcct {master.publicKey(), master.secretKey(), 0};
-    std::tie (lastClosedLedger_, openLedger_) =
+    std::tie (lastClosedLedger, openLedger_) =
         createGenesisLedger(startAmountDrops, masterAcct);
 }
 
@@ -102,11 +103,11 @@ std::pair<TER, bool> TestLedger::applyTransaction (STTx const& tx, bool check)
     // time sequencing of transactions.  Every transaction applied by a
     // call to this method gets applied individually.  So this transaction
     // is guaranteed to be applied before the next one.
-    close_and_advance(openLedger_, lastClosedLedger_);
+    close_and_advance(openLedger_, lastClosedLedger);
 
     // Check for the transaction in the closed ledger.
     bool const foundTx =
-        lastClosedLedger_->hasTransaction(tx.getTransactionID());
+        hasTransaction(*lastClosedLedger, tx.getTransactionID());
     suite_.expect (r.second == foundTx);
 
     return {r.first, r.second && foundTx};
@@ -133,14 +134,6 @@ void TestLedger::applyTecTransaction (STTx const& tx, TER err, bool check)
     suite_.expect (ret.second == true);
 }
 
-AccountState::pointer
-TestLedger::getAccountState (UserAccount const& acct) const
-{
-    return ripple::getAccountState(
-        *lastClosedLedger_, acct.acctPublicKey(),
-            getApp().getSLECache());
-}
-
 //------------------------------------------------------------------------------
 
 MultiSig::MultiSig(UserAccount const& signingFor,
@@ -150,7 +143,8 @@ MultiSig::MultiSig(UserAccount const& signingFor,
 , multiSig_()
 {
     Serializer s = tx.getMultiSigningData (
-        signingFor.acctPublicKey(), signer.acctPublicKey());
+        calcAccountID(signingFor.acctPublicKey()),
+            calcAccountID(signer.acctPublicKey()));
     multiSig_ = signer.secretKey().accountPrivateSign (s.getData());
 }
 
@@ -165,7 +159,7 @@ void SignerList::injectInto (STTx& tx) const
         list.emplace_back(sfSignerEntry);
         STObject& obj = list.back();
         obj.reserve (2);
-        obj.setFieldAccount (sfAccount, entry.acct->getID ());
+        obj.setAccountID (sfAccount, entry.acct->getID ());
         obj.setFieldU16 (sfSignerWeight, entry.weight);
         obj.setTypeFromSField (sfSignerEntry);
     }
@@ -210,7 +204,7 @@ void insertMultiSigs (STTx& tx, std::vector<MultiSig> const& multiSigs)
             prevSigningForID = entry.signingForAccount();
             signingFor.emplace (sfSigningFor);
             signingFor->reserve (2);
-            signingFor->setFieldAccount (sfAccount, entry.signingForAccount());
+            signingFor->setAccountID (sfAccount, entry.signingForAccount());
             signingFor->setFieldArray (sfSigningAccounts, STArray());
         }
         assert(signingFor);
@@ -222,7 +216,7 @@ void insertMultiSigs (STTx& tx, std::vector<MultiSig> const& multiSigs)
 
         STObject& signingAccount (signingAccounts.back());
         signingAccount.reserve (3);
-        signingAccount.setFieldAccount (sfAccount, entry.signingAccount());
+        signingAccount.setAccountID (sfAccount, entry.signingAccount());
         signingAccount.setFieldVL (sfMultiSignature, entry.multiSignature());
         signingAccount.setFieldVL (sfSigningPubKey, entry.signingPubKey());
     }
@@ -241,7 +235,7 @@ void insertMultiSigs (STTx& tx, std::vector<MultiSig> const& multiSigs)
 STTx getSeqTx (UserAccount& acct, TxType type)
 {
     STTx tx (type); // Sets SOTemplate and sfTransactionType.
-    tx.setFieldAccount (sfAccount, acct.getID());
+    tx.setAccountID (sfAccount, acct.getID());
     tx.setFieldAmount (sfFee, STAmount (10));
     tx.setFieldU32 (sfFlags, tfUniversal);
     tx.setFieldU32 (sfSequence, acct.consumeSeq());
@@ -278,7 +272,7 @@ STTx getPaymentTx (
     UserAccount& from, UserAccount const& to, std::uint64_t amountDrops)
 {
     STTx tx = getSeqTx (from, ttPAYMENT);
-    tx.setFieldAccount (sfDestination, to.getID());
+    tx.setAccountID (sfDestination, to.getID());
     tx.setFieldAmount (sfAmount, amountDrops);
     return tx;
 }
@@ -287,7 +281,7 @@ STTx getPaymentTx (
     UserAccount& from, UserAccount const& to, STAmount const& amount)
 {
     STTx tx = getSeqTx (from, ttPAYMENT);
-    tx.setFieldAccount (sfDestination, to.getID());
+    tx.setAccountID (sfDestination, to.getID());
     tx.setFieldAmount (sfAmount, amount);
     return tx;
 }
@@ -296,7 +290,7 @@ STTx getPaymentTx (
 STTx getSetRegularKeyTx (UserAccount& acct, AccountID const& regKey)
 {
     STTx tx = getSeqTx (acct, ttREGULAR_KEY_SET);
-    tx.setFieldAccount (sfRegularKey,  regKey);
+    tx.setAccountID (sfRegularKey,  regKey);
     return tx;
 }
 
@@ -331,7 +325,7 @@ STTx getCreateTicketTx (UserAccount& acct)
 STTx getCreateTicketTx (UserAccount& acct, UserAccount const& target)
 {
     STTx tx = getSeqTx (acct, ttTICKET_CREATE);
-    tx.setFieldAccount (sfTarget, target.getID());
+    tx.setAccountID (sfTarget, target.getID());
     return tx;
 }
 
@@ -364,13 +358,15 @@ void payInDrops (TestLedger& ledger,
 
 std::uint64_t getNativeBalance(TestLedger& ledger, UserAccount& acct)
 {
-    return ledger.getAccountState(acct)->sle().getFieldAmount(
-        sfBalance).mantissa();
+    return ledger.lastClosedLedger->read(
+        keylet::account(acct.getID()))->getFieldAmount(
+            sfBalance).mantissa();
 }
 
 std::uint32_t getOwnerCount(TestLedger& ledger, UserAccount& acct)
 {
-    return ledger.getAccountState(acct)->sle().getFieldU32 (sfOwnerCount);
+    return ledger.lastClosedLedger->read(
+        keylet::account(acct.getID()))->getFieldU32(sfOwnerCount);
 }
 
 std::vector<RippleState::pointer> getRippleStates (
@@ -378,7 +374,7 @@ std::vector<RippleState::pointer> getRippleStates (
 {
     std::vector <RippleState::pointer> states;
 
-    forEachItem(*ledger.openLedger(), acct.getID(), getApp().getSLECache(),
+    forEachItem(*ledger.openLedger(), acct.getID(),
         [&states, &acct, &peer](
             std::shared_ptr<SLE const> const& sleCur)
         {
@@ -402,7 +398,7 @@ getOffersOnAccount (TestLedger& ledger, UserAccount const& acct)
 {
     std::vector <std::shared_ptr<SLE const>> offers;
 
-    forEachItem(*ledger.openLedger(), acct.getID(), getApp().getSLECache(),
+    forEachItem(*ledger.openLedger(), acct.getID(),
         [&offers, &acct](
             std::shared_ptr<SLE const> const& sleCur)
         {
@@ -418,7 +414,7 @@ getTicketsOnAccount (TestLedger& ledger, UserAccount const& acct)
 {
     std::vector <std::shared_ptr<SLE const>> offers;
 
-    forEachItem(*ledger.openLedger(), acct.getID(), getApp().getSLECache(),
+    forEachItem(*ledger.openLedger(), acct.getID(),
         [&offers, &acct](
             std::shared_ptr<SLE const> const& sleCur)
         {

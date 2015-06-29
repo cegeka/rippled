@@ -268,12 +268,8 @@ TER PathState::pushNode (
             auto const& backNode = nodes_.back ();
             if (backNode.isAccount())
             {
-                auto sleRippleState = lesEntries_->entryCache (
-                    ltRIPPLE_STATE,
-                    getRippleStateIndex (
-                        backNode.account_,
-                        node.account_,
-                        backNode.issue_.currency));
+                auto sleRippleState = view().peek(
+                    keylet::line(backNode.account_, node.account_, backNode.issue_.currency));
 
                 // A "RippleState" means a balance betweeen two accounts for a
                 // specific currency.
@@ -295,9 +291,8 @@ TER PathState::pushNode (
                             << backNode.account_ << " and " << node.account_
                             << " for " << node.issue_.currency << "." ;
 
-                    auto sleBck  = lesEntries_->entryCache (
-                        ltACCOUNT_ROOT,
-                        getAccountRootIndex (backNode.account_));
+                    auto sleBck  = view().peek (
+                        keylet::account(backNode.account_));
                     // Is the source account the highest numbered account ID?
                     bool bHigh = backNode.account_ > node.account_;
 
@@ -323,13 +318,13 @@ TER PathState::pushNode (
 
                     if (resultCode == tesSUCCESS)
                     {
-                        STAmount saOwed = creditBalance (*lesEntries_,
+                        STAmount saOwed = creditBalance (view(),
                             node.account_, backNode.account_,
                             node.issue_.currency);
                         STAmount saLimit;
 
                         if (saOwed <= zero) {
-                            saLimit = creditLimit (*lesEntries_,
+                            saLimit = creditLimit (view(),
                                 node.account_,
                                 backNode.account_,
                                 node.issue_.currency);
@@ -418,7 +413,6 @@ TER PathState::pushNode (
 // terStatus = tesSUCCESS, temBAD_PATH, terNO_LINE, terNO_ACCOUNT, terNO_AUTH,
 // or temBAD_PATH_LOOP
 TER PathState::expandPath (
-    const LedgerEntrySet& lesSource,
     STPath const& spSourcePath,
     AccountID const& uReceiverID,
     AccountID const& uSenderID)
@@ -436,8 +430,6 @@ TER PathState::expandPath (
 
     WriteLog (lsTRACE, RippleCalc)
         << "expandPath> " << spSourcePath.getJson (0);
-
-    lesEntries_.emplace(lesSource);
 
     terStatus = tesSUCCESS;
 
@@ -632,8 +624,7 @@ void PathState::checkFreeze()
         // Check each order book for a global freeze
         if (nodes_[i].uFlags & STPathElement::typeIssuer)
         {
-            sle = lesEntries_->entryCache (ltACCOUNT_ROOT,
-                getAccountRootIndex (nodes_[i].issue_.account));
+            sle = view().peek (keylet::account(nodes_[i].issue_.account));
 
             if (sle && sle->isFlag (lsfGlobalFreeze))
             {
@@ -651,8 +642,7 @@ void PathState::checkFreeze()
 
             if (inAccount != outAccount)
             {
-                sle = lesEntries_->entryCache (ltACCOUNT_ROOT,
-                    getAccountRootIndex (outAccount));
+                sle = view().peek (keylet::account(outAccount));
 
                 if (sle && sle->isFlag (lsfGlobalFreeze))
                 {
@@ -660,8 +650,7 @@ void PathState::checkFreeze()
                     return;
                 }
 
-                sle = lesEntries_->entryCache (ltRIPPLE_STATE,
-                    getRippleStateIndex (inAccount,
+                sle = view().peek (keylet::line(inAccount,
                         outAccount, currencyID));
 
                 if (sle && sle->isFlag (
@@ -688,10 +677,10 @@ TER PathState::checkNoRipple (
     Currency const& currency)
 {
     // fetch the ripple lines into and out of this node
-    SLE::pointer sleIn = lesEntries_->entryCache (ltRIPPLE_STATE,
-        getRippleStateIndex (firstAccount, secondAccount, currency));
-    SLE::pointer sleOut = lesEntries_->entryCache (ltRIPPLE_STATE,
-        getRippleStateIndex (secondAccount, thirdAccount, currency));
+    SLE::pointer sleIn = view().peek (
+        keylet::line(firstAccount, secondAccount, currency));
+    SLE::pointer sleOut = view().peek (
+        keylet::line(secondAccount, thirdAccount, currency));
 
     if (!sleIn || !sleOut)
     {

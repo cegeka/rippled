@@ -67,10 +67,10 @@ TER PathCursor::advanceNode (bool const bReverse) const
         }
 
         bool bDirectDirDirty = node().directory.initialize (
-            {previousNode().issue_, node().issue_},
-            ledger());
+            { previousNode().issue_, node().issue_},
+            view());
 
-        if (auto advance = node().directory.advance (ledger()))
+        if (auto advance = node().directory.advance (view()))
         {
             bDirectDirDirty = true;
             if (advance == NodeDirectory::NEW_QUALITY)
@@ -128,10 +128,11 @@ TER PathCursor::advanceNode (bool const bReverse) const
                         = node().sleOffer->getFieldAmount (sfTakerGets);
 
                 // Funds left.
-                node().saOfferFunds = funds (ledger(),
+                node().saOfferFunds = accountFunds(view(),
                     node().offerOwnerAccount_,
                     node().saTakerGets,
-                    fhZERO_IF_FROZEN);
+                    fhZERO_IF_FROZEN,
+                    getConfig());
                 node().bFundsDirty = false;
 
                 WriteLog (lsTRACE, RippleCalc)
@@ -143,7 +144,7 @@ TER PathCursor::advanceNode (bool const bReverse) const
                 WriteLog (lsTRACE, RippleCalc) << "advanceNode: as is";
             }
         }
-        else if (!ledger().dirNext (
+        else if (!dirNext (view(),
             node().directory.current,
             node().directory.ledgerEntry,
             node().uEntry,
@@ -180,8 +181,7 @@ TER PathCursor::advanceNode (bool const bReverse) const
         else
         {
             // Got a new offer.
-            node().sleOffer = ledger().entryCache (
-                ltOFFER, node().offerIndex_);
+            node().sleOffer = view().peek (keylet::offer(node().offerIndex_));
 
             if (!node().sleOffer)
             {
@@ -194,7 +194,7 @@ TER PathCursor::advanceNode (bool const bReverse) const
             else
             {
                 node().offerOwnerAccount_
-                        = node().sleOffer->getFieldAccount160 (sfAccount);
+                        = node().sleOffer->getAccountID (sfAccount);
                 node().saTakerPays
                         = node().sleOffer->getFieldAmount (sfTakerPays);
                 node().saTakerGets
@@ -211,9 +211,8 @@ TER PathCursor::advanceNode (bool const bReverse) const
                     << " node.offerIndex_=" << node().offerIndex_;
 
                 if (node().sleOffer->isFieldPresent (sfExpiration) &&
-                    (node().sleOffer->getFieldU32 (sfExpiration) <=
-                     ledger().getLedger ()->
-                     getParentCloseTimeNC ()))
+                        (node().sleOffer->getFieldU32 (sfExpiration) <=
+                            getParentCloseTimeNC(view())))
                 {
                     // Offer is expired.
                     WriteLog (lsTRACE, RippleCalc)
@@ -329,10 +328,11 @@ TER PathCursor::advanceNode (bool const bReverse) const
 
                 // Only the current node is allowed to use the source.
 
-                node().saOfferFunds = funds(ledger(),
+                node().saOfferFunds = accountFunds(view(),
                     node().offerOwnerAccount_,
                     node().saTakerGets,
-                    fhZERO_IF_FROZEN);
+                    fhZERO_IF_FROZEN,
+                    getConfig());
                 // Funds held.
 
                 if (node().saOfferFunds <= zero)

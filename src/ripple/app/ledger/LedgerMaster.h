@@ -20,7 +20,7 @@
 #ifndef RIPPLE_APP_LEDGER_LEDGERMASTER_H_INCLUDED
 #define RIPPLE_APP_LEDGER_LEDGERMASTER_H_INCLUDED
 
-#include <ripple/app/ledger/LedgerEntrySet.h>
+#include <ripple/app/ledger/Ledger.h>
 #include <ripple/app/ledger/LedgerHolder.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/protocol/RippleLedgerHash.h>
@@ -120,7 +120,6 @@ public:
     virtual void addHeldTransaction (Transaction::ref trans) = 0;
     virtual void fixMismatch (Ledger::ref ledger) = 0;
 
-    virtual bool haveLedgerRange (std::uint32_t from, std::uint32_t to) = 0;
     virtual bool haveLedger (std::uint32_t seq) = 0;
     virtual void clearLedger (std::uint32_t seq) = 0;
     virtual bool getValidatedRange (std::uint32_t& minVal, std::uint32_t& maxVal) = 0;
