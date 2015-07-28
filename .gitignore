@@ -89,3 +89,11 @@ gmon.out
 
 # ignore vagrant files
 .vagrant
+
+# ignore QT creator files
+rippled.config
+rippled.creator
+rippled.creator.user
+rippled.files
+rippled.includes
+
