@@ -7,7 +7,7 @@ VAGRANTFILE_API_VERSION = "2"
 Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   config.vm.box = "ubuntu/trusty64"
   #config.vm.box_url = "https://github.com/kraksoft/vagrant-box-ubuntu/releases/download/14.04/ubuntu-14.04-amd64.box"
-  
+
   if Vagrant.has_plugin?("vagrant-timezone")
     config.timezone.value = "Europe/Bucharest"
   end
@@ -24,28 +24,36 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   end
 
   config.vm.synced_folder "../..", "/src", owner: "root", group: "root"
-	
+
   $script = <<-SCRIPT
   #!/bin/bash
-	# build
-  apt-get update
-  apt-get -y upgrade
-  apt-get -y install git scons pkg-config protobuf-compiler libprotobuf-dev libssl-dev tmux flip
-  apt-get install python-software-properties
-  echo "deb [arch=amd64] http://mirrors.ripple.com/ubuntu/ trusty stable contrib" | tee /etc/apt/sources.list.d/ripple.list 
-  wget -O- -q http://mirrors.ripple.com/mirrors.ripple.com.gpg.key | apt-key add -
-  apt-get -y update
-  apt-get install -y build-essential g++ python-dev autotools-dev libicu-dev build-essential libbz2-dev 
-  apt-get install -y boost-all-dev
-  cd /src/ && scons release
+	# deps
+  apt-get update -y
+  apt-get upgrade -y
+  apt-get install -y git scons pkg-config protobuf-compiler libprotobuf-dev libssl-dev tmux flip python-dev cmake
+  apt-get install -y python-software-properties
+  apt-get install -y build-essential g++ python-dev autotools-dev libicu-dev build-essential libbz2-dev
+
+  pushd /src/
+  wget http://downloads.sourceforge.net/project/boost/boost/1.57.0/boost_1_57_0.tar.gz
+  tar -vxf boost_1_57_0.tar.gz
+  pushd boost_1_57_0
+  . ./bootstrap.sh
+  ./b2 install
+  popd
+
+  scons release
 	(service rippled stop &) || true
-    cp /src/build/gcc.release/rippled /usr/local/sbin/rippled && strip /usr/local/sbin/rippled
-	# configs
+  cp /src/build/gcc.release/rippled /usr/local/sbin/rippled && strip /usr/local/sbin/rippled
+  popd
+
+  # configs
 	mkdir -p /etc/ripple/
 	mkdir -p /root/.config/ripple/
 	mkdir -p /home/vagrant/.config/ripple/
 	cp /src/Builds/Vagrant/validators.txt /etc/ripple/validators.txt
-	# service
+
+  # service
 	cp /src/Builds/Vagrant/init.d_rippled /etc/init.d/rippled
   chmod +x /etc/init.d/rippled
   cp /src/Builds/Vagrant/init.d_rippled2 /etc/init.d/rippled2
@@ -57,7 +65,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
   $isolate_hosts = <<-SCRIPT
   #!/bin/bash
-   
+
   # Isolate, just in case
   sed -i '/ripple.com/d' /etc/hosts
   echo "127.0.0.1 local.ripple.com" | tee -a /etc/hosts
@@ -87,13 +95,13 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     end
     $rippleclient_solo = <<-SCRIPT
     #!/bin/bash
-    
+
     cp /src/Builds/Vagrant/rippled_solo.cfg /etc/ripple/rippled.cfg
     cp /src/Builds/Vagrant/rippled_solo.cfg /root/.config/ripple/rippled.cfg
     cp /src/Builds/Vagrant/rippled_solo.cfg /home/vagrant/.config/ripple/rippled.cfg
     flip -u /etc/ripple/rippled.cfg
     service rippled start
-    
+
     SCRIPT
 
     config.vm.provision :shell, :inline => $rippleclient_solo
@@ -113,13 +121,13 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     end
     $rippleclient_one = <<-SCRIPT
     #!/bin/bash
-	  
+
     cp /src/Builds/Vagrant/rippled_one.cfg /etc/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_one.cfg /root/.config/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_one.cfg /home/vagrant/.config/ripple/rippled.cfg
 	  flip -u /etc/ripple/rippled.cfg
 	  service rippled start
-	  
+
     SCRIPT
 
     config.vm.provision :shell, :inline => $rippleclient_one
@@ -127,10 +135,10 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
   config.vm.define "two", autostart: false, primary: false do |two|
     two.vm.network "private_network", ip: "192.168.50.5"
-	
+
 	  $rippleclient_two = <<-SCRIPT
     #!/bin/bash
-	  
+
     cp /src/Builds/Vagrant/rippled_two.cfg /etc/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_two.cfg /root/.config/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_two.cfg /home/vagrant/.config/ripple/rippled.cfg
@@ -143,10 +151,10 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
   config.vm.define "three", autostart: false, primary: false do |three|
     three.vm.network "private_network", ip: "192.168.50.6"
-	
+
 	  $rippleclient_three = <<-SCRIPT
     #!/bin/bash
-	  
+
     cp /src/Builds/Vagrant/rippled_three.cfg /etc/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_three.cfg /root/.config/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_three.cfg /home/vagrant/.config/ripple/rippled.cfg
@@ -156,7 +164,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
     config.vm.provision :shell, :inline => $rippleclient_three
   end
-  
+
   config.vm.define "four", autostart: false, primary: false do |four|
     four.vm.network "private_network", ip: "192.168.50.7"
     four.vm.network "forwarded_port", guest: 9000, host: 9000, auto_correct: true
@@ -197,7 +205,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
 	  $rippleclient_four = <<-SCRIPT
     #!/bin/bash
-	  
+
     cp /src/Builds/Vagrant/rippled_four.cfg /etc/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_four.cfg /root/.config/ripple/rippled.cfg
 	  cp /src/Builds/Vagrant/rippled_four.cfg /home/vagrant/.config/ripple/rippled.cfg
