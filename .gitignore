@@ -97,3 +97,5 @@ rippled.creator.user
 rippled.files
 rippled.includes
 
+# ignore boost
+boost_*
