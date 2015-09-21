@@ -10,13 +10,13 @@ pushd /src/
 if [ ! -d "boost_1_57_0" ]; then
   if [ ! -f "boost_1_57_0.tar.gz" ]; then
     wget http://downloads.sourceforge.net/project/boost/boost/1.57.0/boost_1_57_0.tar.gz
-    tar -vxf boost_1_57_0.tar.gz
   fi
-  pushd boost_1_57_0
-  . ./bootstrap.sh
-  ./b2 install
-  popd
+  tar -vxf boost_1_57_0.tar.gz
 fi
+pushd boost_1_57_0
+. ./bootstrap.sh
+./b2 install
+popd
 
 scons release
 (service rippled stop &) || true
