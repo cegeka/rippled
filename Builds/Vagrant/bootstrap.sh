@@ -16,6 +16,7 @@ fi
 pushd boost_1_57_0
 . ./bootstrap.sh
 ./b2 install
+ldconfig
 popd
 
 scons release
