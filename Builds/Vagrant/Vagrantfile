@@ -25,63 +25,8 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
   config.vm.synced_folder "../..", "/src", owner: "root", group: "root"
 
-  $script = <<-SCRIPT
-  #!/bin/bash
-	# deps
-  apt-get update -y
-  apt-get upgrade -y
-  apt-get install -y git scons pkg-config protobuf-compiler libprotobuf-dev libssl-dev tmux flip python-dev cmake
-  apt-get install -y python-software-properties
-  apt-get install -y build-essential g++ python-dev autotools-dev libicu-dev build-essential libbz2-dev
-
-  pushd /src/
-  wget http://downloads.sourceforge.net/project/boost/boost/1.57.0/boost_1_57_0.tar.gz
-  tar -vxf boost_1_57_0.tar.gz
-  pushd boost_1_57_0
-  . ./bootstrap.sh
-  ./b2 install
-  popd
-
-  scons release
-	(service rippled stop &) || true
-  cp /src/build/gcc.release/rippled /usr/local/sbin/rippled && strip /usr/local/sbin/rippled
-  popd
-
-  # configs
-	mkdir -p /etc/ripple/
-	mkdir -p /root/.config/ripple/
-	mkdir -p /home/vagrant/.config/ripple/
-	cp /src/Builds/Vagrant/validators.txt /etc/ripple/validators.txt
-
-  # service
-	cp /src/Builds/Vagrant/init.d_rippled /etc/init.d/rippled
-  chmod +x /etc/init.d/rippled
-  cp /src/Builds/Vagrant/init.d_rippled2 /etc/init.d/rippled2
-  chmod +x /etc/init.d/rippled2
-	flip -u /etc/init.d/rippled
-  flip -u /etc/init.d/rippled2
-	flip -u /etc/ripple/validators.txt
-  SCRIPT
-
-  $isolate_hosts = <<-SCRIPT
-  #!/bin/bash
-
-  # Isolate, just in case
-  sed -i '/ripple.com/d' /etc/hosts
-  echo "127.0.0.1 local.ripple.com" | tee -a /etc/hosts
-  echo "127.0.0.1 www.local.ripple.com" | tee -a /etc/hosts
-  echo "127.0.0.1 ripple.local.ripple.com" | tee -a /etc/hosts
-  echo "127.0.0.1 history.ripple.com" | tee -a /etc/hosts
-  echo "127.0.0.1 api.ripplecharts.com" | tee -a /etc/hosts
-  echo "127.0.0.1 local.id.ripple.com" | tee -a /etc/hosts
-  echo "127.0.0.1 id.ripple.com" | tee -a /etc/hosts
-  echo "127.0.0.1 s-west.ripple.com" | tee -a /etc/hosts
-  echo "127.0.0.1 s-east.ripple.com" | tee -a /etc/hosts
-  echo "127.0.0.1 auth1.ripple.com" | tee -a /etc/hosts
-  SCRIPT
-
-  config.vm.provision :shell, :inline => $script
-  config.vm.provision :shell, :inline => $isolate_hosts
+  config.vm.provision :shell, :path => "bootstrap.sh"
+  config.vm.provision :shell, :path => "isolate.sh"
 
   config.vm.define "solo", primary: true do |solo|
     solo.vm.network "private_network", ip: "192.168.50.4"
@@ -172,37 +117,6 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     four.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
     four.vm.network "forwarded_port", guest: 27017, host: 27017, auto_correct: true
 
-    $install_riweb = <<-SCRIPT
-    #!/bin/bash
-    # riweb
-    apt-get install nodejs npm -y
-    rm -rf /usr/local/bin/node
-    ln -s /usr/bin/nodejs /usr/local/bin/node
-    cd /
-    git clone https://github.com/crazyquark/riweb.git
-    cd riweb/
-    Install dependecies
-    npm install
-    install docker
-    wget -qO- https://get.docker.com/ | sh
-    ssl for docker
-    apt-get install apparmor
-    service docker restart
-
-    # mongoDB
-    chmod +x ./docker/start_mongo.sh
-    cd ./docker/ && ./start_mongo.sh && cd ..
-
-    # bower
-    npm install -g bower
-    bower install --allow-root --config.interactive=false
-
-    # start client
-    npm install -g grunt-cli
-    screen -dmS riweb bash -c 'grunt serve'
-
-    SCRIPT
-
 	  $rippleclient_four = <<-SCRIPT
     #!/bin/bash
 
@@ -217,7 +131,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
     SCRIPT
 
-    config.vm.provision :shell, :inline => $rippleclient_four
+    config.vm.provision :shell, :path => "riweb.sh"
     config.vm.provision :shell, :inline => $install_riweb
   end
 
