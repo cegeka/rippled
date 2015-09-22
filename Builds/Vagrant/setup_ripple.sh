@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# rippled
+cp /src/build/gcc.release/rippled /usr/local/sbin/rippled
+
 # configs
 mkdir -p /etc/ripple/
 mkdir -p /root/.config/ripple/
