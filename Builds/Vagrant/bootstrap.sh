@@ -11,15 +11,15 @@ if [ ! -d "boost_1_58_0" ]; then
   if [ ! -f "boost_1_58_0.tar.gz" ]; then
     wget http://downloads.sourceforge.net/project/boost/boost/1.58.0/boost_1_58_0.tar.gz
   fi
-  tar -vxf boost_1_57_0.tar.gz
+  tar -vxf boost_1_58_0.tar.gz
 fi
-pushd boost_1_57_0
+pushd boost_1_58_0
 . ./bootstrap.sh
 ./b2 install
 ldconfig
 popd
 
-scons release
+scons -j 2 release
 (service rippled stop &) || true
 cp /src/build/gcc.release/rippled /usr/local/sbin/rippled && strip /usr/local/sbin/rippled
 popd
