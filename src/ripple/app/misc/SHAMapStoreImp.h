@@ -20,10 +20,10 @@
 #ifndef RIPPLE_APP_MISC_SHAMAPSTOREIMP_H_INCLUDED
 #define RIPPLE_APP_MISC_SHAMAPSTOREIMP_H_INCLUDED
 
-#include <ripple/app/data/DatabaseCon.h>
+#include <ripple/core/DatabaseCon.h>
 #include <ripple/app/misc/SHAMapStore.h>
 #include <ripple/app/misc/NetworkOPs.h>
-#include <ripple/app/data/SociDB.h>
+#include <ripple/core/SociDB.h>
 #include <ripple/nodestore/impl/Tuning.h>
 #include <ripple/nodestore/DatabaseRotating.h>
 #include <iostream>
@@ -159,7 +159,7 @@ public:
 
 private:
     // callback for visitNodes
-    bool copyNode (std::uint64_t& nodeCount, SHAMapTreeNode const &node);
+    bool copyNode (std::uint64_t& nodeCount, SHAMapAbstractNode const &node);
     void run();
     void dbPaths();
     std::shared_ptr <NodeStore::Backend> makeBackendRotating (

@@ -18,13 +18,12 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/app/data/DatabaseCon.h>
+#include <ripple/core/DatabaseCon.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/main/LocalCredentials.h>
-#include <ripple/app/peers/UniqueNodeList.h>
+#include <ripple/app/misc/UniqueNodeList.h>
 #include <ripple/basics/Log.h>
 #include <ripple/basics/StringUtilities.h>
-#include <ripple/basics/make_SSLContext.h>
 #include <ripple/core/Config.h>
 #include <boost/optional.hpp>
 #include <iostream>
@@ -94,21 +93,15 @@ bool LocalCredentials::nodeIdentityCreate ()
     RippleAddress   naNodePublic    = RippleAddress::createNodePublic (naSeed);
     RippleAddress   naNodePrivate   = RippleAddress::createNodePrivate (naSeed);
 
-    // Make new key.
-    std::string strDh512 (getRawDHParams (512));
-
-    std::string strDh1024 = strDh512;
-
     //
     // Store the node information
     //
     auto db = getApp().getWalletDB ().checkoutDb ();
 
-    *db << str (boost::format ("INSERT INTO NodeIdentity (PublicKey,PrivateKey,Dh512,Dh1024) VALUES ('%s','%s',%s,%s);")
-                         % naNodePublic.humanNodePublic ()
-                         % naNodePrivate.humanNodePrivate ()
-                         % sqlEscape (strDh512)
-                         % sqlEscape (strDh1024));
+    *db << str (boost::format (
+        "INSERT INTO NodeIdentity (PublicKey,PrivateKey) VALUES ('%s','%s');")
+            % naNodePublic.humanNodePublic ()
+            % naNodePrivate.humanNodePrivate ());
 
     if (!getConfig ().QUIET)
         std::cerr << "NodeIdentity: Created." << std::endl;

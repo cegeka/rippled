@@ -18,6 +18,13 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/app/misc/NetworkOPs.h>
+#include <ripple/basics/Log.h>
+#include <ripple/net/RPCErr.h>
+#include <ripple/protocol/ErrorCodes.h>
+#include <ripple/protocol/JsonFields.h>
+#include <ripple/rpc/Context.h>
+#include <ripple/rpc/impl/ParseAccountIds.h>
 #include <ripple/server/Role.h>
 
 namespace ripple {
@@ -72,6 +79,9 @@ Json::Value doUnsubscribe (RPC::Context& context)
                 else if (streamName == "transactions_proposed"
                          || streamName == "rt_transactions") // DEPRECATED
                     context.netOps.unsubRTTransactions (ispSub->getSeq ());
+
+                else if (streamName == "validations")
+                    context.netOps.unsubValidations (ispSub->getSeq ());
 
                 else
                     jvResult[jss::error] = "Unknown stream: " + streamName;

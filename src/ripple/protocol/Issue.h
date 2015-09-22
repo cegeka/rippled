@@ -33,19 +33,17 @@ namespace ripple {
     When ByValue is `false`, this only stores references, and the caller
     is responsible for managing object lifetime.
 
-    @see Currency, Account, Issue, IssueRef, Book
+    @see Currency, AccountID, Issue, IssueRef, Book
 */
 template <bool ByValue>
 class IssueType
 {
 public:
-    typedef typename
-    std::conditional <ByValue, Currency, Currency const&>::type
-    IssueCurrency;
+    using IssueCurrency = typename
+        std::conditional <ByValue, Currency, Currency const&>::type;
 
-    typedef typename
-    std::conditional <ByValue, Account, Account const&>::type
-    IssueAccount;
+    using IssueAccount = typename
+        std::conditional <ByValue, AccountID, AccountID const&>::type;
 
     IssueCurrency currency;
     IssueAccount account;
@@ -54,7 +52,7 @@ public:
     {
     }
 
-    IssueType (Currency const& c, Account const& a)
+    IssueType (Currency const& c, AccountID const& a)
             : currency (c), account (a)
     {
     }
@@ -173,8 +171,8 @@ bool operator<= (IssueType <LhsByValue> const& lhs,
 
 //------------------------------------------------------------------------------
 
-typedef IssueType <true> Issue;
-typedef IssueType <false> IssueRef;
+using Issue = IssueType <true>;
+using IssueRef = IssueType <false>;
 
 //------------------------------------------------------------------------------
 

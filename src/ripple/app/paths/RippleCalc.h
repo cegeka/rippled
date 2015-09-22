@@ -20,7 +20,7 @@
 #ifndef RIPPLE_APP_PATHS_RIPPLECALC_H_INCLUDED
 #define RIPPLE_APP_PATHS_RIPPLECALC_H_INCLUDED
 
-#include <ripple/app/ledger/LedgerEntrySet.h>
+#include <ripple/ledger/PaymentSandbox.h>
 #include <ripple/app/paths/PathState.h>
 #include <ripple/protocol/STAmount.h>
 #include <ripple/protocol/TER.h>
@@ -72,8 +72,10 @@ public:
 
     };
 
-    static Output rippleCalculate (
-        LedgerEntrySet& activeLedger,
+    static 
+    Output
+    rippleCalculate(
+        PaymentSandbox& view,
 
         // Compute paths using this ledger entry set.  Up to caller to actually
         // apply to ledger.
@@ -90,16 +92,16 @@ public:
         //           trust node.
         STAmount const& saDstAmountReq,
 
-        Account const& uDstAccountID,
-        Account const& uSrcAccountID,
+        AccountID const& uDstAccountID,
+        AccountID const& uSrcAccountID,
 
         // A set of paths that are included in the transaction that we'll
         // explore for liquidity.
         STPathSet const& spsPaths,
         Input const* const pInputs = nullptr);
 
-    /** The active ledger. */
-    LedgerEntrySet& mActiveLedger;
+    // The view we are currently working on
+    PaymentSandbox& view;
 
     // If the transaction fails to meet some constraint, still need to delete
     // unfunded offers.
@@ -115,14 +117,14 @@ public:
 
 private:
     RippleCalc (
-        LedgerEntrySet& activeLedger,
+        PaymentSandbox& view_,
         STAmount const& saMaxAmountReq,             // --> -1 = no limit.
         STAmount const& saDstAmountReq,
 
-        Account const& uDstAccountID,
-        Account const& uSrcAccountID,
+        AccountID const& uDstAccountID,
+        AccountID const& uSrcAccountID,
         STPathSet const& spsPaths)
-            : mActiveLedger (activeLedger),
+            : view (view_),
               saDstAmountReq_(saDstAmountReq),
               saMaxAmountReq_(saMaxAmountReq),
               uDstAccountID_(uDstAccountID),
@@ -139,8 +141,8 @@ private:
 
     STAmount const& saDstAmountReq_;
     STAmount const& saMaxAmountReq_;
-    Account const& uDstAccountID_;
-    Account const& uSrcAccountID_;
+    AccountID const& uDstAccountID_;
+    AccountID const& uSrcAccountID_;
     STPathSet const& spsPaths_;
 
     // The computed input amount.

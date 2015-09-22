@@ -20,7 +20,7 @@
 #include <BeastConfig.h>
 #include <ripple/app/ledger/AcceptedLedger.h>
 #include <ripple/basics/Log.h>
-#include <ripple/basics/seconds_clock.h>
+#include <ripple/basics/chrono.h>
 
 namespace ripple {
 
@@ -28,24 +28,22 @@ namespace ripple {
 //             Use a dependency injection to give AcceptedLedger access.
 //
 TaggedCache <uint256, AcceptedLedger> AcceptedLedger::s_cache (
-    "AcceptedLedger", 4, 60, get_seconds_clock (),
+    "AcceptedLedger", 4, 60, stopwatch(),
         deprecatedLogs().journal("TaggedCache"));
 
 AcceptedLedger::AcceptedLedger (Ledger::ref ledger) : mLedger (ledger)
 {
-    SHAMap& txSet = *ledger->peekTransactionMap ();
-
-    for (std::shared_ptr<SHAMapItem> item = txSet.peekFirstItem (); item;
-         item = txSet.peekNextItem (item->getTag ()))
+    for (auto const& item : ledger->txMap())
     {
-        SerialIter sit (item->peekSerializer ());
-        insert (std::make_shared<AcceptedLedgerTx> (ledger, std::ref (sit)));
+        SerialIter sit (item.slice());
+        insert (std::make_shared<AcceptedLedgerTx>(
+            ledger, std::ref (sit)));
     }
 }
 
 AcceptedLedger::pointer AcceptedLedger::makeAcceptedLedger (Ledger::ref ledger)
 {
-    AcceptedLedger::pointer ret = s_cache.fetch (ledger->getHash ());
+    AcceptedLedger::pointer ret = s_cache.fetch (ledger->getHash());
 
     if (ret)
         return ret;

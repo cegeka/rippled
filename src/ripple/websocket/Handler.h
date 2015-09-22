@@ -28,7 +28,7 @@
 #include <ripple/json/json_reader.h>
 #include <ripple/websocket/Connection.h>
 #include <ripple/websocket/WebSocket.h>
-
+#include <boost/unordered_map.hpp>
 #include <memory>
 
 namespace ripple {
@@ -63,7 +63,7 @@ class HandlerImpl
 public:
     using connection_ptr = typename WebSocket::ConnectionPtr;
     using message_ptr = typename WebSocket::MessagePtr;
-    using wsc_ptr = std::shared_ptr <ConnectionImpl <WebSocket> > ;
+    using wsc_ptr = std::shared_ptr <ConnectionImpl <WebSocket> >;
 
     // Private reasons to close.
     enum
@@ -83,7 +83,7 @@ protected:
     std::mutex mLock;
 
     // For each connection maintain an associated object to track subscriptions.
-    typedef hash_map <connection_ptr, wsc_ptr> MapType;
+    using MapType = boost::unordered_map<connection_ptr, wsc_ptr>;
     MapType mMap;
 
 public:
@@ -104,11 +104,6 @@ public:
     {
         return desc_.port;
     }
-
-    bool getPublic()
-    {
-        return ! port ().admin_ip.empty ();
-    };
 
     void send (connection_ptr const& cpClient, message_ptr const& mpMessage)
     {
@@ -403,7 +398,7 @@ public:
             send (cpClient, jvResult, false);
         }
         else if (!jrReader.parse (mpMessage->get_payload (), jvRequest) ||
-                 jvRequest.isNull () || !jvRequest.isObject ())
+                 ! jvRequest || !jvRequest.isObject ())
         {
             Json::Value jvResult (Json::objectValue);
 
@@ -468,9 +463,9 @@ public:
 
         cpClient->set_body (
             "<!DOCTYPE html><html><head><title>" + systemName () +
-            " Test</title></head>" + "<body><h1>" + systemName () +
-            " Test</h1><p>This page shows http(s) connectivity is working."
-            "</p></body></html>");
+            " Test page for rippled</title></head>" + "<body><h1>" +
+            systemName () + " Test</h1><p>This page shows rippled http(s) "
+            "connectivity is working./p></body></html>");
         return true;
     }
 

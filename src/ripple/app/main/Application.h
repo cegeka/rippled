@@ -26,7 +26,7 @@
 #include <beast/utility/PropertyStream.h>
 #include <beast/cxx14/memory.h> // <memory>
 #include <mutex>
-    
+
 namespace boost { namespace asio { class io_service; } }
 
 namespace ripple {
@@ -34,10 +34,10 @@ namespace ripple {
 namespace Validators { class Manager; }
 namespace Resource { class Manager; }
 namespace NodeStore { class Database; }
-namespace RPC { class Manager; }
 
 // VFALCO TODO Fix forward declares required for header dependency loops
 class AmendmentTable;
+class CachedSLEs;
 class CollectorManager;
 namespace shamap {
 class Family;
@@ -53,9 +53,12 @@ class InboundTransactions;
 class LedgerMaster;
 class LoadManager;
 class NetworkOPs;
+class OpenLedger;
 class OrderBookDB;
 class Overlay;
 class PathRequests;
+class PendingSaves;
+class AccountIDCache;
 class STLedgerEntry;
 class TransactionMaster;
 class Validations;
@@ -64,7 +67,6 @@ class DatabaseCon;
 class SHAMapStore;
 
 using NodeCache     = TaggedCache <uint256, Blob>;
-using SLECache      = TaggedCache <uint256, STLedgerEntry>;
 
 class Application : public beast::PropertyStream::Source
 {
@@ -92,9 +94,8 @@ public:
     virtual CollectorManager&       getCollectorManager () = 0;
     virtual shamap::Family&         family() = 0;
     virtual JobQueue&               getJobQueue () = 0;
-    virtual RPC::Manager&           getRPCManager () = 0;
     virtual NodeCache&              getTempNodeCache () = 0;
-    virtual SLECache&               getSLECache () = 0;
+    virtual CachedSLEs&             cachedSLEs() = 0;
     virtual Validators::Manager&    getValidators () = 0;
     virtual AmendmentTable&         getAmendmentTable() = 0;
     virtual IHashRouter&            getHashRouter () = 0;
@@ -114,7 +115,9 @@ public:
     virtual Resource::Manager&      getResourceManager () = 0;
     virtual PathRequests&           getPathRequests () = 0;
     virtual SHAMapStore&            getSHAMapStore () = 0;
-
+    virtual PendingSaves&           pendingSaves() = 0;
+    virtual AccountIDCache const&   accountIDCache() const = 0;
+    virtual OpenLedger&             openLedger() = 0;
     virtual DatabaseCon& getTxnDB () = 0;
     virtual DatabaseCon& getLedgerDB () = 0;
 

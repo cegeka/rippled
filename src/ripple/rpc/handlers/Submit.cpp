@@ -18,10 +18,25 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/app/misc/NetworkOPs.h>
 #include <ripple/basics/StringUtilities.h>
+#include <ripple/basics/strHex.h>
+#include <ripple/net/RPCErr.h>
+#include <ripple/protocol/ErrorCodes.h>
+#include <ripple/resource/Fees.h>
+#include <ripple/protocol/JsonFields.h>
+#include <ripple/rpc/Context.h>
+#include <ripple/rpc/impl/TransactionSign.h>
 #include <ripple/server/Role.h>
 
 namespace ripple {
+
+static NetworkOPs::FailHard getFailHard (RPC::Context const& context)
+{
+    return NetworkOPs::doFailHard (
+        context.params.isMember ("fail_hard")
+        && context.params["fail_hard"].asBool ());
+}
 
 // {
 //   tx_json: <object>,
@@ -33,10 +48,10 @@ Json::Value doSubmit (RPC::Context& context)
 
     if (!context.params.isMember (jss::tx_blob))
     {
-        bool bFailHard = context.params.isMember (jss::fail_hard)
-                && context.params[jss::fail_hard].asBool ();
-        return RPC::transactionSign (
-            context.params, true, bFailHard, context.netOps, context.role);
+        auto const failType = getFailHard (context);
+
+        return RPC::transactionSubmit (
+            context.params, failType, context.netOps, context.role);
     }
 
     Json::Value jvResult;
@@ -46,8 +61,7 @@ Json::Value doSubmit (RPC::Context& context)
     if (!ret.second || !ret.first.size ())
         return rpcError (rpcINVALID_PARAMS);
 
-    Serializer sTrans (ret.first);
-    SerialIter sitTrans (sTrans);
+    SerialIter sitTrans (makeSlice(ret.first));
 
     STTx::pointer stpTrans;
 
@@ -57,7 +71,7 @@ Json::Value doSubmit (RPC::Context& context)
     }
     catch (std::exception& e)
     {
-        jvResult[jss::error]           = "invalidTransaction";
+        jvResult[jss::error]        = "invalidTransaction";
         jvResult[jss::error_exception] = e.what ();
 
         return jvResult;
@@ -76,10 +90,10 @@ Json::Value doSubmit (RPC::Context& context)
 
     try
     {
-        (void) context.netOps.processTransaction (
-            tpTrans, context.role == Role::ADMIN, true,
-            context.params.isMember (jss::fail_hard)
-            && context.params[jss::fail_hard].asBool ());
+        auto const failType = getFailHard (context);
+
+        context.netOps.processTransaction (
+            tpTrans, context.role == Role::ADMIN, true, failType);
     }
     catch (std::exception& e)
     {

@@ -19,6 +19,7 @@
 
 #include <BeastConfig.h>
 #include <ripple/protocol/STAccount.h>
+#include <ripple/protocol/types.h>
 
 namespace ripple {
 
@@ -29,14 +30,13 @@ STAccount::STAccount (SerialIter& sit, SField const& name)
 
 std::string STAccount::getText () const
 {
-    Account u;
+    AccountID u;
     RippleAddress a;
-
-    if (!getValueH160 (u))
+    if (! getValueH160 (u))
         return STBlob::getText ();
-
-    a.setAccountID (u);
-    return a.humanAccountID ();
+    // VFALCO This should use getApp().accountIDCache()
+    //        Maybe pass the cache in?
+    return toBase58(u);
 }
 
 STAccount*
@@ -45,7 +45,7 @@ STAccount::construct (SerialIter& u, SField const& name)
     return new STAccount (name, u.getVLBuffer ());
 }
 
-STAccount::STAccount (SField const& n, Account const& v)
+STAccount::STAccount (SField const& n, AccountID const& v)
         : STBlob (n, v.data (), v.size ())
 {
 }
@@ -53,22 +53,6 @@ STAccount::STAccount (SField const& n, Account const& v)
 bool STAccount::isValueH160 () const
 {
     return peekValue ().size () == (160 / 8);
-}
-
-RippleAddress STAccount::getValueNCA () const
-{
-    RippleAddress a;
-    Account account;
-
-    if (getValueH160 (account))
-        a.setAccountID (account);
-
-    return a;
-}
-
-void STAccount::setValueNCA (RippleAddress const& nca)
-{
-    setValueH160 (nca.getAccountID ());
 }
 
 } // ripple

@@ -19,6 +19,7 @@
 
 #include <BeastConfig.h>
 #include <ripple/basics/Log.h>
+#include <ripple/protocol/digest.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/basics/CheckLibraryVersions.h>
 #include <ripple/basics/StringUtilities.h>
@@ -34,6 +35,7 @@
 #include <ripple/server/Role.h>
 #include <ripple/protocol/BuildInfo.h>
 #include <beast/chrono/basic_seconds_clock.h>
+#include <beast/module/core/time/Time.h>
 #include <beast/unit_test.h>
 #include <beast/utility/Debug.h>
 #include <beast/streams/debug_ostream.h>
@@ -91,7 +93,8 @@ void startServer ()
 
             Resource::Charge loadType = Resource::feeReferenceRPC;
             RPC::Context context {
-                jvCommand, loadType, getApp().getOPs (), Role::ADMIN};
+                jvCommand, loadType, getApp().getOPs (),
+                getApp().getLedgerMaster(), Role::ADMIN};
 
             Json::Value jvResult;
             RPC::doCommand (context, jvResult);
@@ -114,14 +117,18 @@ void printHelp (const po::options_description& desc)
         << systemName () << "d [options] <command> <params>\n"
         << desc << std::endl
         << "Commands: \n"
+           "     account_currencies <account> [<ledger>] [strict]\n"
            "     account_info <account>|<seed>|<pass_phrase>|<key> [<ledger>] [strict]\n"
            "     account_lines <account> <account>|\"\" [<ledger>]\n"
+           "     account_objects <account> [<ledger>] [strict]\n"
            "     account_offers <account>|<account_public_key> [<ledger>]\n"
            "     account_tx accountID [ledger_min [ledger_max [limit [offset]]]] [binary] [count] [descending]\n"
            "     book_offers <taker_pays> <taker_gets> [<taker [<ledger> [<limit> [<proof> [<marker>]]]]]\n"
            "     can_delete [<ledgerid>|<ledgerhash>|now|always|never]\n"
            "     connect <ip> [<port>]\n"
            "     consensus_info\n"
+           "     fetch_info [clear]\n"
+           "     gateway_balances [<ledger>] <issuer_account> [ <hotwallet> [ <hotwallet> ]]\n"
            "     get_counts\n"
            "     json <method> <json>\n"
            "     ledger [<id>|current|closed|validated] [full]\n"
@@ -129,26 +136,28 @@ void printHelp (const po::options_description& desc)
            "     ledger_closed\n"
            "     ledger_current\n"
            "     ledger_request <ledger>\n"
-           "     ledger_header <ledger>\n"
+           "     log_level [[<partition>] <severity>]\n"
            "     logrotate \n"
            "     peers\n"
+           "     ping\n"
            "     random\n"
            "     ripple ...\n"
            "     ripple_path_find <json> [<ledger>]\n"
            "     version\n"
            "     server_info\n"
+           "     sign <private_key> <json> [offline]\n"
+#if RIPPLE_ENABLE_MULTI_SIGN
+           "     sign_for\n"
+#endif // RIPPLE_ENABLE_MULTI_SIGN
            "     stop\n"
+           "     submit <tx_blob>|[<private_key> <json>]\n"
+#if RIPPLE_ENABLE_MULTI_SIGN
+           "     submit_multisigned\n"
+#endif // RIPPLE_ENABLE_MULTI_SIGN
            "     tx <id>\n"
-           "     unl_add <domain>|<public> [<comment>]\n"
-           "     unl_delete <domain>|<public_key>\n"
-           "     unl_list\n"
-           "     unl_load\n"
-           "     unl_network\n"
-           "     unl_reset\n"
            "     validation_create [<seed>|<pass_phrase>|<key>]\n"
            "     validation_seed [<seed>|<pass_phrase>|<key>]\n"
-           "     wallet_propose [<passphrase>]\n"
-           "     wallet_seed [<seed>|<passphrase>|<passkey>]\n";
+           "     wallet_propose [<passphrase>]\n";
 }
 
 //------------------------------------------------------------------------------
@@ -160,7 +169,6 @@ setupConfigForUnitTests (Config& config)
     config.overwrite (ConfigSection::nodeDatabase (), "type", "memory");
     config.overwrite (ConfigSection::nodeDatabase (), "path", "main");
 
-    config.deprecatedClearSection (ConfigSection::tempNodeDatabase ());
     config.deprecatedClearSection (ConfigSection::importNodeDatabase ());
     config.legacy("database_path", "DummyForUnitTests");
 }
@@ -503,6 +511,10 @@ int main (int argc, char** argv)
     // Workaround for Boost.Context / Boost.Coroutine
     // https://svn.boost.org/trac/boost/ticket/10657
     (void)beast::Time::currentTimeMillis();
+
+#ifdef _MSC_VER
+    ripple::sha512_deprecatedMSVCWorkaround();
+#endif
 
 #if defined(__GNUC__) && !defined(__clang__)
     auto constexpr gccver = (__GNUC__ * 100 * 100) +

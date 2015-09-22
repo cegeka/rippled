@@ -19,10 +19,12 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/ledger/LedgerToJson.h>
+#include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/impl/AccountTxPaging.h>
 #include <ripple/app/tx/Transaction.h>
 #include <ripple/protocol/Serializer.h>
+#include <ripple/protocol/types.h>
 #include <beast/cxx14/memory.h> // <memory>
 #include <boost/format.hpp>
 
@@ -36,7 +38,7 @@ convertBlobsToTxResult (
     Blob const& rawTxn,
     Blob const& rawMeta)
 {
-    SerialIter it (rawTxn);
+    SerialIter it (makeSlice(rawTxn));
     STTx::pointer txn = std::make_shared<STTx> (it);
     std::string reason;
 
@@ -45,15 +47,16 @@ convertBlobsToTxResult (
     tr->setStatus (Transaction::sqlTransactionStatus(status));
     tr->setLedger (ledger_index);
 
-    to.emplace_back(std::make_pair(std::move(tr),
-        std::make_shared<TransactionMetaSet> (
-            tr->getID (), tr->getLedger (), rawMeta)));
+    auto metaset = std::make_shared<TxMeta> (
+        tr->getID (), tr->getLedger (), rawMeta);
+
+    to.emplace_back(std::move(tr), metaset);
 };
 
 void
 saveLedgerAsync (std::uint32_t seq)
 {
-    Ledger::pointer ledger = getApp().getOPs().getLedgerBySeq(seq);
+    Ledger::pointer ledger = getApp().getLedgerMaster().getLedgerBySeq(seq);
     if (ledger)
         ledger->pendSaveValidated(false, false);
 }
@@ -66,7 +69,7 @@ accountTxPage (
                         std::string const&,
                         Blob const&,
                         Blob const&)> const& onTransaction,
-    RippleAddress const& account,
+    AccountID const& account,
     std::int32_t minLedger,
     std::int32_t maxLedger,
     bool forward,
@@ -131,7 +134,7 @@ accountTxPage (
              ORDER BY AccountTransactions.LedgerSeq ASC,
              AccountTransactions.TxnSeq ASC
              LIMIT %u;)"))
-            % account.humanAccountID()
+            % getApp().accountIDCache().toBase58(account)
             % minLedger
             % maxLedger
             % queryLimit);
@@ -148,7 +151,7 @@ accountTxPage (
             AccountTransactions.TxnSeq ASC
             LIMIT %u;
             )"))
-        % account.humanAccountID()
+        % getApp().accountIDCache().toBase58(account)
         % (findLedger + 1)
         % maxLedger
         % findLedger
@@ -163,7 +166,7 @@ accountTxPage (
              ORDER BY AccountTransactions.LedgerSeq DESC,
              AccountTransactions.TxnSeq DESC
              LIMIT %u;)"))
-            % account.humanAccountID()
+            % getApp().accountIDCache().toBase58(account)
             % minLedger
             % maxLedger
             % queryLimit);
@@ -178,7 +181,7 @@ accountTxPage (
              ORDER BY AccountTransactions.LedgerSeq DESC,
              AccountTransactions.TxnSeq DESC
              LIMIT %u;)"))
-            % account.humanAccountID()
+            % getApp().accountIDCache().toBase58(account)
             % minLedger
             % (findLedger - 1)
             % findLedger

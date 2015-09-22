@@ -18,10 +18,12 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/app/main/Application.h>
 #include <ripple/rpc/RPCHandler.h>
 #include <ripple/rpc/Yield.h>
 #include <ripple/rpc/impl/Tuning.h>
 #include <ripple/rpc/impl/Handler.h>
+#include <ripple/app/main/Application.h>
 #include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/misc/NetworkOPs.h>
 #include <ripple/basics/Log.h>
@@ -32,7 +34,9 @@
 #include <ripple/net/InfoSub.h>
 #include <ripple/net/RPCErr.h>
 #include <ripple/protocol/JsonFields.h>
+#include <ripple/resource/Fees.h>
 #include <ripple/server/Role.h>
+#include <ripple/resource/Fees.h>
 
 namespace ripple {
 namespace RPC {
@@ -149,14 +153,14 @@ error_code_i fillHandler (Context& context,
     if (! getConfig ().RUN_STANDALONE &&
         handler->condition_ & NEEDS_CURRENT_LEDGER)
     {
-        if (getApp ().getLedgerMaster ().getValidatedLedgerAge () >
+        if (context.ledgerMaster.getValidatedLedgerAge () >
             Tuning::maxValidatedLedgerAge)
         {
             return rpcNO_CURRENT;
         }
 
-        auto const cID = context.netOps.getCurrentLedgerID ();
-        auto const vID = context.netOps.getValidatedSeq ();
+        auto const cID = context.ledgerMaster.getCurrentLedgerIndex ();
+        auto const vID = context.ledgerMaster.getValidLedgerIndex ();
 
         if (cID + 10 < vID)
         {
@@ -167,7 +171,7 @@ error_code_i fillHandler (Context& context,
     }
 
     if ((handler->condition_ & NEEDS_CLOSED_LEDGER) &&
-        !context.netOps.getClosedLedger ())
+        !context.ledgerMaster.getClosedLedger ())
     {
         return rpcNO_CLOSED;
     }

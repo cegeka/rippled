@@ -31,7 +31,7 @@
 #include <ripple/protocol/ErrorCodes.h>
 #include <ripple/protocol/JsonFields.h>
 #include <ripple/resource/Fees.h>
-#include <ripple/resource/Manager.h>
+#include <ripple/resource/ResourceManager.h>
 #include <ripple/rpc/RPCHandler.h>
 #include <ripple/server/Port.h>
 #include <ripple/json/to_string.h>
@@ -103,7 +103,6 @@ private:
     HTTP::Port const& m_port;
     Resource::Manager& m_resourceManager;
     Resource::Consumer m_usage;
-    bool const m_isPublic;
     beast::IP::Endpoint const m_remoteAddress;
     std::mutex m_receiveQueueMutex;
     std::deque <message_ptr> m_receiveQueue;
@@ -131,7 +130,6 @@ ConnectionImpl <WebSocket>::ConnectionImpl (
                    resourceManager.newInboundEndpoint (remoteAddress))
         , m_port (handler.port ())
         , m_resourceManager (resourceManager)
-        , m_isPublic (handler.getPublic ())
         , m_remoteAddress (remoteAddress)
         , m_netOPs (getApp ().getOPs ())
         , m_io_service (io_service)
@@ -270,7 +268,7 @@ Json::Value ConnectionImpl <WebSocket>::invokeCommand (Json::Value& jvRequest)
     else
     {
         RPC::Context context {
-            jvRequest, loadType, m_netOPs, role,
+            jvRequest, loadType, m_netOPs, getApp().getLedgerMaster(), role,
             std::dynamic_pointer_cast<InfoSub> (this->shared_from_this ())};
         RPC::doCommand (context, jvResult[jss::result]);
     }

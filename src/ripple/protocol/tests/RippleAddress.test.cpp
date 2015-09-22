@@ -18,10 +18,12 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/protocol/digest.h>
 #include <ripple/basics/TestSuite.h>
 #include <ripple/protocol/RippleAddress.h>
 #include <ripple/protocol/RipplePublicKey.h>
 #include <ripple/protocol/Serializer.h>
+#include <ripple/protocol/types.h>
 #include <ripple/basics/StringUtilities.h>
 
 namespace ripple {
@@ -46,7 +48,7 @@ public:
 
         // Check node signing.
         Blob vucTextSrc = strCopy ("Hello, nurse!");
-        uint256 uHash   = getSHA512Half (vucTextSrc);
+        uint256 uHash   = sha512Half(makeSlice(vucTextSrc));
         Blob vucTextSig;
 
         naNodePrivate.signNodePrivate (uHash, vucTextSig);
@@ -71,14 +73,14 @@ public:
         RippleAddress   naAccountPublic0    = RippleAddress::createAccountPublic (generator, 0);
         RippleAddress   naAccountPrivate0   = RippleAddress::createAccountPrivate (generator, naSeed, 0);
 
-        expect (naAccountPublic0.humanAccountID () == "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh", naAccountPublic0.humanAccountID ());
+        expect (toBase58(calcAccountID(naAccountPublic0)) == "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh");
         expect (naAccountPublic0.humanAccountPublic () == "aBQG8RQAzjs1eTKFEAQXr2gS4utcDiEC9wmi7pfUPTi27VCahwgw", naAccountPublic0.humanAccountPublic ());
 
         // Create account #1 public/private key pair.
         RippleAddress   naAccountPublic1    = RippleAddress::createAccountPublic (generator, 1);
         RippleAddress   naAccountPrivate1   = RippleAddress::createAccountPrivate (generator, naSeed, 1);
 
-        expect (naAccountPublic1.humanAccountID () == "r4bYF7SLUMD7QgSLLpgJx38WJSY12ViRjP", naAccountPublic1.humanAccountID ());
+        expect (toBase58(calcAccountID(naAccountPublic1)) == "r4bYF7SLUMD7QgSLLpgJx38WJSY12ViRjP");
         expect (naAccountPublic1.humanAccountPublic () == "aBPXpTfuLy1Bhk3HnGTTAqnovpKWQ23NpFMNkAF6F1Atg5vDyPrw", naAccountPublic1.humanAccountPublic ());
 
         // Check account signing.

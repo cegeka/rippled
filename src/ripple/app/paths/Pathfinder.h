@@ -20,7 +20,7 @@
 #ifndef RIPPLE_APP_PATHS_PATHFINDER_H_INCLUDED
 #define RIPPLE_APP_PATHS_PATHFINDER_H_INCLUDED
 
-#include <ripple/app/book/Types.h>
+#include <ripple/app/ledger/Ledger.h>
 #include <ripple/app/paths/RippleLineCache.h>
 #include <ripple/core/LoadEvent.h>
 #include <ripple/protocol/STAmount.h>
@@ -40,17 +40,17 @@ public:
     /** Construct a pathfinder with an issuer.*/
     Pathfinder (
         RippleLineCache::ref cache,
-        Account const& srcAccount,
-        Account const& dstAccount,
+        AccountID const& srcAccount,
+        AccountID const& dstAccount,
         Currency const& uSrcCurrency,
-        Account const& uSrcIssuer,
+        AccountID const& uSrcIssuer,
         STAmount const& dstAmount);
 
     /** Construct a pathfinder without an issuer.*/
     Pathfinder (
         RippleLineCache::ref cache,
-        Account const& srcAccount,
-        Account const& dstAccount,
+        AccountID const& srcAccount,
+        AccountID const& dstAccount,
         Currency const& uSrcCurrency,
         STAmount const& dstAmount);
 
@@ -72,7 +72,7 @@ public:
         int maxPaths,
         STPath& fullLiquidityPath,
         STPathSet& extraPaths,
-        Account const& srcIssuer);
+        AccountID const& srcIssuer);
 
     enum NodeType
     {
@@ -135,9 +135,9 @@ private:
 
     int getPathsOut (
         Currency const& currency,
-        Account const& account,
+        AccountID const& account,
         bool isDestCurrency,
-        Account const& dest);
+        AccountID const& dest);
 
     void addLink (
         STPath const& currentPath,
@@ -165,8 +165,8 @@ private:
 
     // Is the "no ripple" flag set from one account to another?
     bool isNoRipple (
-        Account const& fromAccount,
-        Account const& toAccount,
+        AccountID const& fromAccount,
+        AccountID const& toAccount,
         Currency const& currency);
 
     void rankPaths (
@@ -174,18 +174,18 @@ private:
         STPathSet const& paths,
         std::vector <PathRank>& rankedPaths);
 
-    Account mSrcAccount;
-    Account mDstAccount;
-    Account mEffectiveDst; // The account the paths need to end at
+    AccountID mSrcAccount;
+    AccountID mDstAccount;
+    AccountID mEffectiveDst; // The account the paths need to end at
     STAmount mDstAmount;
     Currency mSrcCurrency;
-    boost::optional<Account> mSrcIssuer;
+    boost::optional<AccountID> mSrcIssuer;
     STAmount mSrcAmount;
     /** The amount remaining from mSrcAccount after the default liquidity has
         been removed. */
     STAmount mRemainingAmount;
 
-    Ledger::pointer mLedger;
+    std::shared_ptr <ReadView const> mLedger;
     LoadEvent::pointer m_loadEvent;
     RippleLineCache::pointer mRLCache;
 

@@ -18,6 +18,16 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/app/ledger/LedgerMaster.h>
+#include <ripple/app/main/Application.h>
+#include <ripple/app/misc/NetworkOPs.h>
+#include <ripple/ledger/ReadView.h>
+#include <ripple/net/RPCErr.h>
+#include <ripple/protocol/ErrorCodes.h>
+#include <ripple/protocol/JsonFields.h>
+#include <ripple/resource/Fees.h>
+#include <ripple/rpc/Context.h>
+#include <ripple/rpc/impl/LookupLedger.h>
 #include <ripple/server/Role.h>
 
 namespace ripple {
@@ -34,7 +44,6 @@ namespace ripple {
 // }
 Json::Value doAccountTxOld (RPC::Context& context)
 {
-    RippleAddress   raAccount;
     std::uint32_t offset
             = context.params.isMember (jss::offset)
             ? context.params[jss::offset].asUInt () : 0;
@@ -50,13 +59,15 @@ Json::Value doAccountTxOld (RPC::Context& context)
     std::uint32_t   uLedgerMax;
     std::uint32_t   uValidatedMin;
     std::uint32_t   uValidatedMax;
-    bool bValidated  = context.netOps.getValidatedRange (
+    bool bValidated  = context.ledgerMaster.getValidatedRange (
         uValidatedMin, uValidatedMax);
 
     if (!context.params.isMember (jss::account))
         return rpcError (rpcINVALID_PARAMS);
 
-    if (!raAccount.setAccountID (context.params[jss::account].asString ()))
+    auto const raAccount = parseBase58<AccountID>(
+        context.params[jss::account].asString());
+    if (! raAccount)
         return rpcError (rpcACT_MALFORMED);
 
     if (offset > 3000)
@@ -102,13 +113,13 @@ Json::Value doAccountTxOld (RPC::Context& context)
     }
     else
     {
-        Ledger::pointer l;
-        Json::Value ret = RPC::lookupLedger (context.params, l, context.netOps);
+        std::shared_ptr<ReadView const> ledger;
+        auto ret = RPC::lookupLedger (ledger, context);
 
-        if (!l)
+        if (!ledger)
             return ret;
 
-        uLedgerMin = uLedgerMax = l->getLedgerSeq ();
+        uLedgerMin = uLedgerMax = ledger->info().seq;
     }
 
     int count = 0;
@@ -121,13 +132,13 @@ Json::Value doAccountTxOld (RPC::Context& context)
 
         Json::Value ret (Json::objectValue);
 
-        ret[jss::account] = raAccount.humanAccountID ();
+        ret[jss::account] = getApp().accountIDCache().toBase58(*raAccount);
         Json::Value& jvTxns = (ret[jss::transactions] = Json::arrayValue);
 
         if (bBinary)
         {
             auto txns = context.netOps.getAccountTxsB (
-                raAccount, uLedgerMin, uLedgerMax, bDescending, offset, limit,
+                *raAccount, uLedgerMin, uLedgerMax, bDescending, offset, limit,
                 context.role == Role::ADMIN);
 
             for (auto it = txns.begin (), end = txns.end (); it != end; ++it)
@@ -149,7 +160,7 @@ Json::Value doAccountTxOld (RPC::Context& context)
         else
         {
             auto txns = context.netOps.getAccountTxs (
-                raAccount, uLedgerMin, uLedgerMax, bDescending, offset, limit,
+                *raAccount, uLedgerMin, uLedgerMax, bDescending, offset, limit,
                 context.role == Role::ADMIN);
 
             for (auto it = txns.begin (), end = txns.end (); it != end; ++it)

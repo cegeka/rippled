@@ -103,9 +103,9 @@ bool PathState::lessPriority (PathState const& lhs, PathState const& rhs)
 //   an exact match.
 // - Real issuers must be specified for non-XRP.
 TER PathState::pushImpliedNodes (
-    Account const& account,    // --> Delivering to this account.
+    AccountID const& account,    // --> Delivering to this account.
     Currency const& currency,  // --> Delivering this currency.
-    Account const& issuer)    // --> Delivering this issuer.
+    AccountID const& issuer)    // --> Delivering this issuer.
 {
     TER resultCode = tesSUCCESS;
 
@@ -163,9 +163,9 @@ TER PathState::pushImpliedNodes (
 //                 terNO_LINE, tecPATH_DRY
 TER PathState::pushNode (
     const int iType,
-    Account const& account,    // If not specified, means an order book.
+    AccountID const& account,    // If not specified, means an order book.
     Currency const& currency,  // If not specified, default to previous.
-    Account const& issuer)     // If not specified, default to previous.
+    AccountID const& issuer)     // If not specified, default to previous.
 {
     path::Node node;
     const bool pathIsEmpty = nodes_.empty ();
@@ -268,12 +268,8 @@ TER PathState::pushNode (
             auto const& backNode = nodes_.back ();
             if (backNode.isAccount())
             {
-                auto sleRippleState = lesEntries.entryCache (
-                    ltRIPPLE_STATE,
-                    getRippleStateIndex (
-                        backNode.account_,
-                        node.account_,
-                        backNode.issue_.currency));
+                auto sleRippleState = view().peek(
+                    keylet::line(backNode.account_, node.account_, backNode.issue_.currency));
 
                 // A "RippleState" means a balance betweeen two accounts for a
                 // specific currency.
@@ -295,9 +291,8 @@ TER PathState::pushNode (
                             << backNode.account_ << " and " << node.account_
                             << " for " << node.issue_.currency << "." ;
 
-                    auto sleBck  = lesEntries.entryCache (
-                        ltACCOUNT_ROOT,
-                        getAccountRootIndex (backNode.account_));
+                    auto sleBck  = view().peek (
+                        keylet::account(backNode.account_));
                     // Is the source account the highest numbered account ID?
                     bool bHigh = backNode.account_ > node.account_;
 
@@ -323,13 +318,13 @@ TER PathState::pushNode (
 
                     if (resultCode == tesSUCCESS)
                     {
-                        STAmount saOwed = creditBalance (lesEntries,
+                        STAmount saOwed = creditBalance (view(),
                             node.account_, backNode.account_,
                             node.issue_.currency);
                         STAmount saLimit;
 
                         if (saOwed <= zero) {
-                            saLimit = creditLimit (lesEntries,
+                            saLimit = creditLimit (view(),
                                 node.account_,
                                 backNode.account_,
                                 node.issue_.currency);
@@ -418,26 +413,23 @@ TER PathState::pushNode (
 // terStatus = tesSUCCESS, temBAD_PATH, terNO_LINE, terNO_ACCOUNT, terNO_AUTH,
 // or temBAD_PATH_LOOP
 TER PathState::expandPath (
-    const LedgerEntrySet& lesSource,
     STPath const& spSourcePath,
-    Account const& uReceiverID,
-    Account const& uSenderID)
+    AccountID const& uReceiverID,
+    AccountID const& uSenderID)
 {
     uQuality = 1;            // Mark path as active.
 
     Currency const& uMaxCurrencyID = saInReq.getCurrency ();
-    Account const& uMaxIssuerID = saInReq.getIssuer ();
+    AccountID const& uMaxIssuerID = saInReq.getIssuer ();
 
     Currency const& currencyOutID = saOutReq.getCurrency ();
-    Account const& issuerOutID = saOutReq.getIssuer ();
-    Account const& uSenderIssuerID
+    AccountID const& issuerOutID = saOutReq.getIssuer ();
+    AccountID const& uSenderIssuerID
         = isXRP(uMaxCurrencyID) ? xrpAccount() : uSenderID;
     // Sender is always issuer for non-XRP.
 
     WriteLog (lsTRACE, RippleCalc)
         << "expandPath> " << spSourcePath.getJson (0);
-
-    lesEntries = lesSource.duplicate ();
 
     terStatus = tesSUCCESS;
 
@@ -488,11 +480,11 @@ TER PathState::expandPath (
         // TODO(tom): complexify this next logic further in case someone
         // understands it.
         const auto nextAccountID   = spSourcePath.size ()
-                ? Account(spSourcePath. front ().getAccountID ())
+                ? AccountID(spSourcePath. front ().getAccountID ())
                 : !isXRP(currencyOutID)
                 ? (issuerOutID == uReceiverID)
-                ? Account(uReceiverID)
-                : Account(issuerOutID)                      // Use implied node.
+                ? AccountID(uReceiverID)
+                : AccountID(issuerOutID)                      // Use implied node.
                 : xrpAccount();
 
         WriteLog (lsDEBUG, RippleCalc)
@@ -632,8 +624,7 @@ void PathState::checkFreeze()
         // Check each order book for a global freeze
         if (nodes_[i].uFlags & STPathElement::typeIssuer)
         {
-            sle = lesEntries.entryCache (ltACCOUNT_ROOT,
-                getAccountRootIndex (nodes_[i].issue_.account));
+            sle = view().peek (keylet::account(nodes_[i].issue_.account));
 
             if (sle && sle->isFlag (lsfGlobalFreeze))
             {
@@ -646,13 +637,12 @@ void PathState::checkFreeze()
         if (nodes_[i].uFlags & STPathElement::typeAccount)
         {
             Currency const& currencyID = nodes_[i].issue_.currency;
-            Account const& inAccount = nodes_[i].account_;
-            Account const& outAccount = nodes_[i+1].account_;
+            AccountID const& inAccount = nodes_[i].account_;
+            AccountID const& outAccount = nodes_[i+1].account_;
 
             if (inAccount != outAccount)
             {
-                sle = lesEntries.entryCache (ltACCOUNT_ROOT,
-                    getAccountRootIndex (outAccount));
+                sle = view().peek (keylet::account(outAccount));
 
                 if (sle && sle->isFlag (lsfGlobalFreeze))
                 {
@@ -660,8 +650,7 @@ void PathState::checkFreeze()
                     return;
                 }
 
-                sle = lesEntries.entryCache (ltRIPPLE_STATE,
-                    getRippleStateIndex (inAccount,
+                sle = view().peek (keylet::line(inAccount,
                         outAccount, currencyID));
 
                 if (sle && sle->isFlag (
@@ -681,17 +670,17 @@ void PathState::checkFreeze()
     [second]->[third]
 */
 TER PathState::checkNoRipple (
-    Account const& firstAccount,
-    Account const& secondAccount,
+    AccountID const& firstAccount,
+    AccountID const& secondAccount,
     // This is the account whose constraints we are checking
-    Account const& thirdAccount,
+    AccountID const& thirdAccount,
     Currency const& currency)
 {
     // fetch the ripple lines into and out of this node
-    SLE::pointer sleIn = lesEntries.entryCache (ltRIPPLE_STATE,
-        getRippleStateIndex (firstAccount, secondAccount, currency));
-    SLE::pointer sleOut = lesEntries.entryCache (ltRIPPLE_STATE,
-        getRippleStateIndex (secondAccount, thirdAccount, currency));
+    SLE::pointer sleIn = view().peek (
+        keylet::line(firstAccount, secondAccount, currency));
+    SLE::pointer sleOut = view().peek (
+        keylet::line(secondAccount, thirdAccount, currency));
 
     if (!sleIn || !sleOut)
     {
@@ -717,8 +706,8 @@ TER PathState::checkNoRipple (
 // Check a fully-expanded path to make sure it doesn't violate no-Ripple
 // settings.
 TER PathState::checkNoRipple (
-    Account const& uDstAccountID,
-    Account const& uSrcAccountID)
+    AccountID const& uDstAccountID,
+    AccountID const& uSrcAccountID)
 {
     // There must be at least one node for there to be two consecutive ripple
     // lines.

@@ -18,16 +18,53 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/rpc/impl/RipplePathFind.h>
+#include <ripple/rpc/RipplePathFind.h>
+#include <ripple/app/ledger/LedgerMaster.h>
+#include <ripple/app/main/Application.h>
+#include <ripple/app/misc/NetworkOPs.h>
 #include <ripple/app/paths/AccountCurrencies.h>
 #include <ripple/app/paths/FindPaths.h>
+#include <ripple/app/paths/PathRequest.h>
+#include <ripple/app/paths/PathRequests.h>
 #include <ripple/app/paths/RippleCalc.h>
+#include <ripple/basics/Log.h>
+#include <ripple/core/Config.h>
 #include <ripple/core/LoadFeeTrack.h>
+#include <ripple/json/json_reader.h>
+#include <ripple/json/json_writer.h>
+#include <ripple/ledger/PaymentSandbox.h>
+#include <ripple/net/RPCErr.h>
+#include <ripple/protocol/ErrorCodes.h>
+#include <ripple/protocol/JsonFields.h>
 #include <ripple/protocol/STParsedJSON.h>
+#include <ripple/protocol/types.h>
+#include <ripple/resource/Fees.h>
+#include <ripple/rpc/Context.h>
+#include <ripple/rpc/RipplePathFind.h>
 #include <ripple/rpc/impl/LegacyPathFind.h>
+#include <ripple/rpc/impl/LookupLedger.h>
+#include <ripple/rpc/impl/Tuning.h>
 #include <ripple/server/Role.h>
 
 namespace ripple {
+
+static
+Json::Value
+buildSrcCurrencies(AccountID const& account,
+    RippleLineCache::pointer const& cache)
+{
+    auto currencies = accountSourceCurrencies(account, cache, true);
+    auto jvSrcCurrencies = Json::Value(Json::arrayValue);
+
+    for (auto const& uCurrency : currencies)
+    {
+        Json::Value jvCurrency(Json::objectValue);
+        jvCurrency[jss::currency] = to_string(uCurrency);
+        jvSrcCurrencies.append(jvCurrency);
+    }
+
+    return jvSrcCurrencies;
+}
 
 // This interface is deprecated.
 Json::Value doRipplePathFind (RPC::Context& context)
@@ -38,32 +75,59 @@ Json::Value doRipplePathFind (RPC::Context& context)
 
     context.loadType = Resource::feeHighBurdenRPC;
 
-    RippleAddress raSrc;
-    RippleAddress raDst;
+    AccountID raSrc;
+    AccountID raDst;
     STAmount saDstAmount;
     Ledger::pointer lpLedger;
 
     Json::Value jvResult;
 
-    if (getConfig().RUN_STANDALONE ||
+    if (! context.suspend ||
+        getConfig().RUN_STANDALONE ||
         context.params.isMember(jss::ledger) ||
         context.params.isMember(jss::ledger_index) ||
         context.params.isMember(jss::ledger_hash))
     {
         // The caller specified a ledger
-        jvResult = RPC::lookupLedger (
-            context.params, lpLedger, context.netOps);
+        jvResult = RPC::lookupLedgerDeprecated (lpLedger, context);
         if (!lpLedger)
             return jvResult;
+    }
+    else
+    {
+        if (getApp().getLedgerMaster().getValidatedLedgerAge() >
+            RPC::Tuning::maxValidatedLedgerAge)
+        {
+            return rpcError (rpcNO_NETWORK);
+        }
+
+        context.loadType = Resource::feeHighBurdenRPC;
+        lpLedger = context.ledgerMaster.getClosedLedger();
+
+        PathRequest::pointer request;
+        suspend(context,
+                [&request, &context, &jvResult, &lpLedger]
+                (RPC::Callback const& callback)
+        {
+            jvResult = getApp().getPathRequests().makeLegacyPathRequest (
+                request, callback, lpLedger, context.params);
+            assert(callback);
+            if (! request && callback)
+                callback();
+        });
+
+        if (request)
+            jvResult = request->doStatus (context.params);
+
+        return jvResult;
     }
 
     if (!context.params.isMember (jss::source_account))
     {
         jvResult = rpcError (rpcSRC_ACT_MISSING);
     }
-    else if (!context.params[jss::source_account].isString ()
-             || !raSrc.setAccountID (
-                 context.params[jss::source_account].asString ()))
+    else if (! deprecatedParseBase58(raSrc,
+        context.params[jss::source_account]))
     {
         jvResult = rpcError (rpcSRC_ACT_MALFORMED);
     }
@@ -71,9 +135,8 @@ Json::Value doRipplePathFind (RPC::Context& context)
     {
         jvResult = rpcError (rpcDST_ACT_MISSING);
     }
-    else if (!context.params[jss::destination_account].isString ()
-             || !raDst.setAccountID (
-                 context.params[jss::destination_account].asString ()))
+    else if (! deprecatedParseBase58 (raDst,
+        context.params[jss::destination_account]))
     {
         jvResult = rpcError (rpcDST_ACT_MALFORMED);
     }
@@ -115,7 +178,7 @@ Json::Value doRipplePathFind (RPC::Context& context)
         {
             // The closed ledger is recent and any nodes made resident
             // have the best chance to persist
-            lpLedger = context.netOps.getClosedLedger();
+            lpLedger = context.ledgerMaster.getClosedLedger();
             cache = getApp().getPathRequests().getLineCache(lpLedger, false);
         }
 
@@ -140,7 +203,7 @@ Json::Value doRipplePathFind (RPC::Context& context)
                 jvDestCur.append (to_string (uCurrency));
 
         jvResult[jss::destination_currencies] = jvDestCur;
-        jvResult[jss::destination_account] = raDst.humanAccountID ();
+        jvResult[jss::destination_account] = getApp().accountIDCache().toBase58(raDst);
 
         int level = getConfig().PATH_SEARCH_OLD;
         if ((getConfig().PATH_SEARCH_MAX > level)
@@ -160,8 +223,8 @@ Json::Value doRipplePathFind (RPC::Context& context)
         auto contextPaths = context.params.isMember(jss::paths) ?
             boost::optional<Json::Value>(context.params[jss::paths]) :
                 boost::optional<Json::Value>(boost::none);
-        auto pathFindResult = ripplePathFind(cache, raSrc, raDst, saDstAmount, 
-            lpLedger, jvSrcCurrencies, contextPaths, level);
+        auto pathFindResult = ripplePathFind(cache, raSrc, raDst, saDstAmount,
+            jvSrcCurrencies, contextPaths, level);
         if (!pathFindResult.first)
             return pathFindResult.second;
 
@@ -170,39 +233,21 @@ Json::Value doRipplePathFind (RPC::Context& context)
     }
 
     WriteLog (lsDEBUG, RPCHandler)
-            << boost::str (boost::format ("ripple_path_find< %s")
-                           % jvResult);
+            << "ripple_path_find< %s" << jvResult;
 
     return jvResult;
 }
 
-Json::Value
-buildSrcCurrencies(RippleAddress const& raSrc, RippleLineCache::pointer const& cache)
-{
-    auto currencies = accountSourceCurrencies(raSrc, cache, true);
-    auto jvSrcCurrencies = Json::Value(Json::arrayValue);
-
-    for (auto const& uCurrency : currencies)
-    {
-        Json::Value jvCurrency(Json::objectValue);
-        jvCurrency[jss::currency] = to_string(uCurrency);
-        jvSrcCurrencies.append(jvCurrency);
-    }
-
-    return jvSrcCurrencies;
-}
-
 std::pair<bool, Json::Value>
-ripplePathFind(RippleLineCache::pointer const& cache, 
-  RippleAddress const& raSrc, RippleAddress const& raDst,
-    STAmount const& saDstAmount, Ledger::pointer const& lpLedger, 
-      Json::Value const& jvSrcCurrencies, 
+ripplePathFind (RippleLineCache::pointer const& cache,
+  AccountID const& raSrc, AccountID const& raDst,
+    STAmount const& saDstAmount, Json::Value const& jvSrcCurrencies,
         boost::optional<Json::Value> const& contextPaths, int const& level)
 {
     FindPaths fp(
         cache,
-        raSrc.getAccountID(),
-        raDst.getAccountID(),
+        raSrc,
+        raDst,
         saDstAmount,
         level,
         4); // max paths
@@ -214,7 +259,7 @@ ripplePathFind(RippleLineCache::pointer const& cache,
         Json::Value jvSource = jvSrcCurrencies[i];
 
         Currency uSrcCurrencyID;
-        Account uSrcIssuerID;
+        AccountID uSrcIssuerID;
 
         if (!jvSource.isObject())
             return std::make_pair(false, rpcError(rpcINVALID_PARAMS));
@@ -230,7 +275,7 @@ ripplePathFind(RippleLineCache::pointer const& cache,
         }
 
         if (uSrcCurrencyID.isNonZero())
-            uSrcIssuerID = raSrc.getAccountID();
+            uSrcIssuerID = raSrc;
 
         // Parse optional issuer.
         if (jvSource.isMember(jss::issuer) &&
@@ -275,21 +320,23 @@ ripplePathFind(RippleLineCache::pointer const& cache,
                 isXRP(uSrcIssuerID) ?
                 isXRP(uSrcCurrencyID) ? // Default to source account.
                 xrpAccount() :
-                Account(raSrc.getAccountID())
+                (raSrc)
                 : uSrcIssuerID;            // Use specifed issuer.
 
             STAmount saMaxAmount({ uSrcCurrencyID, issuer }, 1);
             saMaxAmount.negate();
 
-            LedgerEntrySet lesSandbox(lpLedger, tapNONE);
+            boost::optional<PaymentSandbox> sandbox;
+            sandbox.emplace(&*cache->getLedger(), tapNONE);
+            assert(sandbox->open());
 
             auto rc = path::RippleCalc::rippleCalculate(
-                lesSandbox,
+                *sandbox,
                 saMaxAmount,            // --> Amount to send is unlimited
                 //     to get an estimate.
                 saDstAmount,            // --> Amount to deliver.
-                raDst.getAccountID(),  // --> Account to deliver to.
-                raSrc.getAccountID(),  // --> Account sending from.
+                raDst,                  // --> Account to deliver to.
+                raSrc,                  // --> Account sending from.
                 spsComputed);           // --> Path set.
 
             WriteLog(lsWARNING, RPCHandler)
@@ -306,15 +353,16 @@ ripplePathFind(RippleLineCache::pointer const& cache,
                     << "Trying with an extra path element";
 
                 spsComputed.push_back(fullLiquidityPath);
-                lesSandbox.clear();
+                sandbox.emplace(&*cache->getLedger(), tapNONE);
+                assert(sandbox->open());
                 rc = path::RippleCalc::rippleCalculate(
-                    lesSandbox,
+                    *sandbox,
                     saMaxAmount,            // --> Amount to send is unlimited
                     //     to get an estimate.
                     saDstAmount,            // --> Amount to deliver.
-                    raDst.getAccountID(),  // --> Account to deliver to.
-                    raSrc.getAccountID(),  // --> Account sending from.
-                    spsComputed);         // --> Path set.
+                    raDst,                  // --> Account to deliver to.
+                    raSrc,                  // --> Account sending from.
+                    spsComputed);           // --> Path set.
                 WriteLog(lsDEBUG, PathRequest)
                     << "Extra path element gives "
                     << transHuman(rc.result());

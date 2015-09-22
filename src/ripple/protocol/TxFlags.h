@@ -20,6 +20,8 @@
 #ifndef RIPPLE_PROTOCOL_TXFLAGS_H_INCLUDED
 #define RIPPLE_PROTOCOL_TXFLAGS_H_INCLUDED
 
+#include <cstdint>
+
 namespace ripple {
 
 //
@@ -88,6 +90,10 @@ const std::uint32_t tfSetFreeze            = 0x00100000;
 const std::uint32_t tfClearFreeze          = 0x00200000;
 const std::uint32_t tfTrustSetMask         = ~ (tfUniversal | tfSetfAuth | tfSetNoRipple | tfClearNoRipple
                                              | tfSetFreeze | tfClearFreeze);
+
+// EnableAmendment flags:
+const std::uint32_t tfGotMajority          = 0x00010000;
+const std::uint32_t tfLostMajority         = 0x00020000;
 
 } // ripple
 

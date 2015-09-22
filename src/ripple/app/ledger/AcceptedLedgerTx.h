@@ -21,6 +21,7 @@
 #define RIPPLE_APP_LEDGER_ACCEPTEDLEDGERTX_H_INCLUDED
 
 #include <ripple/app/ledger/Ledger.h>
+#include <boost/container/flat_set.hpp>
 
 namespace ripple {
 
@@ -46,24 +47,26 @@ namespace ripple {
 class AcceptedLedgerTx
 {
 public:
-    typedef std::shared_ptr <AcceptedLedgerTx> pointer;
-    typedef const pointer& ref;
+    using pointer = std::shared_ptr <AcceptedLedgerTx>;
+    using ref = const pointer&;
 
 public:
     AcceptedLedgerTx (Ledger::ref ledger, SerialIter& sit);
     AcceptedLedgerTx (Ledger::ref ledger, STTx::ref,
-        TransactionMetaSet::ref);
+        TxMeta::ref);
     AcceptedLedgerTx (Ledger::ref ledger, STTx::ref, TER result);
 
     STTx::ref getTxn () const
     {
         return mTxn;
     }
-    TransactionMetaSet::ref getMeta () const
+    TxMeta::ref getMeta () const
     {
         return mMeta;
     }
-    std::vector <RippleAddress> const& getAffected () const
+    
+    boost::container::flat_set<AccountID> const&
+    getAffected() const
     {
         return mAffected;
     }
@@ -102,9 +105,9 @@ public:
 private:
     Ledger::pointer                 mLedger;
     STTx::pointer  mTxn;
-    TransactionMetaSet::pointer     mMeta;
+    TxMeta::pointer     mMeta;
     TER                             mResult;
-    std::vector <RippleAddress>     mAffected;
+    boost::container::flat_set<AccountID> mAffected;
     Blob        mRawMeta;
     Json::Value                     mJson;
 

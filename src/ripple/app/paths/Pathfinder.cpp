@@ -23,6 +23,7 @@
 #include <ripple/app/paths/Pathfinder.h>
 #include <ripple/app/paths/RippleCalc.h>
 #include <ripple/app/paths/RippleLineCache.h>
+#include <ripple/ledger/PaymentSandbox.h>
 #include <ripple/app/ledger/OrderBookDB.h>
 #include <ripple/basics/Log.h>
 #include <ripple/json/to_string.h>
@@ -94,7 +95,7 @@ bool comparePathRank (
 struct AccountCandidate
 {
     int priority;
-    Account account;
+    AccountID account;
 
     static const int highPriority = 10000;
 };
@@ -112,7 +113,7 @@ bool compareAccountCandidate (
     return (first.priority ^ seq) < (second.priority ^ seq);
 }
 
-typedef std::vector<AccountCandidate> AccountCandidates;
+using AccountCandidates = std::vector<AccountCandidate>;
 
 struct CostedPath
 {
@@ -120,15 +121,15 @@ struct CostedPath
     Pathfinder::PathType type;
 };
 
-typedef std::vector<CostedPath> CostedPathList;
+using CostedPathList = std::vector<CostedPath>;
 
-typedef std::map<Pathfinder::PaymentType, CostedPathList> PathTable;
+using PathTable = std::map<Pathfinder::PaymentType, CostedPathList>;
 
 struct PathCost {
     int cost;
     char const* path;
 };
-typedef std::vector<PathCost> PathCostList;
+using PathCostList = std::vector<PathCost>;
 
 static PathTable mPathTable;
 
@@ -168,10 +169,10 @@ std::string pathTypeToString (Pathfinder::PathType const& type)
 
 Pathfinder::Pathfinder (
     RippleLineCache::ref cache,
-    Account const& uSrcAccount,
-    Account const& uDstAccount,
+    AccountID const& uSrcAccount,
+    AccountID const& uDstAccount,
     Currency const& uSrcCurrency,
-    Account const& uSrcIssuer,
+    AccountID const& uSrcIssuer,
     STAmount const& saDstAmount)
     :   mSrcAccount (uSrcAccount),
         mDstAccount (uDstAccount),
@@ -189,8 +190,8 @@ Pathfinder::Pathfinder (
 
 Pathfinder::Pathfinder (
     RippleLineCache::ref cache,
-    Account const& uSrcAccount,
-    Account const& uDstAccount,
+    AccountID const& uSrcAccount,
+    AccountID const& uDstAccount,
     Currency const& uSrcCurrency,
     STAmount const& saDstAmount)
     :   mSrcAccount (uSrcAccount),
@@ -250,7 +251,7 @@ bool Pathfinder::findPaths (int searchLevel)
     bool useIssuerAccount
             = mSrcIssuer && !currencyIsXRP && !isXRP (*mSrcIssuer);
     auto& account = useIssuerAccount ? *mSrcIssuer : mSrcAccount;
-    auto issuer = currencyIsXRP ? Account() : account;
+    auto issuer = currencyIsXRP ? AccountID() : account;
     mSource = STPathElement (account, mSrcCurrency, issuer);
     auto issuerString = mSrcIssuer
             ? to_string (*mSrcIssuer) : std::string ("none");
@@ -271,7 +272,7 @@ bool Pathfinder::findPaths (int searchLevel)
     bool bSrcXrp = isXRP (mSrcCurrency);
     bool bDstXrp = isXRP (mDstAmount.getCurrency());
 
-    if (!mLedger->getSLEi (getAccountRootIndex (mSrcAccount)))
+    if (! mLedger->exists (keylet::account(mSrcAccount)))
     {
         // We can't even start without a source account.
         WriteLog (lsDEBUG, Pathfinder) << "invalid source account";
@@ -279,14 +280,14 @@ bool Pathfinder::findPaths (int searchLevel)
     }
 
     if ((mEffectiveDst != mDstAccount) &&
-        ! mLedger->getSLEi (getAccountRootIndex (mEffectiveDst)))
+        ! mLedger->exists (keylet::account(mEffectiveDst)))
     {
         WriteLog (lsDEBUG, Pathfinder)
             << "Non-existent gateway";
         return false;
     }
 
-    if (!mLedger->getSLEi (getAccountRootIndex (mDstAccount)))
+    if (! mLedger->exists (keylet::account (mDstAccount)))
     {
         // Can't find the destination account - we must be funding a new
         // account.
@@ -297,7 +298,7 @@ bool Pathfinder::findPaths (int searchLevel)
             return false;
         }
 
-        auto reserve = mLedger->getReserve (0);
+        auto const reserve = STAmount (mLedger->fees().accountReserve (0));
         if (mDstAmount < reserve)
         {
             WriteLog (lsDEBUG, Pathfinder)
@@ -377,13 +378,13 @@ TER Pathfinder::getPathLiquidity (
     path::RippleCalc::Input rcInput;
     rcInput.defaultPathsAllowed = false;
 
-    LedgerEntrySet lesSandbox (mLedger, tapNONE);
+    PaymentSandbox sandbox (&*mLedger, tapNONE);
 
     try
     {
         // Compute a path that provides at least the minimum liquidity.
         auto rc = path::RippleCalc::rippleCalculate (
-            lesSandbox,
+            sandbox,
             mSrcAmount,
             minDstAmount,
             mDstAccount,
@@ -401,7 +402,7 @@ TER Pathfinder::getPathLiquidity (
         // Now try to compute the remaining liquidity.
         rcInput.partialPaymentAllowed = true;
         rc = path::RippleCalc::rippleCalculate (
-            lesSandbox,
+            sandbox,
             mSrcAmount,
             mDstAmount - amountOut,
             mDstAccount,
@@ -442,12 +443,12 @@ void Pathfinder::computePathRanks (int maxPaths)
     // Must subtract liquidity in default path from remaining amount.
     try
     {
-        LedgerEntrySet lesSandbox (mLedger, tapNONE);
+        PaymentSandbox sandbox (&*mLedger, tapNONE);
 
         path::RippleCalc::Input rcInput;
         rcInput.partialPaymentAllowed = true;
         auto rc = path::RippleCalc::rippleCalculate (
-            lesSandbox,
+            sandbox,
             mSrcAmount,
             mDstAmount,
             mDstAccount,
@@ -554,7 +555,7 @@ STPathSet Pathfinder::getBestPaths (
     int maxPaths,
     STPath& fullLiquidityPath,
     STPathSet& extraPaths,
-    Account const& srcIssuer)
+    AccountID const& srcIssuer)
 {
     WriteLog (lsDEBUG, Pathfinder) << "findPaths: " <<
         mCompletePaths.size() << " paths and " <<
@@ -691,9 +692,9 @@ bool Pathfinder::issueMatchesOrigin (Issue const& issue)
 
 int Pathfinder::getPathsOut (
     Currency const& currency,
-    Account const& account,
+    AccountID const& account,
     bool isDstCurrency,
-    Account const& dstAccount)
+    AccountID const& dstAccount)
 {
     Issue const issue (currency, account);
 
@@ -703,7 +704,7 @@ int Pathfinder::getPathsOut (
     if (!it.second)
         return it.first->second;
 
-    auto sleAccount = mLedger->getSLEi (getAccountRootIndex (account));
+    auto sleAccount = mLedger->read(keylet::account (account));
 
     if (!sleAccount)
         return 0;
@@ -835,12 +836,12 @@ STPathSet& Pathfinder::addPathsForType (PathType const& pathType)
 }
 
 bool Pathfinder::isNoRipple (
-    Account const& fromAccount,
-    Account const& toAccount,
+    AccountID const& fromAccount,
+    AccountID const& toAccount,
     Currency const& currency)
 {
-    auto sleRipple = mLedger->getSLEi (
-        getRippleStateIndex (toAccount, fromAccount, currency));
+    auto sleRipple = mLedger->read(keylet::line(
+        toAccount, fromAccount, currency));
 
     auto const flag ((toAccount > fromAccount)
                      ? lsfHighNoRipple : lsfLowNoRipple);
@@ -908,7 +909,7 @@ void Pathfinder::addLink (
         // add accounts
         if (bOnXRP)
         {
-            if (mDstAmount.isNative () && !currentPath.empty ())
+            if (mDstAmount.native () && !currentPath.empty ())
             { // non-default path to XRP destination
                 WriteLog (lsTRACE, Pathfinder)
                     << "complete path found ax: " << currentPath.getJson(0);
@@ -918,7 +919,7 @@ void Pathfinder::addLink (
         else
         {
             // search for accounts to add
-            auto sleEnd = mLedger->getSLEi(getAccountRootIndex (uEndAccount));
+            auto const sleEnd = mLedger->read(keylet::account(uEndAccount));
 
             if (sleEnd)
             {
@@ -1019,7 +1020,7 @@ void Pathfinder::addLink (
                 {
                     std::sort (candidates.begin (), candidates.end (),
                         std::bind(compareAccountCandidate,
-                                  mLedger->getLedgerSeq (),
+                                  mLedger->seq(),
                                   std::placeholders::_1,
                                   std::placeholders::_2));
 

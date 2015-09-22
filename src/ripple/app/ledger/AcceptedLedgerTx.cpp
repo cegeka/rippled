@@ -18,30 +18,32 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/app/main/Application.h>
 #include <ripple/app/ledger/AcceptedLedgerTx.h>
-#include <ripple/app/ledger/LedgerEntrySet.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/protocol/JsonFields.h>
+#include <ripple/protocol/types.h>
 
 namespace ripple {
 
 AcceptedLedgerTx::AcceptedLedgerTx (Ledger::ref ledger, SerialIter& sit)
     : mLedger (ledger)
 {
-    Serializer          txnSer (sit.getVL ());
-    SerialIter  txnIt (txnSer);
+    // VFALCO This is making a needless copy
+    auto const vl = sit.getVL();
+    SerialIter txnIt (makeSlice(vl));
 
     mTxn =      std::make_shared<STTx> (std::ref (txnIt));
     mRawMeta =  sit.getVL ();
-    mMeta =     std::make_shared<TransactionMetaSet> (mTxn->getTransactionID (),
-        ledger->getLedgerSeq (), mRawMeta);
+    mMeta =     std::make_shared<TxMeta> (mTxn->getTransactionID (),
+        ledger->info().seq, mRawMeta);
     mAffected = mMeta->getAffectedAccounts ();
     mResult =   mMeta->getResultTER ();
     buildJson ();
 }
 
 AcceptedLedgerTx::AcceptedLedgerTx (Ledger::ref ledger,
-    STTx::ref txn, TransactionMetaSet::ref met)
+    STTx::ref txn, TxMeta::ref met)
     : mLedger (ledger)
     , mTxn (txn)
     , mMeta (met)
@@ -80,26 +82,23 @@ void AcceptedLedgerTx::buildJson ()
 
     mJson[jss::result] = transHuman (mResult);
 
-    if (!mAffected.empty ())
+    if (! mAffected.empty ())
     {
         Json::Value& affected = (mJson[jss::affected] = Json::arrayValue);
-        for (auto const& ra : mAffected)
-        {
-            affected.append (ra.humanAccountID ());
-        }
+        for (auto const& account: mAffected)
+            affected.append (getApp().accountIDCache().toBase58(account));
     }
 
     if (mTxn->getTxnType () == ttOFFER_CREATE)
     {
-        auto const account (mTxn->getSourceAccount ().getAccountID ());
-        auto const amount (mTxn->getFieldAmount (sfTakerGets));
+        auto const& account = mTxn->getAccountID(sfAccount);
+        auto const amount = mTxn->getFieldAmount (sfTakerGets);
 
         // If the offer create is not self funded then add the owner balance
         if (account != amount.issue ().account)
         {
-            LedgerEntrySet les (mLedger, tapNONE, true);
-            auto const ownerFunds (les.accountFunds (account, amount, fhIGNORE_FREEZE));
-
+            auto const ownerFunds = accountFunds(*mLedger,
+                account, amount, fhIGNORE_FREEZE, getConfig());
             mJson[jss::transaction][jss::owner_funds] = ownerFunds.getText ();
         }
     }

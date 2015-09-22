@@ -23,6 +23,7 @@
 #include <ripple/resource/Fees.h>
 #include <ripple/resource/Gossip.h>
 #include <ripple/resource/impl/Import.h>
+#include <ripple/basics/chrono.h>
 #include <ripple/basics/UnorderedContainers.h>
 #include <ripple/json/json_value.h>
 #include <ripple/protocol/JsonFields.h>
@@ -37,10 +38,10 @@ namespace Resource {
 class Logic
 {
 private:
-    typedef beast::abstract_clock <std::chrono::steady_clock> clock_type;
-    typedef hash_map <std::string, Import> Imports;
-    typedef hash_map <Key, Entry, Key::hasher, Key::key_equal> Table;
-    typedef beast::List <Entry> EntryIntrusiveList;
+    using clock_type = Stopwatch;
+    using Imports = hash_map <std::string, Import>;
+    using Table = hash_map <Key, Entry, Key::hasher, Key::key_equal>;
+    using EntryIntrusiveList = beast::List <Entry>;
 
     struct State
     {
@@ -67,7 +68,7 @@ private:
         Imports import_table;
     };
 
-    typedef beast::SharedData <State> SharedState;
+    using SharedState = beast::SharedData <State>;
 
     struct Stats
     {
@@ -83,7 +84,7 @@ private:
 
     SharedState m_state;
     Stats m_stats;
-    beast::abstract_clock <std::chrono::steady_clock>& m_clock;
+    Stopwatch& m_clock;
     beast::Journal m_journal;
 
     //--------------------------------------------------------------------------

@@ -34,9 +34,9 @@
 namespace beast {
 namespace detail {
 
-typedef std::uint64_t u64;
-typedef std::uint32_t u32;
-typedef std::uint8_t u8;
+using u64 = std::uint64_t;
+using u32 = std::uint32_t;
+using u8 = std::uint8_t;
 
 inline
 u64
@@ -90,7 +90,7 @@ siphash::siphash(std::uint64_t k0, std::uint64_t k1) noexcept
 }
 
 void
-siphash::append (void const* key, std::size_t inlen) noexcept
+siphash::operator() (void const* key, std::size_t inlen) noexcept
 {
     using namespace detail;
     u8 const* in = static_cast<const u8*>(key);

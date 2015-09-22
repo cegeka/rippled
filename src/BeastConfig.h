@@ -106,21 +106,6 @@
 
 //------------------------------------------------------------------------------
 //
-// Boost
-//
-//------------------------------------------------------------------------------
-
-/** Config: BEAST_USE_BOOST_FEATURES
-    This activates boost specific features and improvements. If this is
-    turned on, the include paths for your build environment must be set
-    correctly to find the boost headers.
-*/
-#ifndef BEAST_USE_BOOST_FEATURES
-#define BEAST_USE_BOOST_FEATURES 1
-#endif
-
-//------------------------------------------------------------------------------
-//
 // Ripple
 //
 //------------------------------------------------------------------------------
@@ -164,15 +149,6 @@
 #define RIPPLE_USE_VALIDATORS 0
 #endif
 
-/** Config: BEAST_USE_BOOST_FEATURES
-    This activates boost specific features and improvements. If this is
-    turned on, the include paths for your build environment must be set
-    correctly to find the boost headers.
-*/
-#ifndef   BEAST_USE_BOOST_FEATURES
-//#define BEAST_USE_BOOST_FEATURES 1
-#endif
-
 /** Config: RIPPLE_PROPOSE_FEATURES
     This determines whether to add any features to the proposed transaction set.
 */
@@ -200,6 +176,25 @@
 */
 #ifndef RIPPLE_ENABLE_TICKETS
 #define RIPPLE_ENABLE_TICKETS 0
+#endif
+
+/** Config: RIPPLE_ENABLE_MULTI_SIGN
+    When set, activates the current state of the multi-sign feature which is
+    under development.  When the feature is complete and released this
+    #define should be removed.
+*/
+#ifndef RIPPLE_ENABLE_MULTI_SIGN
+#define RIPPLE_ENABLE_MULTI_SIGN 0
+#endif
+
+// Uses OpenSSL instead of alternatives
+#ifndef RIPPLE_USE_OPENSSL
+#define RIPPLE_USE_OPENSSL 0
+#endif
+
+// Enables the experimental OpenLedger
+#ifndef RIPPLE_OPEN_LEDGER
+#define RIPPLE_OPEN_LEDGER 0
 #endif
 
 #endif

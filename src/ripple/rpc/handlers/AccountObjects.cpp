@@ -18,9 +18,19 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/rpc/impl/Tuning.h>
+#include <ripple/json/json_writer.h>
+#include <ripple/app/main/Application.h>
+#include <ripple/ledger/ReadView.h>
+#include <ripple/net/RPCErr.h>
+#include <ripple/protocol/ErrorCodes.h>
 #include <ripple/protocol/Indexes.h>
+#include <ripple/protocol/JsonFields.h>
+#include <ripple/resource/Fees.h>
+#include <ripple/rpc/Context.h>
+#include <ripple/rpc/impl/AccountFromString.h>
 #include <ripple/rpc/impl/GetAccountObjects.h>
+#include <ripple/rpc/impl/LookupLedger.h>
+#include <ripple/rpc/impl/Tuning.h>
 
 #include <string>
 #include <sstream>
@@ -28,10 +38,9 @@
 
 namespace ripple {
 
-/** General RPC command that can retrieve objects in the account root.    
+/** General RPC command that can retrieve objects in the account root.
     {
       account: <account>|<account_public_key>
-      account_index: <integer> // optional, defaults to 0
       ledger_hash: <string> // optional
       ledger_index: <string | unsigned integer> // optional
       type: <string> // optional, defaults to all account objects types
@@ -46,20 +55,15 @@ Json::Value doAccountObjects (RPC::Context& context)
     if (! params.isMember (jss::account))
         return RPC::missing_field_error (jss::account);
 
-    Ledger::pointer ledger;
-    auto result = RPC::lookupLedger (params, ledger, context.netOps);
+    std::shared_ptr<ReadView const> ledger;
+    auto result = RPC::lookupLedger (ledger, context);
     if (ledger == nullptr)
         return result;
 
-    RippleAddress raAccount;
+    AccountID accountID;
     {
-        bool bIndex;
         auto const strIdent = params[jss::account].asString ();
-        auto iIndex = context.params.isMember (jss::account_index)
-            ? context.params[jss::account_index].asUInt () : 0;
-        auto jv = RPC::accountFromString (ledger, raAccount, bIndex,
-            strIdent, iIndex, false, context.netOps);
-        if (! jv.empty ())
+        if (auto jv = RPC::accountFromString (accountID, strIdent))
         {
             for (auto it = jv.begin (); it != jv.end (); ++it)
                 result[it.memberName ()] = it.key ();
@@ -68,7 +72,7 @@ Json::Value doAccountObjects (RPC::Context& context)
         }
     }
 
-    if (! ledger->hasAccount (raAccount))
+    if (! ledger->exists(keylet::account (accountID)))
         return rpcError (rpcACT_NOT_FOUND);
 
     auto type = ltINVALID;
@@ -99,7 +103,7 @@ Json::Value doAccountObjects (RPC::Context& context)
                 { return t.first == filter; });
         if (iter == types->end ())
             return RPC::invalid_field_error (jss::type);
-        
+
         type = iter->second;
     }
 
@@ -119,7 +123,7 @@ Json::Value doAccountObjects (RPC::Context& context)
                 std::min (limit, RPC::Tuning::maxObjectsPerRequest));
         }
     }
-    
+
     uint256 dirIndex;
     uint256 entryIndex;
     if (params.isMember (jss::marker))
@@ -127,7 +131,7 @@ Json::Value doAccountObjects (RPC::Context& context)
         auto const& marker = params[jss::marker];
         if (! marker.isString ())
             return RPC::expected_field_error (jss::marker, "string");
-        
+
         std::stringstream ss (marker.asString ());
         std::string s;
         if (!std::getline(ss, s, ','))
@@ -138,18 +142,18 @@ Json::Value doAccountObjects (RPC::Context& context)
 
         if (! std::getline (ss, s, ','))
             return RPC::invalid_field_error (jss::marker);
-        
+
         if (! entryIndex.SetHex (s))
             return RPC::invalid_field_error (jss::marker);
     }
 
-    if (! RPC::getAccountObjects (*ledger, raAccount.getAccountID (), type,
+    if (! RPC::getAccountObjects (*ledger, accountID, type,
         dirIndex, entryIndex, limit, result))
     {
         return RPC::invalid_field_error (jss::marker);
     }
 
-    result[jss::account] = raAccount.humanAccountID ();    
+    result[jss::account] = getApp().accountIDCache().toBase58 (accountID);
     context.loadType = Resource::feeMediumBurdenRPC;
     return result;
 }

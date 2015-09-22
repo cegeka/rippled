@@ -19,15 +19,15 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/misc/Validations.h>
-#include <ripple/app/data/DatabaseCon.h>
+#include <ripple/core/DatabaseCon.h>
 #include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/ledger/LedgerTiming.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/NetworkOPs.h>
-#include <ripple/app/peers/UniqueNodeList.h>
+#include <ripple/app/misc/UniqueNodeList.h>
 #include <ripple/basics/Log.h>
 #include <ripple/basics/StringUtilities.h>
-#include <ripple/basics/seconds_clock.h>
+#include <ripple/basics/chrono.h>
 #include <ripple/core/JobQueue.h>
 #include <beast/cxx14/memory.h> // <memory>
 #include <mutex>
@@ -39,8 +39,8 @@ class ValidationsImp : public Validations
 {
 private:
     using LockType = std::mutex;
-    typedef std::lock_guard <LockType> ScopedLockType;
-    typedef beast::GenericScopedUnlock <LockType> ScopedUnlockType;
+    using ScopedLockType = std::lock_guard <LockType>;
+    using ScopedUnlockType = beast::GenericScopedUnlock <LockType>;
     std::mutex mutable mLock;
 
     TaggedCache<uint256, ValidationSet> mValidations;
@@ -70,7 +70,7 @@ private:
 
 public:
     ValidationsImp ()
-        : mValidations ("Validations", 128, 600, get_seconds_clock (),
+        : mValidations ("Validations", 128, 600, stopwatch(),
             deprecatedLogs().journal("TaggedCache"))
         , mWriting (false)
     {

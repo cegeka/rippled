@@ -20,9 +20,10 @@
 #ifndef RIPPLE_APP_PATHS_PATHSTATE_H_INCLUDED
 #define RIPPLE_APP_PATHS_PATHSTATE_H_INCLUDED
 
-#include <ripple/app/ledger/LedgerEntrySet.h>
 #include <ripple/app/paths/Node.h>
 #include <ripple/app/paths/Types.h>
+#include <ripple/ledger/PaymentSandbox.h>
+#include <boost/optional.hpp>
 
 namespace ripple {
 
@@ -30,27 +31,27 @@ namespace ripple {
 class PathState : public CountedObject <PathState>
 {
   public:
-    typedef std::vector<uint256> OfferIndexList;
-    typedef std::shared_ptr<PathState> Ptr;
-    typedef std::vector<Ptr> List;
+    using OfferIndexList = std::vector<uint256>;
+    using Ptr = std::shared_ptr<PathState>;
+    using List = std::vector<Ptr>;
 
-    PathState (STAmount const& saSend, STAmount const& saSendMax)
+    PathState (PaymentSandbox const& parent,
+            STAmount const& saSend,
+                STAmount const& saSendMax)
         : mIndex (0)
         , uQuality (0)
         , saInReq (saSendMax)
         , saOutReq (saSend)
     {
+        view_.emplace(&parent);
     }
-
-    explicit PathState (const PathState& psSrc) = default;
 
     void reset(STAmount const& in, STAmount const& out);
 
     TER expandPath (
-        LedgerEntrySet const&   lesSource,
-        STPath const&           spSourcePath,
-        Account const&          uReceiverID,
-        Account const&          uSenderID
+        STPath const&    spSourcePath,
+        AccountID const& uReceiverID,
+        AccountID const& uSenderID
     );
 
     path::Node::List& nodes() { return nodes_; }
@@ -96,43 +97,50 @@ class PathState : public CountedObject <PathState>
     void setIndex (int i) { mIndex  = i; }
     int index() const { return mIndex; }
 
-    TER checkNoRipple (Account const& destinationAccountID,
-                       Account const& sourceAccountID);
+    TER checkNoRipple (AccountID const& destinationAccountID,
+                       AccountID const& sourceAccountID);
     void checkFreeze ();
 
     static bool lessPriority (PathState const& lhs, PathState const& rhs);
 
-    LedgerEntrySet& ledgerEntries() { return lesEntries; }
+    PaymentSandbox&
+    view()
+    {
+        return *view_;
+    }
+
+    void resetView (PaymentSandbox const& view)
+    {
+        view_.emplace(&view);
+    }
 
     bool isDry() const
     {
         return !(saInPass && saOutPass);
     }
 
-  private:
+private:
     TER checkNoRipple (
-        Account const&, Account const&, Account const&, Currency const&);
+        AccountID const&, AccountID const&, AccountID const&, Currency const&);
 
     /** Clear path structures, and clear each node. */
     void clear();
 
-    TER terStatus;
-    path::Node::List nodes_;
+    TER pushNode (
+        int const iType,
+        AccountID const& account,
+        Currency const& currency,
+        AccountID const& issuer);
 
-    // When processing, don't want to complicate directory walking with
-    // deletion.  Offers that became unfunded or were completely consumed go
-    // here and are deleted at the end.
-    OfferIndexList unfundedOffers_;
+    TER pushImpliedNodes (
+        AccountID const& account,
+        Currency const& currency,
+        AccountID const& issuer);
+    
+    Json::Value getJson () const;
 
-    // First time scanning foward, as part of path construction, a funding
-    // source was mentioned for accounts. Source may only be used there.
-    AccountIssueToNodeIndex umForward;
-
-    // First time working in reverse a funding source was used.
-    // Source may only be used there if not mentioned by an account.
-    AccountIssueToNodeIndex umReverse;
-
-    LedgerEntrySet lesEntries;
+private:
+    boost::optional<PaymentSandbox> view_;
 
     int                         mIndex;    // Index/rank amoung siblings.
     std::uint64_t               uQuality;  // 0 = no quality/liquity left.
@@ -148,18 +156,22 @@ class PathState : public CountedObject <PathState>
     // If true, all liquidity on this path has been consumed.
     bool allLiquidityConsumed_ = false;
 
-    TER pushNode (
-        int const iType,
-        Account const& account,
-        Currency const& currency,
-        Account const& issuer);
-
-    TER pushImpliedNodes (
-        Account const& account,
-        Currency const& currency,
-        Account const& issuer);
+    TER terStatus;
     
-    Json::Value getJson () const;
+    path::Node::List nodes_;
+
+    // When processing, don't want to complicate directory walking with
+    // deletion.  Offers that became unfunded or were completely consumed go
+    // here and are deleted at the end.
+    OfferIndexList unfundedOffers_;
+
+    // First time scanning foward, as part of path construction, a funding
+    // source was mentioned for accounts. Source may only be used there.
+    AccountIssueToNodeIndex umForward;
+
+    // First time working in reverse a funding source was used.
+    // Source may only be used there if not mentioned by an account.
+    AccountIssueToNodeIndex umReverse;
 };
 
 } // ripple

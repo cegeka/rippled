@@ -32,7 +32,7 @@
 #include <ripple/protocol/ErrorCodes.h>
 #include <ripple/protocol/UintTypes.h>
 #include <beast/module/core/text/LexicalCast.h>
-#include <boost/log/trivial.hpp>
+#include <boost/optional.hpp>
 #include <tuple>
 
 namespace ripple {
@@ -45,6 +45,27 @@ PathRequest::PathRequest (
         : m_journal (journal)
         , mOwner (owner)
         , wpSubscriber (subscriber)
+        , jvStatus (Json::objectValue)
+        , bValid (false)
+        , mLastIndex (0)
+        , mInProgress (false)
+        , iLastLevel (0)
+        , bLastSuccess (false)
+        , iIdentifier (id)
+{
+    if (m_journal.debug)
+        m_journal.debug << iIdentifier << " created";
+    ptCreated = boost::posix_time::microsec_clock::universal_time ();
+}
+
+PathRequest::PathRequest (
+    std::function <void(void)> const& completion,
+    int id,
+    PathRequests& owner,
+    beast::Journal journal)
+        : m_journal (journal)
+        , mOwner (owner)
+        , fCompletion (completion)
         , jvStatus (Json::objectValue)
         , bValid (false)
         , mLastIndex (0)
@@ -132,86 +153,95 @@ bool PathRequest::needsUpdate (bool newOnly, LedgerIndex index)
     return true;
 }
 
+bool PathRequest::hasCompletion ()
+{
+    return bool (fCompletion);
+}
+
 void PathRequest::updateComplete ()
 {
     ScopedLockType sl (mIndexLock);
 
     assert (mInProgress);
     mInProgress = false;
+
+    if (fCompletion)
+    {
+        fCompletion();
+        fCompletion = std::function<void (void)>();
+    }
 }
 
 bool PathRequest::isValid (RippleLineCache::ref crCache)
 {
     ScopedLockType sl (mLock);
-    bValid = raSrcAccount.isSet () && raDstAccount.isSet () &&
+    bValid = raSrcAccount && raDstAccount &&
             saDstAmount > zero;
-    Ledger::pointer lrLedger = crCache->getLedger ();
+    auto const& lrLedger = crCache->getLedger ();
 
     if (bValid)
     {
-        auto asSrc = getApp().getOPs ().getAccountState (
-            crCache->getLedger(), raSrcAccount);
-
-        if (!asSrc)
+        if (! crCache->getLedger()->exists(
+                keylet::account(*raSrcAccount)))
         {
             // no source account
             bValid = false;
             jvStatus = rpcError (rpcSRC_ACT_NOT_FOUND);
         }
+    }
+
+    if (bValid)
+    {
+        auto const sleDest = crCache->getLedger()->read(
+            keylet::account(*raDstAccount));
+
+        Json::Value& jvDestCur =
+                (jvStatus[jss::destination_currencies] = Json::arrayValue);
+
+        if (!sleDest)
+        {
+            // no destination account
+            jvDestCur.append (Json::Value ("XRP"));
+
+            if (!saDstAmount.native ())
+            {
+                // only XRP can be send to a non-existent account
+                bValid = false;
+                jvStatus = rpcError (rpcACT_NOT_FOUND);
+            }
+            else if (saDstAmount < STAmount (lrLedger->fees().accountReserve (0)))
+            {
+                // payment must meet reserve
+                bValid = false;
+                jvStatus = rpcError (rpcDST_AMT_MALFORMED);
+            }
+        }
         else
         {
-            auto asDst = getApp().getOPs ().getAccountState (
-                lrLedger, raDstAccount);
+            bool const disallowXRP (
+                sleDest->getFlags() & lsfDisallowXRP);
 
-            Json::Value& jvDestCur =
-                    (jvStatus[jss::destination_currencies] = Json::arrayValue);
+            auto usDestCurrID = accountDestCurrencies (
+                    *raDstAccount, crCache, !disallowXRP);
 
-            if (!asDst)
-            {
-                // no destination account
-                jvDestCur.append (Json::Value ("XRP"));
+            for (auto const& currency : usDestCurrID)
+                jvDestCur.append (to_string (currency));
 
-                if (!saDstAmount.isNative ())
-                {
-                    // only XRP can be send to a non-existent account
-                    bValid = false;
-                    jvStatus = rpcError (rpcACT_NOT_FOUND);
-                }
-                else if (saDstAmount < STAmount (lrLedger->getReserve (0)))
-                {
-                    // payment must meet reserve
-                    bValid = false;
-                    jvStatus = rpcError (rpcDST_AMT_MALFORMED);
-                }
-            }
-            else
-            {
-                bool const disallowXRP (
-                    asDst->peekSLE ().getFlags() & lsfDisallowXRP);
-
-                auto usDestCurrID = accountDestCurrencies (
-                        raDstAccount, crCache, !disallowXRP);
-
-                for (auto const& currency : usDestCurrID)
-                    jvDestCur.append (to_string (currency));
-
-                jvStatus["destination_tag"] =
-                        (asDst->peekSLE ().getFlags () & lsfRequireDestTag)
-                        != 0;
-            }
+            jvStatus["destination_tag"] =
+                    (sleDest->getFlags () & lsfRequireDestTag)
+                    != 0;
         }
     }
 
     if (bValid)
     {
-        jvStatus[jss::ledger_hash] = to_string (lrLedger->getHash ());
-        jvStatus[jss::ledger_index] = lrLedger->getLedgerSeq ();
+        jvStatus[jss::ledger_hash] = to_string (lrLedger->info().hash);
+        jvStatus[jss::ledger_index] = lrLedger->seq();
     }
     return bValid;
 }
 
 Json::Value PathRequest::doCreate (
-    Ledger::ref lrLedger,
     RippleLineCache::ref& cache,
     Json::Value const& value,
     bool& valid)
@@ -239,7 +269,7 @@ Json::Value PathRequest::doCreate (
         if (bValid)
         {
             m_journal.debug << iIdentifier
-                            << " valid: " << raSrcAccount.humanAccountID ();
+                            << " valid: " << toBase58(*raSrcAccount);
             m_journal.debug << iIdentifier
                             << " Deliver: " << saDstAmount.getFullText ();
         }
@@ -259,7 +289,9 @@ int PathRequest::parseJson (Json::Value const& jvParams, bool complete)
 
     if (jvParams.isMember (jss::source_account))
     {
-        if (!raSrcAccount.setAccountID (jvParams[jss::source_account].asString ()))
+        raSrcAccount = parseBase58<AccountID>(
+            jvParams[jss::source_account].asString());
+        if (! raSrcAccount)
         {
             jvStatus = rpcError (rpcSRC_ACT_MALFORMED);
             return PFR_PJ_INVALID;
@@ -273,7 +305,9 @@ int PathRequest::parseJson (Json::Value const& jvParams, bool complete)
 
     if (jvParams.isMember (jss::destination_account))
     {
-        if (!raDstAccount.setAccountID (jvParams[jss::destination_account].asString ()))
+        raDstAccount = parseBase58<AccountID>(
+            jvParams[jss::destination_account].asString());
+        if (! raDstAccount)
         {
             jvStatus = rpcError (rpcDST_ACT_MALFORMED);
             return PFR_PJ_INVALID;
@@ -320,7 +354,7 @@ int PathRequest::parseJson (Json::Value const& jvParams, bool complete)
         {
             Json::Value const& jvCur = jvSrcCur[i];
             Currency uCur;
-            Account uIss;
+            AccountID uIss;
 
             if (!jvCur.isObject() || !jvCur.isMember (jss::currency) ||
                 !to_currency (uCur, jvCur[jss::currency].asString ()))
@@ -343,7 +377,7 @@ int PathRequest::parseJson (Json::Value const& jvParams, bool complete)
 
             if (uCur.isNonZero() && uIss.isZero())
             {
-                uIss = raSrcAccount.getAccountID();
+                uIss = *raSrcAccount;
             }
 
             sciSourceCurrencies.insert ({uCur, uIss});
@@ -389,8 +423,8 @@ Json::Value PathRequest::doUpdate (RippleLineCache::ref cache, bool fast)
     if (sourceCurrencies.empty ())
     {
         auto usCurrencies =
-                accountSourceCurrencies (raSrcAccount, cache, true);
-        bool sameAccount = raSrcAccount == raDstAccount;
+                accountSourceCurrencies (*raSrcAccount, cache, true);
+        bool sameAccount = *raSrcAccount == *raDstAccount;
         for (auto const& c: usCurrencies)
         {
             if (!sameAccount || (c != saDstAmount.getCurrency ()))
@@ -398,16 +432,26 @@ Json::Value PathRequest::doUpdate (RippleLineCache::ref cache, bool fast)
                 if (c.isZero ())
                     sourceCurrencies.insert ({c, xrpAccount()});
                 else
-                    sourceCurrencies.insert ({c, raSrcAccount.getAccountID ()});
+                    sourceCurrencies.insert ({c, *raSrcAccount});
             }
         }
     }
 
-    jvStatus[jss::source_account] = raSrcAccount.humanAccountID ();
-    jvStatus[jss::destination_account] = raDstAccount.humanAccountID ();
-    jvStatus[jss::destination_amount] = saDstAmount.getJson (0);
+    if (hasCompletion ())
+    {
+        // Old ripple_path_find API gives destination_currencies
+        auto& destCurrencies = (jvStatus[jss::destination_currencies] = Json::arrayValue);
+        auto usCurrencies = accountDestCurrencies (*raDstAccount, cache, true);
+        for (auto const& c : usCurrencies)
+            destCurrencies.append (to_string (c));
+    }
 
-    if (!jvId.isNull ())
+    jvStatus[jss::source_account] = getApp().accountIDCache().toBase58(*raSrcAccount);
+    jvStatus[jss::destination_account] = getApp().accountIDCache().toBase58(*raDstAccount);
+    jvStatus[jss::destination_amount] = saDstAmount.getJson (0);
+    jvStatus[jss::full_reply] = ! fast;
+
+    if (jvId)
         jvStatus["id"] = jvId;
 
     Json::Value jvArray = Json::arrayValue;
@@ -452,8 +496,8 @@ Json::Value PathRequest::doUpdate (RippleLineCache::ref cache, bool fast)
 
     FindPaths fp (
         cache,
-        raSrcAccount.getAccountID (),
-        raDstAccount.getAccountID (),
+        *raSrcAccount,
+        *raDstAccount,
         saDstAmount,
         iLevel,
         4);  // iMaxPaths
@@ -479,23 +523,25 @@ Json::Value PathRequest::doUpdate (RippleLineCache::ref cache, bool fast)
 
         if (valid)
         {
-            LedgerEntrySet lesSandbox (cache->getLedger (), tapNONE);
+            boost::optional<PaymentSandbox> sandbox;
+            sandbox.emplace(&*cache->getLedger(), tapNONE);
+
             auto& sourceAccount = !isXRP (currIssuer.account)
                     ? currIssuer.account
                     : isXRP (currIssuer.currency)
                         ? xrpAccount()
-                        : raSrcAccount.getAccountID ();
+                        : *raSrcAccount;
             STAmount saMaxAmount ({currIssuer.currency, sourceAccount}, 1);
 
             saMaxAmount.negate ();
             m_journal.debug << iIdentifier
                             << " Paths found, calling rippleCalc";
             auto rc = path::RippleCalc::rippleCalculate (
-                lesSandbox,
+                *sandbox,
                 saMaxAmount,
                 saDstAmount,
-                raDstAccount.getAccountID (),
-                raSrcAccount.getAccountID (),
+                *raDstAccount,
+                *raSrcAccount,
                 spsPaths);
 
             if (!fullLiquidityPath.empty() &&
@@ -504,13 +550,13 @@ Json::Value PathRequest::doUpdate (RippleLineCache::ref cache, bool fast)
                 m_journal.debug
                         << iIdentifier << " Trying with an extra path element";
                 spsPaths.push_back (fullLiquidityPath);
-                lesSandbox.clear();
+                sandbox.emplace(&*cache->getLedger(), tapNONE);
                 rc = path::RippleCalc::rippleCalculate (
-                    lesSandbox,
+                    *sandbox,
                     saMaxAmount,
                     saDstAmount,
-                    raDstAccount.getAccountID (),
-                    raSrcAccount.getAccountID (),
+                    *raDstAccount,
+                    *raSrcAccount,
                     spsPaths);
                 if (rc.result () != tesSUCCESS)
                     m_journal.warning
@@ -529,6 +575,13 @@ Json::Value PathRequest::doUpdate (RippleLineCache::ref cache, bool fast)
 
                 jvEntry[jss::source_amount] = rc.actualAmountIn.getJson (0);
                 jvEntry[jss::paths_computed] = spsPaths.getJson (0);
+
+                if (hasCompletion ())
+                {
+                    // Old ripple_path_find API requires this
+                    jvEntry[jss::paths_canonical] = Json::arrayValue;
+                }
+
                 found  = true;
                 jvArray.append (jvEntry);
             }

@@ -18,8 +18,18 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/app/main/Application.h>
+#include <ripple/app/misc/NetworkOPs.h>
+#include <ripple/app/ledger/LedgerMaster.h>
+#include <ripple/basics/Log.h>
+#include <ripple/ledger/ReadView.h>
+#include <ripple/net/RPCErr.h>
 #include <ripple/net/RPCSub.h>
+#include <ripple/protocol/ErrorCodes.h>
+#include <ripple/protocol/JsonFields.h>
+#include <ripple/resource/Fees.h>
 #include <ripple/rpc/impl/ParseAccountIds.h>
+#include <ripple/rpc/Context.h>
 #include <ripple/server/Role.h>
 
 namespace ripple {
@@ -122,6 +132,10 @@ Json::Value doSubscribe (RPC::Context& context)
                          || streamName == "rt_transactions") // DEPRECATED
                 {
                     context.netOps.subRTTransactions (ispSub);
+                }
+                else if (streamName == "validations")
+                {
+                    context.netOps.subValidations (ispSub);
                 }
                 else
                 {
@@ -264,12 +278,15 @@ Json::Value doSubscribe (RPC::Context& context)
                 return rpcError (rpcBAD_MARKET);
             }
 
-            RippleAddress   raTakerID;
+            boost::optional<AccountID> takerID;
 
-            if (!j.isMember (jss::taker))
-                raTakerID.setAccountID (noAccount());
-            else if (!raTakerID.setAccountID (j[jss::taker].asString ()))
-                return rpcError (rpcBAD_ISSUER);
+            if (j.isMember (jss::taker))
+            {
+                takerID = parseBase58<AccountID>(
+                    j[jss::taker].asString());
+                if (! takerID)
+                    return rpcError (rpcBAD_ISSUER);
+            }
 
             if (!isConsistent (book))
             {
@@ -285,8 +302,8 @@ Json::Value doSubscribe (RPC::Context& context)
             if (bSnapshot)
             {
                 context.loadType = Resource::feeMediumBurdenRPC;
-                auto lpLedger = getApp().getLedgerMaster ().
-                        getPublishedLedger ();
+                std::shared_ptr<ReadView const> lpLedger
+                        = getApp().getLedgerMaster().getPublishedLedger();
                 if (lpLedger)
                 {
                     const Json::Value jvMarker = Json::Value (Json::nullValue);
@@ -296,7 +313,7 @@ Json::Value doSubscribe (RPC::Context& context)
                     {
                         context.netOps.getBookPage (context.role == Role::ADMIN,
                             lpLedger, field == jss::asks ? reversed (book) : book,
-                            raTakerID.getAccountID(), false, 0, jvMarker,
+                            takerID ? *takerID : noAccount(), false, 0, jvMarker,
                             jvOffers);
 
                         if (jvResult.isMember (field))

@@ -18,7 +18,12 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/app/ledger/LedgerMaster.h>
+#include <ripple/app/main/Application.h>
+#include <ripple/app/misc/NetworkOPs.h>
 #include <ripple/app/misc/SHAMapStore.h>
+#include <ripple/protocol/JsonFields.h>
+#include <ripple/rpc/Context.h>
 #include <beast/module/core/text/LexicalCast.h>
 #include <boost/algorithm/string/case_conv.hpp>
 #include <boost/format.hpp>
@@ -70,13 +75,13 @@ Json::Value doCanDelete (RPC::Context& context)
                     canDeleteStr.find_first_not_of("0123456789abcdef") ==
                     std::string::npos)
             {
-                uint256 ledgerHash (canDeleteStr);
-                Ledger::pointer ledger =
-                        context.netOps.getLedgerByHash (ledgerHash);
+                auto ledger = context.ledgerMaster.getLedgerByHash (
+                    from_hex_text<uint256>(canDeleteStr));
+
                 if (!ledger)
                     return RPC::make_error(rpcLGR_NOT_FOUND, "ledgerNotFound");
 
-                canDeleteSeq = ledger->getLedgerSeq();
+                canDeleteSeq = ledger->info().seq;
             }
             else
             {

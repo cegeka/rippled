@@ -35,7 +35,21 @@ namespace ripple {
 // Used as the type of a transaction or the type of a ledger entry.
 enum LedgerEntryType
 {
+    /** Special type, anything
+        This is used when the type in the Keylet is unknown,
+        such as when building metadata.
+    */
+    ltANY = -3,
+
+    /** Special type, anything not a directory
+        This is used when the type in the Keylet is unknown,
+        such as when iterating
+    */
+    ltCHILD             = -2,
+
     ltINVALID           = -1,
+
+    //---------------------------------------------------------------------------
 
     ltACCOUNT_ROOT      = 'a',
 
@@ -55,6 +69,8 @@ enum LedgerEntryType
     ltRIPPLE_STATE      = 'r',
 
     ltTICKET            = 'T',
+
+    ltSIGNER_LIST       = 'S',
 
     /* Deprecated. */
     ltOFFER             = 'o',
@@ -90,6 +106,7 @@ enum LedgerNameSpace
     spaceAmendment      = 'f',
     spaceFee            = 'e',
     spaceTicket         = 'T',
+    spaceSignerList     = 'S',
 
     // No longer used or supported. Left here to reserve the space and
     // avoid accidental reuse of the space.

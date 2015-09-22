@@ -20,7 +20,6 @@
 #include <BeastConfig.h>
 #include <ripple/rpc/impl/Handler.h>
 #include <ripple/rpc/handlers/Handlers.h>
-#include <ripple/rpc/handlers/Ledger.h>
 #include <ripple/rpc/handlers/Version.h>
 
 namespace ripple {
@@ -109,6 +108,7 @@ HandlerTable HANDLERS({
     {   "can_delete",           byRef (&doCanDelete),           Role::ADMIN,   NO_CONDITION     },
     {   "connect",              byRef (&doConnect),             Role::ADMIN,   NO_CONDITION     },
     {   "consensus_info",       byRef (&doConsensusInfo),       Role::ADMIN,   NO_CONDITION     },
+    {   "gateway_balances",     byRef (&doGatewayBalances),     Role::USER,  NO_CONDITION  },
     {   "get_counts",           byRef (&doGetCounts),           Role::ADMIN,   NO_CONDITION     },
     {   "internal",             byRef (&doInternal),            Role::ADMIN,   NO_CONDITION     },
     {   "feature",              byRef (&doFeature),             Role::ADMIN,   NO_CONDITION     },
@@ -133,7 +133,13 @@ HandlerTable HANDLERS({
     {   "random",               byRef (&doRandom),              Role::USER,  NO_CONDITION     },
     {   "ripple_path_find",     byRef (&doRipplePathFind),      Role::USER,  NO_CONDITION  },
     {   "sign",                 byRef (&doSign),                Role::USER,  NO_CONDITION     },
+#if RIPPLE_ENABLE_MULTI_SIGN
+    {   "sign_for",             byRef (&doSignFor),             Role::USER,    NO_CONDITION     },
+#endif // RIPPLE_ENABLE_MULTI_SIGN
     {   "submit",               byRef (&doSubmit),              Role::USER,  NEEDS_CURRENT_LEDGER  },
+#if RIPPLE_ENABLE_MULTI_SIGN
+    {   "submit_multisigned",   byRef (&doSubmitMultiSigned),   Role::USER,  NEEDS_CURRENT_LEDGER  },
+#endif // RIPPLE_ENABLE_MULTI_SIGN
     {   "server_info",          byRef (&doServerInfo),          Role::USER,  NO_CONDITION     },
     {   "server_state",         byRef (&doServerState),         Role::USER,  NO_CONDITION     },
     {   "stop",                 byRef (&doStop),                Role::ADMIN,   NO_CONDITION     },

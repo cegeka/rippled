@@ -22,6 +22,7 @@
 #include <ripple/app/main/Application.h>
 #include <ripple/app/main/LocalCredentials.h>
 #include <ripple/app/misc/NetworkOPs.h>
+#include <ripple/protocol/digest.h>
 #include <ripple/protocol/BuildInfo.h>
 #include <ripple/overlay/impl/TMHello.h>
 #include <beast/crypto/base64.h>
@@ -98,7 +99,7 @@ makeSharedValue (SSL* ssl, beast::Journal journal)
 
     // Finally, derive the actual cookie for the values that
     // we have calculated.
-    result.first = getSHA512Half (sha1, sizeof(sha1));
+    result.first = sha512Half(Slice(sha1, sizeof(sha1)));
     result.second = true;
     return result;
 }
@@ -129,11 +130,11 @@ buildHello (uint256 const& sharedValue, Application& app)
 
     auto const closedLedger = app.getLedgerMaster().getClosedLedger();
 
-    if (closedLedger && closedLedger->isClosed ())
+    if (closedLedger && !closedLedger->info().open)
     {
         uint256 hash = closedLedger->getHash ();
         h.set_ledgerclosed (hash.begin (), hash.size ());
-        hash = closedLedger->getParentHash ();
+        hash = closedLedger->info().parentHash;
         h.set_ledgerprevious (hash.begin (), hash.size ());
     }
 

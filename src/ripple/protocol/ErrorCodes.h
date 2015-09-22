@@ -100,6 +100,7 @@ enum error_code_i
     rpcPAYS_AMT_MALFORMED,
     rpcPORT_MALFORMED,
     rpcPUBLIC_MALFORMED,
+    rpcSIGN_FOR_MALFORMED,
     rpcSRC_ACT_MALFORMED,
     rpcSRC_ACT_MISSING,
     rpcSRC_ACT_NOT_FOUND,
@@ -259,7 +260,10 @@ inline Json::Value expected_field_error (
 /** Returns `true` if the json contains an rpc error specification. */
 bool contains_error (Json::Value const& json);
 
-}
+} // RPC
+
+/** Returns a single string with the contents of an RPC error. */
+std::string rpcErrorString(Json::Value const& jv);
 
 }
 

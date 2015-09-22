@@ -19,14 +19,17 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/main/Application.h>
-#include <ripple/app/data/DatabaseCon.h>
-#include <ripple/app/data/DBInit.h>
-#include <ripple/app/impl/BasicApp.h>
+#include <ripple/core/DatabaseCon.h>
+#include <ripple/app/main/DBInit.h>
+#include <ripple/app/main/BasicApp.h>
 #include <ripple/app/main/Tuning.h>
 #include <ripple/app/ledger/AcceptedLedger.h>
 #include <ripple/app/ledger/InboundLedgers.h>
 #include <ripple/app/ledger/LedgerMaster.h>
+#include <ripple/app/ledger/LedgerToJson.h>
+#include <ripple/app/ledger/OpenLedger.h>
 #include <ripple/app/ledger/OrderBookDB.h>
+#include <ripple/app/ledger/PendingSaves.h>
 #include <ripple/app/main/CollectorManager.h>
 #include <ripple/app/main/LoadManager.h>
 #include <ripple/app/main/LocalCredentials.h>
@@ -38,26 +41,27 @@
 #include <ripple/app/misc/Validations.h>
 #include <ripple/app/paths/FindPaths.h>
 #include <ripple/app/paths/PathRequests.h>
-#include <ripple/app/peers/UniqueNodeList.h>
+#include <ripple/app/misc/UniqueNodeList.h>
 #include <ripple/app/tx/InboundTransactions.h>
 #include <ripple/app/tx/TransactionMaster.h>
 #include <ripple/basics/Log.h>
-#include <ripple/basics/LoggedTimings.h>
 #include <ripple/basics/ResolverAsio.h>
 #include <ripple/basics/Sustain.h>
-#include <ripple/basics/seconds_clock.h>
-#include <ripple/basics/make_SSLContext.h>
+#include <ripple/basics/chrono.h>
 #include <ripple/json/json_reader.h>
 #include <ripple/json/to_string.h>
 #include <ripple/core/LoadFeeTrack.h>
 #include <ripple/core/ConfigSections.h>
+#include <ripple/ledger/CachedSLEs.h>
 #include <ripple/net/SNTPClient.h>
 #include <ripple/nodestore/Database.h>
 #include <ripple/nodestore/DummyScheduler.h>
 #include <ripple/nodestore/Manager.h>
 #include <ripple/overlay/make_Overlay.h>
+#include <ripple/protocol/Indexes.h>
+#include <ripple/protocol/SecretKey.h>
 #include <ripple/protocol/STParsedJSON.h>
-#include <ripple/rpc/Manager.h>
+#include <ripple/protocol/types.h>
 #include <ripple/server/make_ServerHandler.h>
 #include <ripple/shamap/Family.h>
 #include <ripple/validators/make_Manager.h>
@@ -68,6 +72,7 @@
 #include <beast/module/core/text/LexicalCast.h>
 #include <beast/module/core/thread/DeadlineTimer.h>
 #include <boost/asio/signal_set.hpp>
+#include <boost/optional.hpp>
 #include <fstream>
 
 namespace ripple {
@@ -119,9 +124,9 @@ public:
 
     AppFamily (NodeStore::Database& db,
             CollectorManager& collectorManager)
-        : treecache_ ("TreeNodeCache", 65536, 60, get_seconds_clock(),
+        : treecache_ ("TreeNodeCache", 65536, 60, stopwatch(),
             deprecatedLogs().journal("TaggedCache"))
-        , fullbelow_ ("full_below", get_seconds_clock(),
+        , fullbelow_ ("full_below", stopwatch(),
             collectorManager.collector(),
                 fullBelowTargetSize, fullBelowExpirationSeconds)
         , db_ (db)
@@ -165,9 +170,12 @@ public:
     }
 
     void
-    missing_node (std::uint32_t refNum) override
+    missing_node (std::uint32_t seq) override
     {
-        getApp().getOPs().missingNodeInLedger (refNum);
+        uint256 const hash = getApp().getLedgerMaster ().getHashBySeq (seq);
+        if (hash.isZero())
+            getApp().getInboundLedgers ().acquire (
+                hash, seq, InboundLedger::fcGENERIC);
     }
 };
 
@@ -257,19 +265,21 @@ public:
     NodeStoreScheduler m_nodeStoreScheduler;
     std::unique_ptr <SHAMapStore> m_shaMapStore;
     std::unique_ptr <NodeStore::Database> m_nodeStore;
+    PendingSaves pendingSaves_;
+    AccountIDCache accountIDCache_;
+    boost::optional<OpenLedger> openLedger_;
 
     // These are not Stoppable-derived
     NodeCache m_tempNodeCache;
     std::unique_ptr <CollectorManager> m_collectorManager;
     detail::AppFamily family_;
-    SLECache m_sleCache;
+    CachedSLEs cachedSLEs_;
     LocalCredentials m_localCredentials;
 
     std::unique_ptr <Resource::Manager> m_resourceManager;
 
     // These are Stoppable-related
     std::unique_ptr <JobQueue> m_jobQueue;
-    std::unique_ptr <RPC::Manager> m_rpcManager;
     // VFALCO TODO Make OrderBookDB abstract
     OrderBookDB m_orderBookDB;
     std::unique_ptr <PathRequests> m_pathRequests;
@@ -332,7 +342,9 @@ public:
 
         , m_nodeStore (m_shaMapStore->makeDatabase ("NodeStore.main", 4))
 
-        , m_tempNodeCache ("NodeCache", 16384, 90, get_seconds_clock (),
+        , accountIDCache_(128000)
+
+        , m_tempNodeCache ("NodeCache", 16384, 90, stopwatch(),
             m_logs.journal("TaggedCache"))
 
         , m_collectorManager (CollectorManager::New (
@@ -340,8 +352,7 @@ public:
 
         , family_ (*m_nodeStore, *m_collectorManager)
 
-        , m_sleCache ("LedgerEntryCache", 4096, 120, get_seconds_clock (),
-            m_logs.journal("TaggedCache"))
+        , cachedSLEs_ (std::chrono::minutes(1), stopwatch())
 
         , m_resourceManager (Resource::make_Manager (
             m_collectorManager->collector(), m_logs.journal("Resource")))
@@ -356,24 +367,23 @@ public:
         // Anything which calls addJob must be a descendant of the JobQueue
         //
 
-        , m_rpcManager (RPC::make_Manager (m_logs.journal("RPCManager")))
-
         , m_orderBookDB (*m_jobQueue)
 
         , m_pathRequests (new PathRequests (
             m_logs.journal("PathRequest"), m_collectorManager->collector ()))
 
-        , m_ledgerMaster (make_LedgerMaster (getConfig (), *m_jobQueue,
-            m_collectorManager->collector (), m_logs.journal("LedgerMaster")))
+        , m_ledgerMaster (make_LedgerMaster (getConfig (), stopwatch (),
+            *m_jobQueue, m_collectorManager->collector (),
+            m_logs.journal("LedgerMaster")))
 
         // VFALCO NOTE must come before NetworkOPs to prevent a crash due
         //             to dependencies in the destructor.
         //
-        , m_inboundLedgers (make_InboundLedgers (get_seconds_clock (),
+        , m_inboundLedgers (make_InboundLedgers (stopwatch(),
             *m_jobQueue, m_collectorManager->collector ()))
 
         , m_inboundTransactions (make_InboundTransactions
-            ( get_seconds_clock ()
+            ( stopwatch()
             , *m_jobQueue
             , m_collectorManager->collector ()
             , [this](uint256 const& setHash,
@@ -382,7 +392,7 @@ public:
                 gotTXSet (setHash, set);
             }))
 
-        , m_networkOPs (make_NetworkOPs (get_seconds_clock (),
+        , m_networkOPs (make_NetworkOPs (stopwatch(),
             getConfig ().RUN_STANDALONE, getConfig ().NETWORK_QUORUM,
             *m_jobQueue, *m_ledgerMaster, *m_jobQueue,
             m_logs.journal("NetworkOPs")))
@@ -462,11 +472,6 @@ public:
     JobQueue& getJobQueue ()
     {
         return *m_jobQueue;
-    }
-
-    RPC::Manager& getRPCManager ()
-    {
-        return *m_rpcManager;
     }
 
     LocalCredentials& getLocalCredentials ()
@@ -551,9 +556,10 @@ public:
         return *m_pathRequests;
     }
 
-    SLECache& getSLECache ()
+    CachedSLEs&
+    cachedSLEs()
     {
-        return m_sleCache;
+        return cachedSLEs_;
     }
 
     Validators::Manager& getValidators ()
@@ -589,6 +595,23 @@ public:
     SHAMapStore& getSHAMapStore () override
     {
         return *m_shaMapStore;
+    }
+
+    PendingSaves& pendingSaves() override
+    {
+        return pendingSaves_;
+    }
+
+    AccountIDCache const&
+    accountIDCache() const override
+    {
+        return accountIDCache_;
+    }
+
+    OpenLedger&
+    openLedger() override
+    {
+        return *openLedger_;
     }
 
     Overlay& overlay ()
@@ -733,7 +756,7 @@ public:
         {
             m_journal.info << "Starting new Ledger";
 
-            startNewLedger ();
+            startGenesisLedger ();
         }
         else if (startUp == Config::LOAD ||
                  startUp == Config::LOAD_FILE ||
@@ -754,10 +777,12 @@ public:
             if (!getConfig ().RUN_STANDALONE)
                 m_networkOPs->needNetworkLedger ();
 
-            startNewLedger ();
+            startGenesisLedger ();
         }
         else
-            startNewLedger ();
+        {
+            startGenesisLedger ();
+        }
 
         m_orderBookDB.setup (getApp().getLedgerMaster ().getCurrentLedger ());
 
@@ -778,8 +803,6 @@ public:
         mValidations->tune (getConfig ().getSize (siValidationsSize), getConfig ().getSize (siValidationsAge));
         m_nodeStore->tune (getConfig ().getSize (siNodeCacheSize), getConfig ().getSize (siNodeCacheAge));
         m_ledgerMaster->tune (getConfig ().getSize (siLedgerSize), getConfig ().getSize (siLedgerAge));
-        m_sleCache.setTargetSize (getConfig ().getSize (siSLECacheSize));
-        m_sleCache.setTargetAge (getConfig ().getSize (siSLECacheAge));
         family().treecache().setTargetSize (getConfig ().getSize (siTreeCacheSize));
         family().treecache().setTargetAge (getConfig ().getSize (siTreeCacheAge));
 
@@ -798,6 +821,8 @@ public:
             *serverHandler_, *m_resourceManager, *m_resolver, get_io_service(),
             getConfig());
         add (*m_overlay); // add to PropertyStream
+
+        m_overlay->setupValidatorKeyManifests (getConfig (), getWalletDB ());
 
         {
             auto setup = setup_ServerHandler(getConfig(), std::cerr);
@@ -893,7 +918,8 @@ public:
 
         mValidations->flush ();
 
-        RippleAddress::clearCache ();
+        m_overlay->saveValidatorKeyManifests (getWalletDB ());
+
         stopped ();
     }
 
@@ -988,39 +1014,17 @@ public:
         // VFALCO NOTE Does the order of calls matter?
         // VFALCO TODO fix the dependency inversion using an observer,
         //         have listeners register for "onSweep ()" notification.
-        //
 
-        family_.fullbelow().sweep ();
-
-        logTimedCall (m_journal.warning, "TransactionMaster::sweep", __FILE__, __LINE__, std::bind (
-            &TransactionMaster::sweep, &m_txMaster));
-
-        logTimedCall (m_journal.warning, "NodeStore::sweep", __FILE__, __LINE__, std::bind (
-            &NodeStore::Database::sweep, m_nodeStore.get()));
-
-        logTimedCall (m_journal.warning, "LedgerMaster::sweep", __FILE__, __LINE__, std::bind (
-            &LedgerMaster::sweep, m_ledgerMaster.get()));
-
-        logTimedCall (m_journal.warning, "TempNodeCache::sweep", __FILE__, __LINE__, std::bind (
-            &NodeCache::sweep, &m_tempNodeCache));
-
-        logTimedCall (m_journal.warning, "Validations::sweep", __FILE__, __LINE__, std::bind (
-            &Validations::sweep, mValidations.get ()));
-
-        logTimedCall (m_journal.warning, "InboundLedgers::sweep", __FILE__, __LINE__, std::bind (
-            &InboundLedgers::sweep, &getInboundLedgers ()));
-
-        logTimedCall (m_journal.warning, "SLECache::sweep", __FILE__, __LINE__, std::bind (
-            &SLECache::sweep, &m_sleCache));
-
-        logTimedCall (m_journal.warning, "AcceptedLedger::sweep", __FILE__, __LINE__,
-            &AcceptedLedger::sweep);
-
-        logTimedCall (m_journal.warning, "SHAMap::sweep", __FILE__, __LINE__,std::bind (
-            &TreeNodeCache::sweep, &family().treecache()));
-
-        logTimedCall (m_journal.warning, "NetworkOPs::sweepFetchPack", __FILE__, __LINE__, std::bind (
-            &NetworkOPs::sweepFetchPack, m_networkOPs.get ()));
+        family().fullbelow().sweep ();
+        getMasterTransaction().sweep();
+        getNodeStore().sweep();
+        getLedgerMaster().sweep();
+        getTempNodeCache().sweep();
+        getValidations().sweep();
+        getInboundLedgers().sweep();
+        AcceptedLedger::sweep();
+        family().treecache().sweep();
+        cachedSLEs_.expire();
 
         // VFALCO NOTE does the call to sweep() happen on another thread?
         m_sweepTimer.setExpiration (getConfig ().getSize (siSweepInterval));
@@ -1029,7 +1033,8 @@ public:
 
 private:
     void updateTables ();
-    void startNewLedger ();
+    void startGenesisLedger ();
+    Ledger::pointer getLastFullLedger();
     bool loadOldLedger (
         std::string const& ledgerID, bool replay, bool isFilename);
 
@@ -1038,34 +1043,67 @@ private:
 
 //------------------------------------------------------------------------------
 
-void ApplicationImp::startNewLedger ()
+void ApplicationImp::startGenesisLedger ()
 {
-    // New stuff.
-    RippleAddress   rootSeedMaster      = RippleAddress::createSeedGeneric ("masterpassphrase");
-    RippleAddress   rootGeneratorMaster = RippleAddress::createGeneratorPublic (rootSeedMaster);
-    RippleAddress   rootAddress         = RippleAddress::createAccountPublic (rootGeneratorMaster, 0);
+    std::shared_ptr<Ledger const> const genesis =
+        std::make_shared<Ledger>(
+            create_genesis, getConfig());
+    auto const next = std::make_shared<Ledger>(
+        open_ledger, *genesis);
+    next->setClosed ();
+    next->setAccepted ();
+    m_networkOPs->setLastCloseTime (next->info().closeTime);
+    openLedger_.emplace(next, getConfig(),
+        cachedSLEs_, deprecatedLogs().journal("OpenLedger"));
+    m_ledgerMaster->pushLedger (next,
+        std::make_shared<Ledger>(open_ledger, *next));
+}
 
-    // Print enough information to be able to claim root account.
-    m_journal.info << "Root master seed: " << rootSeedMaster.humanSeed ();
-    m_journal.info << "Root account: " << rootAddress.humanAccountID ();
-
+Ledger::pointer
+ApplicationImp::getLastFullLedger()
+{
+    try
     {
-        Ledger::pointer firstLedger = std::make_shared<Ledger> (rootAddress, SYSTEM_CURRENCY_START);
-        assert (firstLedger->getAccountState (rootAddress));
-        // TODO(david): Add any default amendments
-        // TODO(david): Set default fee/reserve
-        firstLedger->updateHash ();
-        firstLedger->setClosed ();
-        firstLedger->setAccepted ();
-        firstLedger->setImmutable();
-        m_ledgerMaster->pushLedger (firstLedger);
+        Ledger::pointer ledger;
+        std::uint32_t ledgerSeq;
+        uint256 ledgerHash;
+        std::tie (ledger, ledgerSeq, ledgerHash) =
+                loadLedgerHelper ("order by LedgerSeq desc limit 1");
 
-        Ledger::pointer secondLedger = std::make_shared<Ledger> (true, std::ref (*firstLedger));
-        secondLedger->setClosed ();
-        secondLedger->setAccepted ();
-        m_ledgerMaster->pushLedger (secondLedger, std::make_shared<Ledger> (true, std::ref (*secondLedger)));
-        assert (secondLedger->getAccountState (rootAddress));
-        m_networkOPs->setLastCloseTime (secondLedger->getCloseTimeNC ());
+        if (!ledger)
+            return ledger;
+
+        ledger->setClosed ();
+        ledger->setImmutable();
+
+        if (getApp().getLedgerMaster ().haveLedger (ledgerSeq))
+        {
+            ledger->setAccepted ();
+            ledger->setValidated ();
+        }
+
+        if (ledger->getHash () != ledgerHash)
+        {
+            if (ShouldLog (lsERROR, Ledger))
+            {
+                WriteLog (lsERROR, Ledger) << "Failed on ledger";
+                Json::Value p;
+                addJson (p, {*ledger, LedgerFill::full});
+                WriteLog (lsERROR, Ledger) << p;
+            }
+
+            assert (false);
+            return Ledger::pointer ();
+        }
+
+        WriteLog (lsTRACE, Ledger) << "Loaded ledger: " << ledgerHash;
+        return ledger;
+    }
+    catch (SHAMapMissingNode& sn)
+    {
+        WriteLog (lsWARNING, Ledger)
+                << "Database contains ledger with missing nodes: " << sn;
+        return Ledger::pointer ();
     }
 }
 
@@ -1104,7 +1142,7 @@ bool ApplicationImp::loadOldLedger (
                      std::uint32_t closeTime = getApp().getOPs().getCloseTimeNC ();
                      std::uint32_t closeTimeResolution = 30;
                      bool closeTimeEstimated = false;
-                     std::uint64_t totalCoins = 0;
+                     std::uint64_t totalDrops = 0;
 
                      if (ledger.get().isMember ("accountState"))
                      {
@@ -1128,7 +1166,7 @@ bool ApplicationImp::loadOldLedger (
                           }
                           if (ledger.get().isMember ("total_coins"))
                           {
-                              totalCoins =
+                              totalDrops =
                                 beast::lexicalCastThrow<std::uint64_t>
                                     (ledger.get()["total_coins"].asString());
                           }
@@ -1140,8 +1178,8 @@ bool ApplicationImp::loadOldLedger (
                      }
                      else
                      {
-                         loadLedger = std::make_shared<Ledger> (seq, closeTime);
-                         loadLedger->setTotalCoins(totalCoins);
+                         loadLedger = std::make_shared<Ledger> (seq, closeTime, getConfig());
+                         loadLedger->setTotalDrops(totalDrops);
 
                          for (Json::UInt index = 0; index < ledger.get().size(); ++index)
                          {
@@ -1156,6 +1194,8 @@ bool ApplicationImp::loadOldLedger (
 
                              if (stp.object && (uIndex.isNonZero()))
                              {
+                                 // VFALCO TODO This is the only place that
+                                 //             constructor is used, try to remove it
                                  STLedgerEntry sle (*stp.object, uIndex);
                                  bool ok = loadLedger->addSLE (sle);
                                  if (!ok)
@@ -1175,7 +1215,9 @@ bool ApplicationImp::loadOldLedger (
             }
         }
         else if (ledgerID.empty () || (ledgerID == "latest"))
-            loadLedger = Ledger::getLastFullLedger ();
+        {
+            loadLedger = getLastFullLedger ();
+        }
         else if (ledgerID.length () == 64)
         {
             // by hash
@@ -1187,7 +1229,7 @@ bool ApplicationImp::loadOldLedger (
             {
                 // Try to build the ledger from the back end
                 auto il = std::make_shared <InboundLedger> (hash, 0, InboundLedger::fcGENERIC,
-                    get_seconds_clock ());
+                    stopwatch());
                 if (il->checkLocal ())
                     loadLedger = il->getLedger ();
             }
@@ -1213,15 +1255,15 @@ bool ApplicationImp::loadOldLedger (
 
             m_journal.info << "Loading parent ledger";
 
-            loadLedger = Ledger::loadByHash (replayLedger->getParentHash ());
+            loadLedger = Ledger::loadByHash (replayLedger->info().parentHash);
             if (!loadLedger)
             {
                 m_journal.info << "Loading parent ledger from node store";
 
                 // Try to build the ledger from the back end
                 auto il = std::make_shared <InboundLedger> (
-                    replayLedger->getParentHash(), 0, InboundLedger::fcGENERIC,
-                    get_seconds_clock ());
+                    replayLedger->info().parentHash, 0, InboundLedger::fcGENERIC,
+                    stopwatch());
                 if (il->checkLocal ())
                     loadLedger = il->getLedger ();
 
@@ -1236,9 +1278,9 @@ bool ApplicationImp::loadOldLedger (
 
         loadLedger->setClosed ();
 
-        m_journal.info << "Loading ledger " << loadLedger->getHash () << " seq:" << loadLedger->getLedgerSeq ();
+        m_journal.info << "Loading ledger " << loadLedger->getHash () << " seq:" << loadLedger->info().seq;
 
-        if (loadLedger->getAccountHash ().isZero ())
+        if (loadLedger->info().accountHash.isZero ())
         {
             m_journal.fatal << "Ledger is empty.";
             assert (false);
@@ -1259,33 +1301,39 @@ bool ApplicationImp::loadOldLedger (
             return false;
         }
 
-        m_ledgerMaster->setLedgerRangePresent (loadLedger->getLedgerSeq (), loadLedger->getLedgerSeq ());
+        m_ledgerMaster->setLedgerRangePresent (loadLedger->info().seq, loadLedger->info().seq);
 
-        Ledger::pointer openLedger = std::make_shared<Ledger> (false, std::ref (*loadLedger));
+        auto const openLedger =
+            std::make_shared<Ledger>(open_ledger, *loadLedger);
         m_ledgerMaster->switchLedgers (loadLedger, openLedger);
         m_ledgerMaster->forceValid(loadLedger);
-        m_networkOPs->setLastCloseTime (loadLedger->getCloseTimeNC ());
+        m_networkOPs->setLastCloseTime (loadLedger->info().closeTime);
+        openLedger_.emplace(loadLedger, getConfig(),
+            cachedSLEs_, deprecatedLogs().journal("OpenLedger"));
 
         if (replay)
         {
             // inject transaction(s) from the replayLedger into our open ledger
-            std::shared_ptr<SHAMap> const& txns = replayLedger->peekTransactionMap();
+            auto const& txns = replayLedger->txMap();
 
             // Get a mutable snapshot of the open ledger
             Ledger::pointer cur = getLedgerMaster().getCurrentLedger();
             cur = std::make_shared <Ledger> (*cur, true);
             assert (!cur->isImmutable());
 
-            for (auto it = txns->peekFirstItem(); it != nullptr;
-                 it = txns->peekNextItem(it->getTag()))
+            for (auto const& item : txns)
             {
-                Transaction::pointer txn = replayLedger->getTransaction(it->getTag());
-                m_journal.info << txn->getJson(0);
+                auto const txn =
+                    getTransaction(*replayLedger, item.key(),
+                        getApp().getMasterTransaction());
+                if (m_journal.info) m_journal.info <<
+                    txn->getJson(0);
                 Serializer s;
                 txn->getSTransaction()->add(s);
-                if (!cur->addTransaction(it->getTag(), s))
-                    m_journal.warning << "Unable to add transaction " << it->getTag();
-                getApp().getHashRouter().setFlag (it->getTag(), SF_SIGGOOD);
+                cur->rawTxInsert(item.key(),
+                    std::make_shared<Serializer const>(
+                        std::move(s)), nullptr);
+                getApp().getHashRouter().setFlag (item.key(), SF_SIGGOOD);
             }
 
             // Switch to the mutable snapshot
@@ -1428,7 +1476,7 @@ static void addTxnSeqField ()
         }
         else
         {
-            TransactionMetaSet m (transID, 0, txnMeta);
+            TxMeta m (transID, 0, txnMeta);
             txIDs.push_back (std::make_pair (transID, m.getIndex ()));
         }
 

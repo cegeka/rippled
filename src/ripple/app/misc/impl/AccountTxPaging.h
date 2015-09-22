@@ -20,7 +20,7 @@
 #ifndef RIPPLE_APP_MISC_IMPL_ACCOUNTTXPAGING_H_INCLUDED
 #define RIPPLE_APP_MISC_IMPL_ACCOUNTTXPAGING_H_INCLUDED
 
-#include <ripple/app/data/DatabaseCon.h>
+#include <ripple/core/DatabaseCon.h>
 #include <ripple/app/misc/NetworkOPs.h>
 #include <cstdint>
 #include <string>
@@ -50,7 +50,7 @@ accountTxPage (
                         std::string const&,
                         Blob const&,
                         Blob const&)> const&,
-    RippleAddress const& account,
+    AccountID const& account,
     std::int32_t minLedger,
     std::int32_t maxLedger,
     bool forward,

@@ -44,9 +44,9 @@ public:
     bool parseJSONString (std::string const& json, Json::Value& to)
     {
         Json::Reader reader;
-        return (reader.parse(json, to) &&
-               !to.isNull() &&
-                to.isObject());
+        return reader.parse(json, to) &&
+                bool (to) &&
+                to.isObject();
     }
 
     void testParseJSONArrayWithInvalidChildrenObjects ()
@@ -91,7 +91,7 @@ public:
     {
         testcase ("parse json array");
         std::string const json (
-            "{\"Template\":[{\"ModifiedNode\":{\"Sequence\":1}}]}\n");
+            "{\"Template\":[{\"ModifiedNode\":{\"Sequence\":1}}]}");
 
         Json::Value jsonObject;
         bool parsedOK (parseJSONString(json, jsonObject));
@@ -183,7 +183,7 @@ public:
 
             Serializer s;
             object1.add (s);
-            SerialIter it (s);
+            SerialIter it (s.slice());
 
             STObject object3 (elements, it, sfTestObject);
 

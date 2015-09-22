@@ -27,29 +27,35 @@ namespace jss {
 
 // JSON static strings
 
-#define JSS(x) const Json::StaticString x ( #x )
+#define JSS(x) const ::Json::StaticString x ( #x )
 
 /* The "StaticString" field names are used instead of string literals to
    optimize the performance of accessing members of Json::Value objects.
 */
+// VFALCO What are these nonsense in/out comments?
+
 JSS ( AL_hit_rate );                // out: GetCounts
 JSS ( Account );                    // in: TransactionSign; field.
 JSS ( Amount );                     // in: TransactionSign; field.
 JSS ( ClearFlag );                  // field.
 JSS ( Destination );                // in: TransactionSign; field.
+JSS ( DeliverMin );                 // in: TransactionSign
 JSS ( Fee );                        // in/out: TransactionSign; field.
 JSS ( Flags );                      // in/out: TransactionSign; field.
-JSS ( Invalid );                    // out: app/misc/AccountState
+JSS ( Invalid );                    //
 JSS ( LimitAmount );                // field.
 JSS ( OfferSequence );              // field.
 JSS ( Paths );                      // in/out: TransactionSign
+JSS ( TransferRate );               // in: TransferRate
 JSS ( historical_perminute );       // historical_perminute
 JSS ( SLE_hit_rate );               // out: GetCounts
 JSS ( SendMax );                    // in: TransactionSign
 JSS ( Sequence );                   // in/out: TransactionSign; field.
 JSS ( SetFlag );                    // field.
+JSS ( SigningPubKey );              // field
 JSS ( TakerGets );                  // field.
 JSS ( TakerPays );                  // field.
+JSS ( TxnSignature );               // field
 JSS ( TransactionType );            // in: TransactionSign
 JSS ( aborted );                    // out: InboundLedger
 JSS ( accepted );                   // out: LedgerToJson, OwnerInfo
@@ -59,25 +65,23 @@ JSS ( accountTreeHash );            // out: ledger/Ledger.cpp
 JSS ( account_data );               // out: AccountInfo
 JSS ( account_hash );               // out: LedgerToJson
 JSS ( account_id );                 // out: WalletPropose
-JSS ( account_index );              // in: AccountCurrencies, AccountOffers,
-                                    //     AccountInfo, AccountLines,
-                                    //     AccountObjects, OwnerInfo
-                                    // out: AccountOffers
 JSS ( account_objects );            // out: AccountObjects
 JSS ( account_root );               // in: LedgerEntry
 JSS ( accounts );                   // in: LedgerEntry, Subscribe,
                                     //     handlers/Ledger, Unsubscribe
                                     // out: WalletAccounts
 JSS ( accounts_proposed );          // in: Subscribe, Unsubscribe
-JSS ( action );                     // out: LedgerEntrySet
+JSS ( action );
 JSS ( address );                    // out: PeerImp
 JSS ( affected );                   // out: AcceptedLedgerTx
 JSS ( age );                        // out: UniqueNodeList, NetworkOPs
 JSS ( alternatives );               // out: PathRequest, RipplePathFind
 JSS ( amendment_blocked );          // out: NetworkOPs
 JSS ( asks );                       // out: Subscribe
+JSS ( assets );                     // out: GatewayBalances
 JSS ( authorized );                 // out: AccountLines
 JSS ( balance );                    // out: AccountLines
+JSS ( balances );                   // out: GatewayBalances
 JSS ( base );                       // out: LogLevel
 JSS ( base_fee );                   // out: NetworkOPs
 JSS ( base_fee_xrp );               // out: NetworkOPs
@@ -154,6 +158,7 @@ JSS ( forward );                    // in: AccountTx
 JSS ( freeze );                     // out: AccountLines
 JSS ( freeze_peer );                // out: AccountLines
 JSS ( full );                       // in: LedgerClearer, handlers/Ledger
+JSS ( full_reply );                 // out: PathFind
 JSS ( fullbelow_size );             // in: GetCounts
 JSS ( generator );                  // in: LedgerEntry
 JSS ( good );                       // out: RPCVersion
@@ -227,7 +232,7 @@ JSS ( master_seed_hex );            // out: WalletPropose
 JSS ( max_ledger );                 // in/out: LedgerCleaner
 JSS ( message );                    // error.
 JSS ( meta );                       // out: NetworkOPs, AccountTx*, Tx
-JSS ( metaData );                   // out: LedgerEntrySet, LedgerToJson
+JSS ( metaData );
 JSS ( metadata );                   // out: TransactionEntry
 JSS ( method );                     // RPC
 JSS ( min_count );                  // in: GetCounts
@@ -240,7 +245,6 @@ JSS ( network_ledger );             // out: NetworkOPs
 JSS ( no_ripple );                  // out: AccountLines
 JSS ( no_ripple_peer );             // out: AccountLines
 JSS ( node );                       // in: UnlAdd, UnlDelete
-                                    // out: LedgerEntrySet, LedgerEntry
 JSS ( node_binary );                // out: LedgerEntry
 JSS ( node_hit_rate );              // out: GetCounts
 JSS ( node_read_bytes );            // out: GetCounts
@@ -248,7 +252,8 @@ JSS ( node_reads_hit );             // out: GetCounts
 JSS ( node_reads_total );           // out: GetCounts
 JSS ( node_writes );                // out: GetCounts
 JSS ( node_written_bytes );         // out: GetCounts
-JSS ( nodes );                      // out: LedgerEntrySet, PathState
+JSS ( nodes );                      // out: PathState
+JSS ( obligations );                // out: GatewayBalances
 JSS ( offer );                      // in: LedgerEntry
 JSS ( offers );                     // out: NetworkOPs, AccountOffers, Subscribe
 JSS ( offline );                    // in: TransactionSign
@@ -267,7 +272,6 @@ JSS ( paths_computed );             // out: PathRequest, RipplePathFind
 JSS ( peer );                       // in: AccountLines
 JSS ( peer_authorized );            // out: AccountLines
 JSS ( peer_id );                    // out: LedgerProposal
-JSS ( peer_index );                 // in/out: AccountLines
 JSS ( peers );                      // out: InboundLedger, handlers/Peers
 JSS ( port );                       // in: Connect
 JSS ( previous_ledger );            // out: LedgerPropose
@@ -311,6 +315,7 @@ JSS ( seqNum );                     // out: LedgerToJson
 JSS ( server_state );               // out: NetworkOPs
 JSS ( server_status );              // out: NetworkOPs
 JSS ( severity );                   // in: LogLevel
+JSS ( signature );                  // out: NetworkOPs
 JSS ( snapshot );                   // in: Subscribe
 JSS ( source_account );             // in: PathRequest, RipplePathFind
 JSS ( source_amount );              // in: PathRequest, RipplePathFind
@@ -356,7 +361,7 @@ JSS ( tx_unsigned );                // out: TransactionSign
 JSS ( txn_count );                  // out: NetworkOPs
 JSS ( txs );                        // out: TxHistory
 JSS ( type );                       // in: AccountObjects
-                                    // out: NetworkOPs, LedgerEntrySet
+                                    // out: NetworkOPs
                                     //      paths/Node.cpp, OverlayImpl, Logic
 JSS ( type_hex );                   // out: STPathSet
 JSS ( unl );                        // out: UnlList
@@ -364,7 +369,7 @@ JSS ( uptime );                     // out: GetCounts
 JSS ( url );                        // in/out: Subscribe, Unsubscribe
 JSS ( url_password );               // in: Subscribe
 JSS ( url_username );               // in: Subscribe
-JSS ( urlgravatar );                // out: AccountState
+JSS ( urlgravatar );                //
 JSS ( username );                   // in: Subscribe
 JSS ( validated );                  // out: NetworkOPs, LookupLedger, AccountTx*
                                     //      Tx

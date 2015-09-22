@@ -16,8 +16,9 @@
     OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 */
 //==============================================================================
-#include <ripple/app/data/DatabaseCon.h>
+#include <ripple/core/DatabaseCon.h>
 #include <ripple/app/misc/impl/AccountTxPaging.h>
+#include <ripple/protocol/types.h>
 #include <beast/cxx14/memory.h>  // <memory>
 #include <beast/unit_test/suite.h>
 #include <cstdlib>
@@ -29,7 +30,7 @@ struct AccountTxPaging_test : beast::unit_test::suite
 {
     std::unique_ptr<DatabaseCon> db_;
     NetworkOPs::AccountTxs txs_;
-    RippleAddress account_;
+    AccountID account_;
 
     void
     run() override
@@ -51,7 +52,8 @@ struct AccountTxPaging_test : beast::unit_test::suite
         db_ = std::make_unique <DatabaseCon> (
             dbConf, "account-tx-transactions.db", nullptr, 0);
 
-        account_.setAccountID("rfu6L5p3azwPzQZsbTafuVk884N9YoKvVG");
+        account_ = *parseBase58<AccountID>(
+            "rfu6L5p3azwPzQZsbTafuVk884N9YoKvVG");
 
         testAccountTxPaging();
     }
@@ -149,8 +151,8 @@ struct AccountTxPaging_test : beast::unit_test::suite
             expect (next(limit, forward, token, min_ledger, max_ledger) == 1);
             checkTransaction (txs_[0], 5, 7);
 
-            expect(token["ledger"].isNull());
-            expect(token["seq"].isNull());
+            expect(! token["ledger"]);
+            expect(! token["seq"]);
         }
 
         token = Json::nullValue;
@@ -198,8 +200,8 @@ struct AccountTxPaging_test : beast::unit_test::suite
             expect(next(limit, forward, token, min_ledger, max_ledger) == 1);
             checkTransaction (txs_[0], 6, 11);
 
-            expect(token["ledger"].isNull());
-            expect(token["seq"].isNull());
+            expect(! token["ledger"]);
+            expect(! token["seq"]);
         }
 
         token = Json::nullValue;
@@ -239,8 +241,8 @@ struct AccountTxPaging_test : beast::unit_test::suite
             checkTransaction (txs_[2], 3, 5);
         }
 
-        expect (token["ledger"].isNull());
-        expect (token["seq"].isNull());
+        expect (! token["ledger"]);
+        expect (! token["seq"]);
     }
 };
 

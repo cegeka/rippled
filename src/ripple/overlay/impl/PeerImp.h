@@ -33,7 +33,7 @@
 #include <ripple/core/LoadEvent.h>
 #include <ripple/protocol/Protocol.h>
 #include <ripple/protocol/STTx.h>
-#include <ripple/validators/Manager.h>
+#include <ripple/validators/ValidatorManager.h>
 #include <beast/ByteOrder.h>
 #include <beast/asio/IPAddressConversion.h>
 #include <beast/asio/placeholders.h>
@@ -87,14 +87,14 @@ public:
         ,sane
     };
 
-    typedef std::shared_ptr <PeerImp> ptr;
+    using ptr = std::shared_ptr <PeerImp>;
 
 private:
-    using clock_type = std::chrono::steady_clock;
-    using error_code= boost::system::error_code ;
-    using socket_type = boost::asio::ip::tcp::socket;
-    using stream_type = boost::asio::ssl::stream <socket_type&>;
-    using address_type = boost::asio::ip::address;
+    using clock_type    = std::chrono::steady_clock;
+    using error_code    = boost::system::error_code;
+    using socket_type   = boost::asio::ip::tcp::socket;
+    using stream_type   = boost::asio::ssl::stream <socket_type&>;
+    using address_type  = boost::asio::ip::address;
     using endpoint_type = boost::asio::ip::tcp::endpoint;
 
     // The length of the smallest valid finished message
@@ -143,6 +143,7 @@ private:
     std::chrono::milliseconds latency_ = std::chrono::milliseconds (-1);
     std::uint64_t lastPingSeq_ = 0;
     clock_type::time_point lastPingTime_;
+    clock_type::time_point creationTime_;
 
     std::mutex mutable recentLock_;
     protocol::TMStatusChange last_status_;
@@ -156,7 +157,8 @@ private:
     beast::asio::streambuf write_buffer_;
     std::queue<Message::pointer> send_queue_;
     bool gracefulClose_ = false;
-    bool recent_empty_ = true;
+    int large_sendq_ = 0;
+    int no_ping_ = 0;
     std::unique_ptr <LoadEvent> load_event_;
     std::unique_ptr<Validators::Connection> validatorsConnection_;
     bool hopsAware_ = false;
@@ -187,6 +189,12 @@ public:
 
     virtual
     ~PeerImp();
+
+    beast::Journal const&
+    pjournal() const
+    {
+        return p_journal_;
+    }
 
     PeerFinder::Slot::ptr const&
     slot()
@@ -272,6 +280,13 @@ public:
     std::string
     getVersion() const;
 
+    // Return the connection elapsed time.
+    clock_type::duration
+    uptime() const
+    {
+        return clock_type::now() - creationTime_;
+    }
+
     Json::Value
     json() override;
 
@@ -305,7 +320,7 @@ public:
 
     // Called to determine our priority for querying
     int
-    getScore (bool haveItem);
+    getScore (bool haveItem) const override;
 
     bool
     isHighLatency() const override;
@@ -395,6 +410,7 @@ public:
         std::shared_ptr <::google::protobuf::Message> const& m);
 
     void onMessage (std::shared_ptr <protocol::TMHello> const& m);
+    void onMessage (std::shared_ptr <protocol::TMManifests> const& m);
     void onMessage (std::shared_ptr <protocol::TMPing> const& m);
     void onMessage (std::shared_ptr <protocol::TMCluster> const& m);
     void onMessage (std::shared_ptr <protocol::TMGetPeers> const& m);
@@ -489,6 +505,7 @@ PeerImp::PeerImp (std::unique_ptr<beast::asio::ssl_bundle>&& ssl_bundle,
     , sanity_ (Sanity::unknown)
     , insaneTime_ (clock_type::now())
     , publicKey_ (legacyPublicKey)
+    , creationTime_ (clock_type::now())
     , hello_ (std::move(hello))
     , usage_ (usage)
     , fee_ (Resource::feeLightPeer)

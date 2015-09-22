@@ -3,6 +3,7 @@ package protocol;
 enum MessageType
 {
     mtHELLO                 = 1;
+    mtMANIFESTS             = 2;
     mtPING                  = 3;
     mtPROOFOFWORK           = 4;
     mtCLUSTER               = 5;
@@ -18,7 +19,6 @@ enum MessageType
     mtVALIDATION            = 41;
     mtGET_OBJECTS           = 42;
 
-    // <available>          = 2;
     // <available>          = 10;
     // <available>          = 11;
     // <available>          = 14;
@@ -31,6 +31,23 @@ enum MessageType
 // token, iterations, target, challenge = issue demand for proof of work
 // token, response = give solution to proof of work
 // token, result = report result of pow
+
+//------------------------------------------------------------------------------
+
+/* Provides the current ephemeral key for a validator. */
+message TMManifest
+{
+    // A Manifest object in the Ripple serialization format.
+    required bytes stobject = 1;
+}
+
+message TMManifests
+{
+    repeated TMManifest list = 1;
+    // The manifests sent when a peer first connects to another peer are `history`.
+    // The receiving peer does not forward them.
+    optional bool history = 2 [default = false];
+}
 
 //------------------------------------------------------------------------------
 
@@ -169,7 +186,7 @@ message TMProposeSet
     required bytes nodePubKey           = 3;
     required uint32 closeTime           = 4;
     required bytes signature            = 5;    // signature of above fields
-    optional bytes previousledger       = 6;
+    required bytes previousledger       = 6;
     optional bool checkedSignature      = 7;    // node vouches signature is correct
     repeated bytes addedTransactions    = 10;   // not required if number is large
     repeated bytes removedTransactions  = 11;   // not required if number is large

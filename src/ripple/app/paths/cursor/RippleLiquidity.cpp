@@ -18,7 +18,7 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/app/book/Quality.h>
+#include <ripple/protocol/Quality.h>
 #include <ripple/app/paths/cursor/RippleLiquidity.h>
 #include <ripple/basics/Log.h>
 
@@ -203,9 +203,9 @@ void rippleLiquidity (
 static
 std::uint32_t
 rippleQuality (
-    LedgerEntrySet& ledger,
-    Account const& destination,
-    Account const& source,
+    ReadView const& view,
+    AccountID const& destination,
+    AccountID const& source,
     Currency const& currency,
     SField const& sfLow,
     SField const& sfHigh)
@@ -214,8 +214,8 @@ rippleQuality (
 
     if (destination != source)
     {
-        SLE::pointer sleRippleState (ledger.entryCache (ltRIPPLE_STATE,
-            getRippleStateIndex (destination, source, currency)));
+        auto const sleRippleState = view.read(
+            keylet::line(destination, source, currency));
 
         // we should be able to assert(sleRippleState) here
 
@@ -237,23 +237,23 @@ rippleQuality (
 
 std::uint32_t
 quality_in (
-    LedgerEntrySet& ledger,
-    Account const& uToAccountID,
-    Account const& uFromAccountID,
+    ReadView const& view,
+    AccountID const& uToAccountID,
+    AccountID const& uFromAccountID,
     Currency const& currency)
 {
-    return rippleQuality (ledger, uToAccountID, uFromAccountID, currency,
+    return rippleQuality (view, uToAccountID, uFromAccountID, currency,
         sfLowQualityIn, sfHighQualityIn);
 }
 
 std::uint32_t
 quality_out (
-    LedgerEntrySet& ledger,
-    Account const& uToAccountID,
-    Account const& uFromAccountID,
+    ReadView const& view,
+    AccountID const& uToAccountID,
+    AccountID const& uFromAccountID,
     Currency const& currency)
 {
-    return rippleQuality (ledger, uToAccountID, uFromAccountID, currency,
+    return rippleQuality (view, uToAccountID, uFromAccountID, currency,
         sfLowQualityOut, sfHighQualityOut);
 }
 

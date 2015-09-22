@@ -34,7 +34,7 @@ namespace ripple {
 class InboundLedgers
 {
 public:
-    typedef beast::abstract_clock <std::chrono::steady_clock> clock_type;
+    using clock_type = beast::abstract_clock <std::chrono::steady_clock>;
 
     virtual ~InboundLedgers() = 0;
 
@@ -63,7 +63,7 @@ public:
 
     virtual int getFetchCount (int& timeoutCount) = 0;
 
-    virtual void logFailure (uint256 const& h) = 0;
+    virtual void logFailure (uint256 const& h, std::uint32_t seq) = 0;
 
     virtual bool isFailure (uint256 const& h) = 0;
 

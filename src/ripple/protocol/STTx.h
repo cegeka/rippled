@@ -22,6 +22,7 @@
 
 #include <ripple/protocol/STObject.h>
 #include <ripple/protocol/TxFormats.h>
+#include <boost/container/flat_set.hpp>
 #include <boost/logic/tribool.hpp>
 
 namespace ripple {
@@ -41,8 +42,10 @@ class STTx final
 public:
     static char const* getCountedObjectName () { return "STTx"; }
 
-    typedef std::shared_ptr<STTx>        pointer;
-    typedef const std::shared_ptr<STTx>& ref;
+    using pointer = std::shared_ptr<STTx>;
+    using ref     = const std::shared_ptr<STTx>&;
+
+    static std::size_t const maxMultiSigners = 8;
 
 public:
     STTx () = delete;
@@ -51,6 +54,7 @@ public:
     STTx (STTx const& other) = default;
 
     explicit STTx (SerialIter& sit);
+    explicit STTx (SerialIter&& sit) : STTx(sit) {}
     explicit STTx (TxType type);
 
     explicit STTx (STObject&& object);
@@ -67,14 +71,14 @@ public:
         return emplace(n, buf, std::move(*this));
     }
 
-    // STObject functions
+    // STObject functions.
     SerializedTypeID getSType () const override
     {
         return STI_TRANSACTION;
     }
     std::string getFullText () const override;
 
-    // outer transaction functions / signature functions
+    // Outer transaction functions / signature functions.
     Blob getSignature () const;
 
     uint256 getSigningHash () const;
@@ -92,16 +96,11 @@ public:
         setFieldAmount (sfFee, fee);
     }
 
-    RippleAddress getSourceAccount () const
-    {
-        return getFieldAccount (sfAccount);
-    }
     Blob getSigningPubKey () const
     {
         return getFieldVL (sfSigningPubKey);
     }
     void setSigningPubKey (const RippleAddress & naSignPubKey);
-    void setSourceAccount (const RippleAddress & naSource);
 
     std::uint32_t getSequence () const
     {
@@ -112,16 +111,23 @@ public:
         return setFieldU32 (sfSequence, seq);
     }
 
-    std::vector<RippleAddress> getMentionedAccounts () const;
+    boost::container::flat_set<AccountID>
+    getMentionedAccounts() const;
 
     uint256 getTransactionID () const;
 
-    virtual Json::Value getJson (int options) const override;
-    virtual Json::Value getJson (int options, bool binary) const;
+    Json::Value getJson (int options) const override;
+    Json::Value getJson (int options, bool binary) const;
 
     void sign (RippleAddress const& private_key);
 
-    bool checkSign () const;
+    bool checkSign(bool allowMultiSign =
+#if RIPPLE_ENABLE_MULTI_SIGN
+        true
+#else
+        false
+#endif
+            ) const;
 
     bool isKnownGood () const
     {
@@ -140,7 +146,7 @@ public:
         sig_state_ = false;
     }
 
-    // SQL Functions with metadata
+    // SQL Functions with metadata.
     static
     std::string const&
     getMetaSQLInsertReplaceHeader ();
@@ -155,6 +161,9 @@ public:
         std::string const& escapedMetaData) const;
 
 private:
+    bool checkSingleSign () const;
+    bool checkMultiSign () const;
+
     TxType tx_type_;
 
     mutable boost::tribool sig_state_;

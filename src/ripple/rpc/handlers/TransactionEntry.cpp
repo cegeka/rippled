@@ -18,6 +18,10 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/app/main/Application.h>
+#include <ripple/protocol/JsonFields.h>
+#include <ripple/rpc/Context.h>
+#include <ripple/rpc/impl/LookupLedger.h>
 
 namespace ripple {
 
@@ -31,10 +35,7 @@ namespace ripple {
 Json::Value doTransactionEntry (RPC::Context& context)
 {
     Ledger::pointer     lpLedger;
-    Json::Value jvResult = RPC::lookupLedger (
-        context.params,
-        lpLedger,
-        context.netOps);
+    Json::Value jvResult = RPC::lookupLedgerDeprecated (lpLedger, context);
 
     if (!lpLedger)
         return jvResult;
@@ -65,9 +66,10 @@ Json::Value doTransactionEntry (RPC::Context& context)
         else
         {
             Transaction::pointer        tpTrans;
-            TransactionMetaSet::pointer tmTrans;
+            TxMeta::pointer tmTrans;
 
-            if (!lpLedger->getTransaction (uTransID, tpTrans, tmTrans))
+            if (!getTransaction (*lpLedger, uTransID, tpTrans, tmTrans,
+                    getApp().getMasterTransaction()))
             {
                 jvResult[jss::error]   = "transactionNotFound";
             }

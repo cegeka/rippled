@@ -38,15 +38,21 @@ public:
         mFull = collector->make_event ("pathfind_full");
     }
 
-    void updateAll (const std::shared_ptr<Ledger>& ledger,
+    void updateAll (std::shared_ptr<ReadView const> const& ledger,
                     Job::CancelCallback shouldCancel);
 
     RippleLineCache::pointer getLineCache (
-        Ledger::pointer& ledger, bool authoritative);
+        std::shared_ptr <ReadView const> const& ledger, bool authoritative);
 
     Json::Value makePathRequest (
         std::shared_ptr <InfoSub> const& subscriber,
-        const std::shared_ptr<Ledger>& ledger,
+        std::shared_ptr<ReadView const> const& ledger,
+        Json::Value const& request);
+
+    Json::Value makeLegacyPathRequest (
+        PathRequest::pointer& req,
+        std::function <void (void)> completion,
+        std::shared_ptr<ReadView const> const& inLedger,
         Json::Value const& request);
 
     void reportFast (int milliseconds)
@@ -60,6 +66,8 @@ public:
     }
 
 private:
+    void insertPathRequest (PathRequest::pointer const&);
+
     beast::Journal                   mJournal;
 
     beast::insight::Event            mFast;
@@ -73,8 +81,8 @@ private:
 
     std::atomic<int>                 mLastIdentifier;
 
-    typedef RippleRecursiveMutex     LockType;
-    typedef std::lock_guard <LockType> ScopedLockType;
+    using LockType       = RippleRecursiveMutex;
+    using ScopedLockType = std::lock_guard <LockType>;
     LockType                         mLock;
 
 };

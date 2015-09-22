@@ -18,10 +18,9 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/app/book/Quality.h>
 #include <ripple/app/paths/cursor/RippleLiquidity.h>
 #include <ripple/basics/Log.h>
-#include <ripple/legacy/0.27/Emulate027.h>
+#include <ripple/protocol/Quality.h>
 
 namespace ripple {
 namespace path {
@@ -48,21 +47,21 @@ TER PathCursor::forwardLiquidityForAccount () const
 
     std::uint64_t uRateMax = 0;
 
-    Account const& previousAccountID =
+    AccountID const& previousAccountID =
             previousNode().isAccount() ? previousNode().account_ :
             node().account_;
     // Offers are always issue.
-    Account const& nextAccountID =
+    AccountID const& nextAccountID =
             nextNode().isAccount() ? nextNode().account_ : node().account_;
 
     std::uint32_t uQualityIn = nodeIndex_
-        ? quality_in (ledger(),
+        ? quality_in (view(),
             node().account_,
             previousAccountID,
             node().issue_.currency)
         : QUALITY_ONE;
     std::uint32_t  uQualityOut = (nodeIndex_ == lastNodeIndex)
-        ? quality_out (ledger(),
+        ? quality_out (view(),
             node().account_,
             nextAccountID,
             node().issue_.currency)
@@ -157,7 +156,7 @@ TER PathCursor::forwardLiquidityForAccount () const
                     ? previousNode().saFwdIssue  // No fee.
                     : mulRound (
                           previousNode().saFwdIssue,
-                          STAmount (noIssue(), uQualityIn, -9),
+                          amountFromRate (uQualityIn),
                           previousNode().saFwdIssue.issue (),
                           true); // Amount to credit.
 
@@ -167,7 +166,7 @@ TER PathCursor::forwardLiquidityForAccount () const
             if (saCurReceive)
             {
                 // Actually receive.
-                resultCode = ledger().rippleCredit (
+                resultCode = rippleCredit(view(),
                     previousAccountID,
                     node().account_,
                     previousNode().saFwdRedeem + previousNode().saFwdIssue,
@@ -235,7 +234,7 @@ TER PathCursor::forwardLiquidityForAccount () const
                 rippleLiquidity (
                     rippleCalc_,
                     QUALITY_ONE,
-                    rippleTransferRate (ledger(), node().account_),
+                    rippleTransferRate (view(), node().account_),
                     previousNode().saFwdRedeem,
                     node().saRevIssue,
                     saPrvRedeemAct,
@@ -267,7 +266,7 @@ TER PathCursor::forwardLiquidityForAccount () const
 
             // Adjust prv --> cur balance : take all inbound
             resultCode = saProvide
-                ? ledger().rippleCredit (
+                ? rippleCredit(view(),
                     previousAccountID,
                     node().account_,
                     previousNode().saFwdRedeem + previousNode().saFwdIssue,
@@ -304,7 +303,7 @@ TER PathCursor::forwardLiquidityForAccount () const
                 rippleLiquidity (
                     rippleCalc_,
                     QUALITY_ONE,
-                    rippleTransferRate (ledger(), node().account_),
+                    rippleTransferRate (view(), node().account_),
                     previousNode().saFwdRedeem,
                     node().saRevDeliver,
                     saPrvRedeemAct,
@@ -332,7 +331,7 @@ TER PathCursor::forwardLiquidityForAccount () const
 
             // Adjust prv --> cur balance : take all inbound
             resultCode   = node().saFwdDeliver
-                ? ledger().rippleCredit (
+                ? rippleCredit(view(),
                     previousAccountID, node().account_,
                     previousNode().saFwdRedeem + previousNode().saFwdIssue,
                     false)
@@ -354,11 +353,12 @@ TER PathCursor::forwardLiquidityForAccount () const
                 if (isXRP (node().issue_))
                     node().saFwdDeliver = std::min (
                         node().saFwdDeliver,
-                        ledger().accountHolds (
+                        accountHolds(view(),
                             node().account_,
                             xrpCurrency(),
                             xrpAccount(),
-                            fhIGNORE_FREEZE)); // XRP can't be frozen
+                            fhIGNORE_FREEZE,
+                            getConfig())); // XRP can't be frozen
 
             }
 
@@ -390,7 +390,7 @@ TER PathCursor::forwardLiquidityForAccount () const
                     << "ACCOUNT -- XRP --> offer";
 
                 // Deliver XRP to limbo.
-                resultCode = ledger().accountSend (
+                resultCode = accountSend(view(),
                     node().account_, xrpAccount(), node().saFwdDeliver);
             }
         }
@@ -450,7 +450,7 @@ TER PathCursor::forwardLiquidityForAccount () const
                 rippleLiquidity (
                     rippleCalc_,
                     QUALITY_ONE,
-                    rippleTransferRate (ledger(), node().account_),
+                    rippleTransferRate (view(), node().account_),
                     previousNode().saFwdDeliver,
                     node().saRevIssue,
                     saPrvDeliverAct,
@@ -475,20 +475,13 @@ TER PathCursor::forwardLiquidityForAccount () const
 
         node().saFwdDeliver.clear (node().saRevDeliver);
 
-        bool do_liquidity;
-
-        if (ripple::legacy::emulate027 (rippleCalc_.mActiveLedger.getLedger ()))
-            do_liquidity = previousNode().saFwdDeliver && node().saRevIssue;
-        else
-            do_liquidity = previousNode().saFwdDeliver && node().saRevDeliver;
-
-        if (do_liquidity)
+        if (previousNode().saFwdDeliver && node().saRevDeliver)
         {
             // Rate : 1.0 : transfer_rate
             rippleLiquidity (
                 rippleCalc_,
                 QUALITY_ONE,
-                rippleTransferRate (ledger(), node().account_),
+                rippleTransferRate (view(), node().account_),
                 previousNode().saFwdDeliver,
                 node().saRevDeliver,
                 saPrvDeliverAct,

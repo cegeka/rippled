@@ -25,12 +25,13 @@
 namespace ripple {
 namespace path {
 
-TER PathCursor::liquidity (LedgerEntrySet const& lesCheckpoint) const
+TER PathCursor::liquidity () const
 {
     TER resultCode = tecPATH_DRY;
     PathCursor pc = *this;
 
-    ledger() = lesCheckpoint.duplicate ();
+    pathState_.resetView (rippleCalc_.view);
+
     for (pc.nodeIndex_ = pc.nodeSize(); pc.nodeIndex_--; )
     {
         WriteLog (lsTRACE, RippleCalc)
@@ -58,8 +59,8 @@ TER PathCursor::liquidity (LedgerEntrySet const& lesCheckpoint) const
     if (resultCode != tesSUCCESS)
         return resultCode;
 
-    // Do forward.
-    ledger() = lesCheckpoint.duplicate ();
+    pathState_.resetView (rippleCalc_.view);
+
     for (pc.nodeIndex_ = 0; pc.nodeIndex_ < pc.nodeSize(); ++pc.nodeIndex_)
     {
         WriteLog (lsTRACE, RippleCalc)

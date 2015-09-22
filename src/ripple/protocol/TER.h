@@ -25,10 +25,11 @@
 namespace ripple {
 
 // See https://ripple.com/wiki/Transaction_errors
-
-// VFALCO TODO consider renaming TER to TxErr or TxResult for clarity.
 //
-enum TER    // aka TransactionEngineResult
+// "Transaction Engine Result"
+// or Transaction ERror.
+//
+enum TER
 {
     // Note: Range is stable.  Exact numbers are currently unstable.  Use tokens.
 
@@ -56,7 +57,6 @@ enum TER    // aka TransactionEngineResult
     temMALFORMED    = -299,
 
     temBAD_AMOUNT,
-    temBAD_AUTH_MASTER,
     temBAD_CURRENCY,
     temBAD_EXPIRATION,
     temBAD_FEE,
@@ -81,6 +81,8 @@ enum TER    // aka TransactionEngineResult
     temREDUNDANT,
     temRIPPLE_EMPTY,
     temDISABLED,
+    temBAD_SIGNER,
+    temBAD_QUORUM,
 
     // An intermediate result used internally, should never be returned.
     temUNCERTAIN,
@@ -111,6 +113,10 @@ enum TER    // aka TransactionEngineResult
     tefWRONG_PRIOR,
     tefMASTER_DISABLED,
     tefMAX_LEDGER,
+    tefBAD_SIGNATURE,
+    tefBAD_QUORUM,
+    tefNOT_MULTI_SIGNING,
+    tefBAD_AUTH_MASTER,
 
     // -99 .. -1: R Retry
     //   sequence too high, no funds for txn fee, originating -account
@@ -193,6 +199,7 @@ enum TER    // aka TransactionEngineResult
     tecNEED_MASTER_KEY          = 142,
     tecDST_TAG_NEEDED           = 143,
     tecINTERNAL                 = 144,
+    tecOVERSIZE                 = 145,
 };
 
 inline bool isTelLocal(TER x)

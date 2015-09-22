@@ -18,13 +18,35 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/app/main/Application.h>
+#include <ripple/json/json_value.h>
+#include <ripple/ledger/ReadView.h>
+#include <ripple/net/RPCErr.h>
+#include <ripple/protocol/ErrorCodes.h>
+#include <ripple/protocol/JsonFields.h>
+#include <ripple/resource/Fees.h>
+#include <ripple/rpc/Context.h>
+#include <ripple/rpc/impl/AccountFromString.h>
+#include <ripple/rpc/impl/LookupLedger.h>
 #include <ripple/rpc/impl/Tuning.h>
 
 namespace ripple {
 
+void appendOfferJson (std::shared_ptr<SLE const> const& offer,
+                      Json::Value& offers)
+{
+    STAmount dirRate = amountFromQuality (
+          getQuality (offer->getFieldH256 (sfBookDirectory)));
+    Json::Value& obj (offers.append (Json::objectValue));
+    offer->getFieldAmount (sfTakerPays).setJson (obj[jss::taker_pays]);
+    offer->getFieldAmount (sfTakerGets).setJson (obj[jss::taker_gets]);
+    obj[jss::seq] = offer->getFieldU32 (sfSequence);
+    obj[jss::flags] = offer->getFieldU32 (sfFlags);
+    obj[jss::quality] = dirRate.getText ();
+};
+
 // {
 //   account: <account>|<account_public_key>
-//   account_index: <number>        // optional, defaults to 0.
 //   ledger_hash : <ledger>
 //   ledger_index : <ledger_index>
 //   limit: integer                 // optional
@@ -36,33 +58,26 @@ Json::Value doAccountOffers (RPC::Context& context)
     if (! params.isMember (jss::account))
         return RPC::missing_field_error (jss::account);
 
-    Ledger::pointer ledger;
-    Json::Value result (RPC::lookupLedger (params, ledger, context.netOps));
+    std::shared_ptr<ReadView const> ledger;
+    auto result = RPC::lookupLedger (ledger, context);
     if (! ledger)
         return result;
 
     std::string strIdent (params[jss::account].asString ());
-    bool bIndex (params.isMember (jss::account_index));
-    int const iIndex (bIndex ? params[jss::account_index].asUInt () : 0);
-    RippleAddress rippleAddress;
+    AccountID accountID;
 
-    Json::Value const jv (RPC::accountFromString (ledger, rippleAddress, bIndex,
-        strIdent, iIndex, false, context.netOps));
-    if (! jv.empty ())
+    if (auto jv = RPC::accountFromString (accountID, strIdent))
     {
-        for (Json::Value::const_iterator it (jv.begin ()); it != jv.end (); ++it)
+        for (auto it = jv.begin (); it != jv.end (); ++it)
             result[it.memberName ()] = it.key ();
 
         return result;
     }
 
     // Get info on account.
-    result[jss::account] = rippleAddress.humanAccountID ();
+    result[jss::account] = getApp().accountIDCache().toBase58 (accountID);
 
-    if (bIndex)
-        result[jss::account_index] = iIndex;
-
-    if (! ledger->hasAccount (rippleAddress))
+    if (! ledger->exists(keylet::account (accountID)))
         return rpcError (rpcACT_NOT_FOUND);
 
     unsigned int limit;
@@ -86,9 +101,8 @@ Json::Value doAccountOffers (RPC::Context& context)
         limit = RPC::Tuning::defaultOffersPerRequest;
     }
 
-    Account const& raAccount (rippleAddress.getAccountID ());
     Json::Value& jsonOffers (result[jss::offers] = Json::arrayValue);
-    std::vector <SLE::pointer> offers;
+    std::vector <std::shared_ptr<SLE const>> offers;
     unsigned int reserve (limit);
     uint256 startAfter;
     std::uint64_t startHint;
@@ -103,24 +117,16 @@ Json::Value doAccountOffers (RPC::Context& context)
             return RPC::expected_field_error (jss::marker, "string");
 
         startAfter.SetHex (marker.asString ());
-        SLE::pointer sleOffer (ledger->getSLEi (startAfter));
+        auto const sleOffer = ledger->read({ltOFFER, startAfter});
 
-        if (sleOffer == nullptr ||
-            sleOffer->getType () != ltOFFER ||
-            raAccount != sleOffer->getFieldAccount160 (sfAccount))
+        if (! sleOffer || accountID != sleOffer->getAccountID (sfAccount))
         {
             return rpcError (rpcINVALID_PARAMS);
         }
 
         startHint = sleOffer->getFieldU64(sfOwnerNode);
-
         // Caller provided the first offer (startAfter), add it as first result
-        Json::Value& obj (jsonOffers.append (Json::objectValue));
-        sleOffer->getFieldAmount (sfTakerPays).setJson (obj[jss::taker_pays]);
-        sleOffer->getFieldAmount (sfTakerGets).setJson (obj[jss::taker_gets]);
-        obj[jss::seq] = sleOffer->getFieldU32 (sfSequence);
-        obj[jss::flags] = sleOffer->getFieldU32 (sfFlags);
-
+        appendOfferJson(sleOffer, jsonOffers);
         offers.reserve (reserve);
     }
     else
@@ -130,19 +136,22 @@ Json::Value doAccountOffers (RPC::Context& context)
         offers.reserve (++reserve);
     }
 
-    if (! ledger->visitAccountItems (raAccount, startAfter, startHint, reserve,
-        [&offers](SLE::ref offer)
-        {
-            if (offer->getType () == ltOFFER)
-            {
-                offers.emplace_back (offer);
-                return true;
-            }
-
-            return false;
-        }))
     {
-        return rpcError (rpcINVALID_PARAMS);
+        if (! forEachItemAfter(*ledger, accountID,
+                startAfter, startHint, reserve,
+            [&offers](std::shared_ptr<SLE const> const& offer)
+            {
+                if (offer->getType () == ltOFFER)
+                {
+                    offers.emplace_back (offer);
+                    return true;
+                }
+
+                return false;
+            }))
+        {
+            return rpcError (rpcINVALID_PARAMS);
+        }
     }
 
     if (offers.size () == reserve)
@@ -155,11 +164,7 @@ Json::Value doAccountOffers (RPC::Context& context)
 
     for (auto const& offer : offers)
     {
-        Json::Value& obj (jsonOffers.append (Json::objectValue));
-        offer->getFieldAmount (sfTakerPays).setJson (obj[jss::taker_pays]);
-        offer->getFieldAmount (sfTakerGets).setJson (obj[jss::taker_gets]);
-        obj[jss::seq] = offer->getFieldU32 (sfSequence);
-        obj[jss::flags] = offer->getFieldU32 (sfFlags);
+        appendOfferJson(offer, jsonOffers);
     }
 
     context.loadType = Resource::feeMediumBurdenRPC;

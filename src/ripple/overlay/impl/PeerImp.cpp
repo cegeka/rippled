@@ -25,9 +25,10 @@
 #include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/misc/IHashRouter.h>
 #include <ripple/app/misc/NetworkOPs.h>
-#include <ripple/app/peers/ClusterNodeStatus.h>
-#include <ripple/app/peers/UniqueNodeList.h>
+#include <ripple/overlay/ClusterNodeStatus.h>
+#include <ripple/app/misc/UniqueNodeList.h>
 #include <ripple/app/tx/InboundTransactions.h>
+#include <ripple/protocol/digest.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/basics/UptimeTimer.h>
 #include <ripple/core/JobQueue.h>
@@ -73,6 +74,7 @@ PeerImp::PeerImp (id_t id, endpoint_type remote_endpoint,
     , sanity_ (Sanity::unknown)
     , insaneTime_ (clock_type::now())
     , publicKey_(publicKey)
+    , creationTime_ (clock_type::now())
     , hello_(hello)
     , usage_(consumer)
     , fee_ (Resource::feeLightPeer)
@@ -188,10 +190,22 @@ PeerImp::send (Message::pointer const& m)
         return;
     if(detaching_)
         return;
+
+    auto sendq_size = send_queue_.size();
+
+    if (sendq_size < Tuning::targetSendQueue)
+    {
+        // To detect a peer that does not read from their
+        // side of the connection, we expect a peer to have
+        // a small senq periodically
+        large_sendq_ = 0;
+    }
+
     send_queue_.push(m);
-    if(send_queue_.size() > 1)
+
+    if(sendq_size != 0)
         return;
-    recent_empty_ = true;
+
     boost::asio::async_write (stream_, boost::asio::buffer(
         send_queue_.front()->getBuffer()), strand_.wrap(std::bind(
             &PeerImp::onWriteMessage, shared_from_this(),
@@ -379,7 +393,7 @@ PeerImp::supportsVersion (int version)
 bool
 PeerImp::hasRange (std::uint32_t uMin, std::uint32_t uMax)
 {
-    return (uMin >= minLedger_) && (uMax <= maxLedger_);
+    return (sanity_ != Sanity::insane) && (uMin >= minLedger_) && (uMax <= maxLedger_);
 }
 
 //------------------------------------------------------------------------------
@@ -451,7 +465,7 @@ PeerImp::setTimer()
 {
     error_code ec;
     timer_.expires_from_now( std::chrono::seconds(
-        (lastPingSeq_ == 0) ? 3 : 15), ec);
+        Tuning::timerSeconds), ec);
 
     if (ec)
     {
@@ -498,25 +512,43 @@ PeerImp::onTimer (error_code const& ec)
         return close();
     }
 
-    if (! recent_empty_)
+    if (large_sendq_++ >= Tuning::sendqIntervals)
     {
-        fail ("Timeout");
+        fail ("Large send queue");
         return;
     }
 
-    recent_empty_ = false;
+    if (no_ping_++ >= Tuning::noPing)
+    {
+        fail ("No ping reply received");
+        return;
+    }
 
-    // Make sequence unpredictable enough that a peer
-    // can't fake their latency
-    lastPingSeq_ += (rand() % 8192);
-    lastPingTime_ = clock_type::now();
+    if (lastPingSeq_ == 0)
+    {
+        // Make sequence unpredictable enough that a peer
+        // can't fake their latency
+        lastPingSeq_ = (rand() % 65536);
+        lastPingTime_ = clock_type::now();
 
-    protocol::TMPing message;
-    message.set_type (protocol::TMPing::ptPING);
-    message.set_seq (lastPingSeq_);
+        protocol::TMPing message;
+        message.set_type (protocol::TMPing::ptPING);
+        message.set_seq (lastPingSeq_);
 
-    send (std::make_shared<Message> (
-        message, protocol::mtPING));
+        send (std::make_shared<Message> (
+            message, protocol::mtPING));
+    }
+    else
+    {
+        // We have an outstanding ping, raise latency
+        auto minLatency = std::chrono::duration_cast <std::chrono::milliseconds>
+            (clock_type::now() - lastPingTime_);
+
+        std::lock_guard<std::mutex> sl(recentLock_);
+
+        if (latency_ < minLatency)
+            latency_ = minLatency;
+    }
 
     setTimer();
 }
@@ -653,6 +685,24 @@ void
 PeerImp::doProtocolStart()
 {
     onReadMessage(error_code(), 0);
+
+    protocol::TMManifests tm;
+    tm.set_history (true);
+
+    overlay_.manifestCache ().for_each_manifest (
+        [&tm](size_t s){tm.mutable_list()->Reserve(s);},
+        [&tm](Manifest const& manifest)
+        {
+            auto const& s = manifest.serialized;
+            auto& tm_e = *tm.add_list();
+            tm_e.set_stobject(s.data(), s.size());
+        });
+
+    if (tm.list_size() > 0)
+    {
+        auto m = std::make_shared<Message>(tm, protocol::mtMANIFESTS);
+        send (m);
+    }
 }
 
 // Called repeatedly with protocol message data
@@ -779,6 +829,15 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMHello> const& m)
 }
 
 void
+PeerImp::onMessage (std::shared_ptr<protocol::TMManifests> const& m)
+{
+    // VFALCO What's the right job type?
+    getApp().getJobQueue().addJob (jtVALIDATION_ut,
+        "receiveManifests", std::bind(&OverlayImpl::onManifests,
+            &overlay_, std::placeholders::_1, m, shared_from_this()));
+}
+
+void
 PeerImp::onMessage (std::shared_ptr <protocol::TMPing> const& m)
 {
     if (m->type () == protocol::TMPing::ptPING)
@@ -800,6 +859,7 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMPing> const& m)
 
         if ((lastPingSeq_ != 0) && (m->seq () == lastPingSeq_))
         {
+            no_ping_ = 0;
             auto estimate = std::chrono::duration_cast <std::chrono::milliseconds>
                 (clock_type::now() - lastPingTime_);
             if (latency_ == unknownLatency)
@@ -951,7 +1011,7 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMTransaction> const& m)
         return;
     }
 
-    SerialIter sit (m->rawtransaction ());
+    SerialIter sit (makeSlice(m->rawtransaction()));
 
     try
     {
@@ -1088,13 +1148,14 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMProposeSet> const& m)
     if ((set.closetime() + 180) < getApp().getOPs().getCloseTimeNC())
         return;
 
+    auto const type = publicKeyType(
+        makeSlice(set.nodepubkey()));
+
     // VFALCO Magic numbers are bad
     // Roll this into a validation function
-    if (
+    if ((! type) ||
         (set.currenttxhash ().size () != 32) ||
-        (set.nodepubkey ().size () < 28) ||
         (set.signature ().size () < 56) ||
-        (set.nodepubkey ().size () > 128) ||
         (set.signature ().size () > 128)
     )
     {
@@ -1103,7 +1164,7 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMProposeSet> const& m)
         return;
     }
 
-    if (set.has_previousledger () && (set.previousledger ().size () != 32))
+    if (set.previousledger ().size () != 32)
     {
         p_journal_.warning << "Proposal: malformed";
         fee_ = Resource::feeInvalidRequest;
@@ -1112,17 +1173,14 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMProposeSet> const& m)
 
     uint256 proposeHash, prevLedger;
     memcpy (proposeHash.begin (), set.currenttxhash ().data (), 32);
+    memcpy (prevLedger.begin (), set.previousledger ().data (), 32);
 
-    if (set.has_previousledger ())
-        memcpy (prevLedger.begin (), set.previousledger ().data (), 32);
-
-    uint256 suppression = LedgerProposal::computeSuppressionID (
+    uint256 suppression = proposalUniqueId (
         proposeHash, prevLedger, set.proposeseq(), set.closetime (),
-            Blob(set.nodepubkey ().begin (), set.nodepubkey ().end ()),
-                Blob(set.signature ().begin (), set.signature ().end ()));
+        Blob(set.nodepubkey ().begin (), set.nodepubkey ().end ()),
+        Blob(set.signature ().begin (), set.signature ().end ()));
 
-    if (! getApp().getHashRouter ().addSuppressionPeer (
-        suppression, id_))
+    if (! getApp().getHashRouter ().addSuppressionPeer (suppression, id_))
     {
         p_journal_.trace << "Proposal: duplicate";
         return;
@@ -1139,25 +1197,28 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMProposeSet> const& m)
 
     bool isTrusted = getApp().getUNL ().nodeInUNL (signerPublic);
 
-    if (!isTrusted && (sanity_.load() == Sanity::insane))
+    if (!isTrusted)
     {
-        p_journal_.debug << "Proposal: Dropping UNTRUSTED (insane)";
-        return;
-    }
+        if (sanity_.load() == Sanity::insane)
+        {
+            p_journal_.debug << "Proposal: Dropping UNTRUSTED (insane)";
+            return;
+        }
 
-    if (!isTrusted && getApp().getFeeTrack ().isLoadedLocal ())
-    {
-        p_journal_.debug << "Proposal: Dropping UNTRUSTED (load)";
-        return;
+        if (getApp().getFeeTrack ().isLoadedLocal ())
+        {
+            p_journal_.debug << "Proposal: Dropping UNTRUSTED (load)";
+            return;
+        }
     }
 
     p_journal_.trace <<
         "Proposal: " << (isTrusted ? "trusted" : "UNTRUSTED");
 
-    LedgerProposal::pointer proposal = std::make_shared<LedgerProposal> (
-        prevLedger.isNonZero () ? prevLedger : uint256(),
-            set.proposeseq (), proposeHash, set.closetime (),
-                signerPublic, suppression);
+    auto proposal = std::make_shared<LedgerProposal> (
+        prevLedger, set.proposeseq (), proposeHash, set.closetime (),
+            signerPublic, PublicKey(makeSlice(set.nodepubkey())),
+                suppression);
 
     getApp().getJobQueue ().addJob (isTrusted ? jtPROPOSAL_t : jtPROPOSAL_ut,
         "recvPropose->checkPropose", std::bind(beast::weak_fn(
@@ -1364,10 +1425,12 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMValidation> const& m)
 
     try
     {
-        Serializer s (m->validation ());
-        SerialIter sit (s);
-        STValidation::pointer val = std::make_shared <
-            STValidation> (std::ref (sit), false);
+        STValidation::pointer val;
+        {
+            SerialIter sit (makeSlice(m->validation()));
+            val = std::make_shared <
+                STValidation> (std::ref (sit), false);
+        }
 
         if (closeTime > (120 + val->getFieldU32(sfSigningTime)))
         {
@@ -1376,8 +1439,8 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMValidation> const& m)
             return;
         }
 
-        if (! getApp().getHashRouter ().addSuppressionPeer (
-            s.getSHA512Half(), id_))
+        if (! getApp().getHashRouter ().addSuppressionPeer(
+            sha512Half(makeSlice(m->validation())), id_))
         {
             p_journal_.trace << "Validation: duplicate";
             return;
@@ -1425,6 +1488,14 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMGetObjectByHash> const& m)
     if (packet.query ())
     {
         // this is a query
+        if (send_queue_.size() >= Tuning::dropSendQueue)
+        {
+            if (p_journal_.debug) p_journal_.debug <<
+                "GetObject: Large send queue";
+            return;
+        }
+
+
         if (packet.type () == protocol::TMGetObjectByHash::otFETCH_PACK)
         {
             doFetchPack (m);
@@ -1456,7 +1527,7 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMGetObjectByHash> const& m)
                 memcpy (hash.begin (), obj.hash ().data (), 256 / 8);
                 // VFALCO TODO Move this someplace more sensible so we dont
                 //             need to inject the NodeStore interfaces.
-                NodeObject::pointer hObj =
+                std::shared_ptr<NodeObject> hObj =
                     getApp().getNodeStore ().fetch (hash);
 
                 if (hObj)
@@ -1502,7 +1573,7 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMGetObjectByHash> const& m)
                                 "GetObj: Full fetch pack for " << pLSeq;
 
                         pLSeq = obj.ledgerseq ();
-                        pLDo = !getApp().getOPs ().haveLedger (pLSeq);
+                        pLDo = !getApp().getLedgerMaster ().haveLedger (pLSeq);
 
                         if (!pLDo)
                                 p_journal_.debug <<
@@ -1521,7 +1592,7 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMGetObjectByHash> const& m)
                         std::make_shared< Blob > (
                             obj.data ().begin (), obj.data ().end ()));
 
-                    getApp().getOPs ().addFetchPack (hash, data);
+                    getApp().getLedgerMaster ().addFetchPack (hash, data);
                 }
             }
         }
@@ -1531,7 +1602,7 @@ PeerImp::onMessage (std::shared_ptr <protocol::TMGetObjectByHash> const& m)
             p_journal_.debug << "GetObj: Partial fetch pack for " << pLSeq;
 
         if (packet.type () == protocol::TMGetObjectByHash::otFETCH_PACK)
-            getApp().getOPs ().gotFetchPack (progress, pLSeq);
+            getApp().getLedgerMaster ().gotFetchPack (progress, pLSeq);
     }
 }
 
@@ -1611,7 +1682,7 @@ PeerImp::doFetchPack (const std::shared_ptr<protocol::TMGetObjectByHash>& packet
     memcpy (hash.begin (), packet->ledgerhash ().data (), 32);
 
     getApp().getJobQueue ().addJob (jtPACK, "MakeFetchPack",
-        std::bind (&NetworkOPs::makeFetchPack, &getApp().getOPs (),
+        std::bind (&LedgerMaster::makeFetchPack, &getApp().getLedgerMaster (),
             std::placeholders::_1, std::weak_ptr<PeerImp> (shared_from_this ()),
                 packet, hash, UptimeTimer::getInstance ().getElapsedSeconds ()));
 }
@@ -1652,7 +1723,8 @@ PeerImp::checkTransaction (Job&, int flags,
         }
 
         bool const trusted (flags & SF_TRUSTED);
-        getApp().getOPs ().processTransaction (tx, trusted, false, false);
+        getApp().getOPs ().processTransaction (
+            tx, trusted, false, NetworkOPs::FailHard::no);
     }
     catch (...)
     {
@@ -1667,7 +1739,6 @@ PeerImp::checkPropose (Job& job,
     std::shared_ptr <protocol::TMProposeSet> const& packet,
         LedgerProposal::pointer proposal)
 {
-    bool sigGood = false;
     bool isTrusted = (job.getType () == jtPROPOSAL_t);
 
     p_journal_.trace <<
@@ -1676,66 +1747,39 @@ PeerImp::checkPropose (Job& job,
     assert (packet);
     protocol::TMProposeSet& set = *packet;
 
-
-    uint256 consensusLCL;
-    if (! set.has_previousledger() || ! isTrusted)
+    if (! cluster() && ! proposal->checkSign (set.signature ()))
     {
-        std::lock_guard<Application::MutexType> lock(getApp().getMasterMutex());
-        consensusLCL = getApp().getOPs ().getConsensusLCL ();
-    }
-
-    uint256 prevLedger;
-    if (set.has_previousledger ())
-    {
-        // proposal includes a previous ledger
-        p_journal_.trace <<
-            "proposal with previous ledger";
-        memcpy (prevLedger.begin (), set.previousledger ().data (), 256 / 8);
-        proposal->setPrevLedger (prevLedger);
-
-        if (! cluster() && !proposal->checkSign (set.signature ()))
-        {
-            p_journal_.warning <<
-                "Proposal with previous ledger fails sig check";
-            charge (Resource::feeInvalidSignature);
-            return;
-        }
-        else
-            sigGood = true;
-    }
-    else
-    {
-        proposal->setPrevLedger (consensusLCL);
-        if (consensusLCL.isNonZero () && proposal->checkSign (set.signature ()))
-        {
-            prevLedger = consensusLCL;
-            sigGood = true;
-        }
-        else
-        {
-            // Could be mismatched prev ledger
-            p_journal_.warning <<
-                "Ledger proposal fails signature check";
-            proposal->setSignature (set.signature ());
-        }
+        p_journal_.warning <<
+            "Proposal fails sig check";
+        charge (Resource::feeInvalidSignature);
+        return;
     }
 
     if (isTrusted)
     {
         getApp().getOPs ().processTrustedProposal (
-            proposal, packet, publicKey_, prevLedger, sigGood);
-    }
-    else if (sigGood && (prevLedger == consensusLCL))
-    {
-        // relay untrusted proposal
-        p_journal_.trace <<
-            "relaying UNTRUSTED proposal";
-        overlay_.relay(set, proposal->getSuppressionID());
+            proposal, packet, publicKey_);
     }
     else
     {
-        p_journal_.debug <<
-            "Not relaying UNTRUSTED proposal";
+        uint256 consensusLCL;
+        {
+            std::lock_guard<Application::MutexType> lock (getApp().getMasterMutex());
+            consensusLCL = getApp().getOPs ().getConsensusLCL ();
+        }
+
+        if (consensusLCL == proposal->getPrevLedger())
+        {
+            // relay untrusted proposal
+            p_journal_.trace <<
+                "relaying UNTRUSTED proposal";
+            overlay_.relay(set, proposal->getSuppressionID());
+        }
+        else
+        {
+            p_journal_.debug <<
+                "Not relaying UNTRUSTED proposal";
+        }
     }
 }
 
@@ -1832,7 +1876,8 @@ void
 PeerImp::getLedger (std::shared_ptr<protocol::TMGetLedger> const& m)
 {
     protocol::TMGetLedger& packet = *m;
-    std::shared_ptr<SHAMap> map;
+    std::shared_ptr<SHAMap> shared;
+    SHAMap const* map = nullptr;
     protocol::TMLedgerData reply;
     bool fatLeaves = true;
 
@@ -1858,9 +1903,10 @@ PeerImp::getLedger (std::shared_ptr<protocol::TMGetLedger> const& m)
         uint256 txHash;
         memcpy (txHash.begin (), packet.ledgerhash ().data (), 32);
 
-        map = getApp().getInboundTransactions().getSet (txHash, false);
+        shared = getApp().getInboundTransactions().getSet (txHash, false);
+        map = shared.get();
 
-        if (!map)
+        if (! map)
         {
             if (packet.has_querytype () && !packet.has_requestcookie ())
             {
@@ -1895,6 +1941,13 @@ PeerImp::getLedger (std::shared_ptr<protocol::TMGetLedger> const& m)
     }
     else
     {
+        if (send_queue_.size() >= Tuning::dropSendQueue)
+        {
+            if (p_journal_.debug) p_journal_.debug <<
+                "GetLedger: Large send queue";
+            return;
+        }
+
         if (getApp().getFeeTrack().isLoadedLocal() && ! cluster())
         {
             if (p_journal_.debug) p_journal_.debug <<
@@ -1976,9 +2029,9 @@ PeerImp::getLedger (std::shared_ptr<protocol::TMGetLedger> const& m)
         {
             ledger = getApp().getLedgerMaster ().getClosedLedger ();
 
-            if (ledger && !ledger->isClosed ())
+            if (ledger && ledger->info().open)
                 ledger = getApp().getLedgerMaster ().getLedgerBySeq (
-                    ledger->getLedgerSeq () - 1);
+                    ledger->info().seq - 1);
         }
         else
         {
@@ -1989,7 +2042,7 @@ PeerImp::getLedger (std::shared_ptr<protocol::TMGetLedger> const& m)
         }
 
         if ((!ledger) || (packet.has_ledgerseq () && (
-            packet.ledgerseq () != ledger->getLedgerSeq ())))
+            packet.ledgerseq () != ledger->info().seq)))
         {
             charge (Resource::feeInvalidRequest);
 
@@ -2000,7 +2053,7 @@ PeerImp::getLedger (std::shared_ptr<protocol::TMGetLedger> const& m)
             return;
         }
 
-        if (!packet.has_ledgerseq() && (ledger->getLedgerSeq() <
+        if (!packet.has_ledgerseq() && (ledger->info().seq <
             getApp().getLedgerMaster().getEarliestFetch()))
         {
             if (p_journal_.debug) p_journal_.debug <<
@@ -2011,7 +2064,7 @@ PeerImp::getLedger (std::shared_ptr<protocol::TMGetLedger> const& m)
         // Fill out the reply
         uint256 lHash = ledger->getHash ();
         reply.set_ledgerhash (lHash.begin (), lHash.size ());
-        reply.set_ledgerseq (ledger->getLedgerSeq ());
+        reply.set_ledgerseq (ledger->info().seq);
         reply.set_type (packet.itype ());
 
         if (packet.itype () == protocol::liBASE)
@@ -2024,30 +2077,28 @@ PeerImp::getLedger (std::shared_ptr<protocol::TMGetLedger> const& m)
             reply.add_nodes ()->set_nodedata (
                 nData.getDataPtr (), nData.getLength ());
 
-            std::shared_ptr<SHAMap> map = ledger->peekAccountStateMap ();
-
-            if (map && map->getHash ().isNonZero ())
+            auto const& stateMap = ledger->stateMap ();
+            if (stateMap.getHash() != zero)
             {
                 // return account state root node if possible
                 Serializer rootNode (768);
-
-                if (map->getRootNode (rootNode, snfWIRE))
+                if (stateMap.getRootNode(rootNode, snfWIRE))
                 {
                     reply.add_nodes ()->set_nodedata (
                         rootNode.getDataPtr (), rootNode.getLength ());
 
-                    if (ledger->getTransHash ().isNonZero ())
+                    if (ledger->info().txHash != zero)
                     {
-                        map = ledger->peekTransactionMap ();
+                        auto const& txMap = ledger->txMap ();
 
-                        if (map && map->getHash ().isNonZero ())
+                        if (txMap.getHash() != zero)
                         {
                             rootNode.erase ();
 
-                            if (map->getRootNode (rootNode, snfWIRE))
+                            if (txMap.getRootNode (rootNode, snfWIRE))
                                 reply.add_nodes ()->set_nodedata (
                                     rootNode.getDataPtr (),
-                                        rootNode.getLength ());
+                                    rootNode.getLength ());
                         }
                     }
                 }
@@ -2061,13 +2112,13 @@ PeerImp::getLedger (std::shared_ptr<protocol::TMGetLedger> const& m)
 
         if (packet.itype () == protocol::liTX_NODE)
         {
-            map = ledger->peekTransactionMap ();
+            map = &ledger->txMap ();
             logMe += " TX:";
             logMe += to_string (map->getHash ());
         }
         else if (packet.itype () == protocol::liAS_NODE)
         {
-            map = ledger->peekAccountStateMap ();
+            map = &ledger->stateMap ();
             logMe += " AS:";
             logMe += to_string (map->getHash ());
         }
@@ -2106,7 +2157,9 @@ PeerImp::getLedger (std::shared_ptr<protocol::TMGetLedger> const& m)
 
         try
         {
-            if (map->getNodeFat (mn, nodeIDs, rawNodes, fatLeaves, depth))
+            // We are guaranteed that map is non-null, but we need to check
+            // to keep the compiler happy.
+            if (map && map->getNodeFat (mn, nodeIDs, rawNodes, fatLeaves, depth))
             {
                 assert (nodeIDs.size () == rawNodes.size ());
                 if (p_journal_.trace) p_journal_.trace <<
@@ -2170,7 +2223,7 @@ PeerImp::peerTXData (Job&, uint256 const& hash,
 }
 
 int
-PeerImp::getScore (bool haveItem)
+PeerImp::getScore (bool haveItem) const
 {
    // Random component of score, used to break ties and avoid
    // overloading the "best" peer

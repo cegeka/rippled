@@ -29,6 +29,7 @@
 namespace ripple {
 
 class NetworkOPs;
+class LedgerMaster;
 
 namespace RPC {
 
@@ -38,11 +39,22 @@ struct Context
     Json::Value params;
     Resource::Charge& loadType;
     NetworkOPs& netOps;
+    LedgerMaster& ledgerMaster;
     Role role;
     InfoSub::pointer infoSub;
-    RPC::Yield yield;
+    Suspend suspend;
+    Callback yield;
     NodeStore::ScopedMetrics metrics;
 };
+
+inline
+void suspend(Context const& context, Continuation const& continuation)
+{
+    if (context.suspend)
+        context.suspend(continuation);
+    else
+        continuation(doNothingCallback);
+}
 
 } // RPC
 } // ripple

@@ -32,7 +32,7 @@ template <typename Integer>
 class VotableInteger
 {
 private:
-    typedef std::map <Integer, int> map_type;
+    using map_type = std::map <Integer, int>;
     Integer mCurrent;   // The current setting
     Integer mTarget;    // The setting we want
     map_type mVoteMap;
@@ -102,6 +102,7 @@ public:
 
     void
     doVoting (Ledger::ref lastClosedLedger,
+        ValidationSet const& parentValidations,
         std::shared_ptr<SHAMap> const& initialPosition) override;
 };
 
@@ -145,10 +146,11 @@ FeeVoteImpl::doValidation (Ledger::ref lastClosedLedger,
 
 void
 FeeVoteImpl::doVoting (Ledger::ref lastClosedLedger,
+    ValidationSet const& set,
     std::shared_ptr<SHAMap> const& initialPosition)
 {
     // LCL must be flag ledger
-    assert ((lastClosedLedger->getLedgerSeq () % 256) == 0);
+    assert ((lastClosedLedger->info().seq % 256) == 0);
 
     detail::VotableInteger<std::uint64_t> baseFeeVote (
         lastClosedLedger->getBaseFee (), target_.reference_fee);
@@ -159,10 +161,6 @@ FeeVoteImpl::doVoting (Ledger::ref lastClosedLedger,
     detail::VotableInteger<std::uint32_t> incReserveVote (
         lastClosedLedger->getReserveInc (), target_.owner_reserve);
 
-    // get validations for ledger before flag
-    ValidationSet const set =
-        getApp().getValidations ().getValidations (
-            lastClosedLedger->getParentHash ());
     for (auto const& e : set)
     {
         STValidation const& val = *e.second;
@@ -214,7 +212,7 @@ FeeVoteImpl::doVoting (Ledger::ref lastClosedLedger,
             "/" << incReserve;
 
         STTx trans (ttFEE);
-        trans.setFieldAccount (sfAccount, Account ());
+        trans.setAccountID (sfAccount, AccountID ());
         trans.setFieldU64 (sfBaseFee, baseFee);
         trans.setFieldU32 (sfReferenceFeeUnits, 10);
         trans.setFieldU32 (sfReserveBase, baseReserve);
@@ -226,7 +224,7 @@ FeeVoteImpl::doVoting (Ledger::ref lastClosedLedger,
             journal_.warning << "Vote: " << txID;
 
         Serializer s;
-        trans.add (s, true);
+        trans.add (s);
 
         auto tItem = std::make_shared<SHAMapItem> (txID, s.peekData ());
 

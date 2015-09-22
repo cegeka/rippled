@@ -33,46 +33,73 @@ public:
         Serializer ser;
         s.add (ser);
 
-        SerialIter sit (ser);
+        SerialIter sit (ser.slice());
         return STAmount(sit, sfGeneric);
     }
 
     //--------------------------------------------------------------------------
+    STAmount roundSelf (STAmount const& amount)
+    {
+        if (amount.native ())
+            return amount;
 
-    bool roundTest (int n, int d, int m)
+        std::uint64_t mantissa = amount.mantissa ();
+        std::uint64_t valueDigits = mantissa % 1000000000;
+
+        if (valueDigits == 1)
+        {
+            mantissa--;
+
+            if (mantissa < STAmount::cMinValue)
+                return { amount.issue (), mantissa, amount.exponent (),
+                    amount.negative () };
+
+            return { amount.issue (), mantissa, amount.exponent (),
+                amount.native(), amount.negative (), STAmount::unchecked {} };
+        }
+
+        if (valueDigits == 999999999)
+        {
+            mantissa++;
+
+            if (mantissa > STAmount::cMaxValue)
+                return { amount.issue (), mantissa, amount.exponent (),
+                    amount.negative () };
+
+            return { amount.issue (), mantissa, amount.exponent (),
+                amount.native(), amount.negative (), STAmount::unchecked {} };
+        }
+
+        return amount;
+    }
+
+    void roundTest (int n, int d, int m)
     {
         // check STAmount rounding
         STAmount num (noIssue(), n);
         STAmount den (noIssue(), d);
         STAmount mul (noIssue(), m);
         STAmount quot = divide (n, d, noIssue());
-        STAmount res = multiply (quot, mul, noIssue());
+        STAmount res = roundSelf (multiply (quot, mul, noIssue()));
 
-        expect (! res.isNative (), "Product should not be native");
-
-        res.roundSelf ();
+        expect (! res.native (), "Product should not be native");
 
         STAmount cmp (noIssue(), (n * m) / d);
 
-        expect (! cmp.isNative (), "Comparison amount should not be native");
+        expect (! cmp.native (), "Comparison amount should not be native");
+
+        expect (cmp.issue().currency == res.issue().currency,
+            "Product and result should be comparable");
 
         if (res != cmp)
         {
-            cmp.throwComparable (res);
-
-            WriteLog (lsWARNING, STAmount) << "(" << num.getText () << "/" << den.getText () << ") X " << mul.getText () << " = "
-                                       << res.getText () << " not " << cmp.getText ();
-
+            log <<
+                "(" << num.getText () << "/" << den.getText () <<
+                ") X " << mul.getText () << " = " << res.getText () <<
+                " not " << cmp.getText ();
             fail ("Rounding");
-
-            return false;
+            return;
         }
-        else
-        {
-            pass ();
-        }
-
-        return true;
     }
 
     void mulTest (int a, int b)
@@ -81,20 +108,16 @@ public:
         STAmount bb (noIssue(), b);
         STAmount prod1 (multiply (aa, bb, noIssue()));
 
-        expect (! prod1.isNative ());
+        expect (! prod1.native ());
 
         STAmount prod2 (noIssue(), static_cast<std::uint64_t> (a) * static_cast<std::uint64_t> (b));
 
         if (prod1 != prod2)
         {
-            WriteLog (lsWARNING, STAmount) << "nn(" << aa.getFullText () << " * " << bb.getFullText () << ") = " << prod1.getFullText ()
-                                           << " not " << prod2.getFullText ();
-
+            log <<
+                "nn(" << aa.getFullText () << " * " << bb.getFullText () <<
+                ") = " << prod1.getFullText () << " not " << prod2.getFullText ();
             fail ("Multiplication result is not exact");
-        }
-        else
-        {
-            pass ();
         }
     }
 
@@ -103,14 +126,15 @@ public:
     void testSetValue (
         std::string const& value, Issue const& issue, bool success = true)
     {
-        STAmount amount (issue);
-
-        bool const result = amount.setValue (value);
-
-        expect (result == success, "parse " + value);
-
-        if (success)
+        try
+        {
+            STAmount const amount = amountFromString (issue, value);
             expect (amount.getText () == value, "format " + value);
+        }
+        catch (std::exception const&)
+        {
+            expect (!success, "parse " + value + " should fail");
+        }
     }
 
     void testSetValue ()
@@ -151,7 +175,7 @@ public:
         {
             testcase ("set value (iou)");
 
-            Issue const usd (Currency (0x5553440000000000), Account (0x4985601));
+            Issue const usd (Currency (0x5553440000000000), AccountID (0x4985601));
 
             testSetValue ("1", usd);
             testSetValue ("10", usd);
@@ -187,8 +211,8 @@ public:
         unexpected (serializeAndDeserialize (zeroSt) != zeroSt, "STAmount fail");
         unexpected (serializeAndDeserialize (one) != one, "STAmount fail");
         unexpected (serializeAndDeserialize (hundred) != hundred, "STAmount fail");
-        unexpected (!zeroSt.isNative (), "STAmount fail");
-        unexpected (!hundred.isNative (), "STAmount fail");
+        unexpected (!zeroSt.native (), "STAmount fail");
+        unexpected (!hundred.native (), "STAmount fail");
         unexpected (zeroSt != zero, "STAmount fail");
         unexpected (one == zero, "STAmount fail");
         unexpected (hundred == zero, "STAmount fail");
@@ -257,7 +281,8 @@ public:
         const std::string cur = "015841551A748AD2C1F76FF6ECB0CCCD00000000";
         unexpected (!to_currency (c, cur), "create custom currency");
         unexpected (to_string (c) != cur, "check custom currency");
-        unexpected (c != Currency (cur), "check custom currency");
+        unexpected (c != Currency (
+            from_hex_text<Currency>(cur)), "check custom currency");
     }
 
     //--------------------------------------------------------------------------
@@ -269,8 +294,8 @@ public:
         unexpected (serializeAndDeserialize (zeroSt) != zeroSt, "STAmount fail");
         unexpected (serializeAndDeserialize (one) != one, "STAmount fail");
         unexpected (serializeAndDeserialize (hundred) != hundred, "STAmount fail");
-        unexpected (zeroSt.isNative (), "STAmount fail");
-        unexpected (hundred.isNative (), "STAmount fail");
+        unexpected (zeroSt.native (), "STAmount fail");
+        unexpected (hundred.native (), "STAmount fail");
         unexpected (zeroSt != zero, "STAmount fail");
         unexpected (one == zero, "STAmount fail");
         unexpected (hundred == zero, "STAmount fail");

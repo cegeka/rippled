@@ -18,6 +18,12 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/basics/Log.h>
+#include <ripple/json/json_value.h>
+#include <ripple/net/RPCErr.h>
+#include <ripple/protocol/ErrorCodes.h>
+#include <ripple/protocol/JsonFields.h>
+#include <ripple/rpc/Context.h>
 #include <boost/algorithm/string/predicate.hpp>
 
 namespace ripple {
@@ -35,7 +41,7 @@ Json::Value doLogLevel (RPC::Context& context)
                 Logs::toString(Logs::fromSeverity(deprecatedLogs().severity()));
         std::vector< std::pair<std::string, std::string> > logTable (
             deprecatedLogs().partition_severities());
-        typedef std::map<std::string, std::string>::value_type stringPair;
+        using stringPair = std::map<std::string, std::string>::value_type;
         for (auto const& it : logTable)
             lev[it.first] = it.second;
 

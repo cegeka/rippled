@@ -56,9 +56,14 @@ The following environment variables modify the build environment:
       If set, used to detect a toolchain.
 
     BOOST_ROOT
-      Path to the boost directory. 
+      Path to the boost directory.
     OPENSSL_ROOT
       Path to the openssl directory.
+
+The following extra options may be used:
+    --ninja         Generate a `build.ninja` build file for the specified target
+                    (see: https://martine.github.io/ninja/). Only gcc and clang targets
+                     are supported.
 
 '''
 #
@@ -83,10 +88,15 @@ import time
 import SCons.Action
 
 sys.path.append(os.path.join('src', 'beast', 'site_scons'))
+sys.path.append(os.path.join('src', 'ripple', 'site_scons'))
 
 import Beast
+import scons_to_ninja
 
 #------------------------------------------------------------------------------
+
+AddOption('--ninja', dest='ninja', action='store_true',
+          help='generate ninja build file build.ninja')
 
 def parse_time(t):
     return time.strptime(t, '%a %b %d %H:%M:%S %Z %Y')
@@ -591,6 +601,7 @@ class ObjectBuilder(object):
         self.env = env
         self.variant_dirs = variant_dirs
         self.objects = []
+        self.child_envs = []
 
     def add_source_files(self, *filenames, **kwds):
         for filename in filenames:
@@ -598,6 +609,7 @@ class ObjectBuilder(object):
             if kwds:
                 env = env.Clone()
                 env.Prepend(**kwds)
+                self.child_envs.append(env)
             o = env.Object(Beast.variantFile(filename, self.variant_dirs))
             self.objects.append(o)
 
@@ -632,26 +644,39 @@ def get_soci_sources(style):
                        CPPPATH=cpp_path)
     return result
 
+def get_common_sources():
+    result = []
+    append_sources(
+        result,
+        'src/ripple/unity/secp256k1.cpp',
+        CPPPATH=[
+            'src/secp256k1',
+        ])
+    return result
 
 def get_classic_sources():
     result = []
     append_sources(
         result,
-        *list_sources('src/ripple/app', '.cpp'),
+        *list_sources('src/ripple/core', '.cpp'),
         CPPPATH=[
             'src/soci/src/core',
             'src/sqlite']
     )
+    append_sources(result, *list_sources('src/ripple/app', '.cpp'))
     append_sources(result, *list_sources('src/ripple/basics', '.cpp'))
-    append_sources(result, *list_sources('src/ripple/core', '.cpp'))
     append_sources(result, *list_sources('src/ripple/crypto', '.cpp'))
     append_sources(result, *list_sources('src/ripple/json', '.cpp'))
+    append_sources(result, *list_sources('src/ripple/ledger', '.cpp'))
     append_sources(result, *list_sources('src/ripple/legacy', '.cpp'))
     append_sources(result, *list_sources('src/ripple/net', '.cpp'))
     append_sources(result, *list_sources('src/ripple/overlay', '.cpp'))
     append_sources(result, *list_sources('src/ripple/peerfinder', '.cpp'))
     append_sources(result, *list_sources('src/ripple/protocol', '.cpp'))
+    append_sources(result, *list_sources('src/ripple/rpc', '.cpp'))
     append_sources(result, *list_sources('src/ripple/shamap', '.cpp'))
+    append_sources(result, *list_sources('src/ripple/test', '.cpp'))
+   
     append_sources(
         result,
         *list_sources('src/ripple/nodestore', '.cpp'),
@@ -662,36 +687,33 @@ def get_classic_sources():
         ])
 
     result += get_soci_sources('classic')
-    return result
+    result += get_common_sources()
 
+    return result
 
 def get_unity_sources():
     result = []
     append_sources(
         result,
-        'src/ripple/unity/app.cpp',
-        'src/ripple/unity/app1.cpp',
-        'src/ripple/unity/app2.cpp',
-        'src/ripple/unity/app3.cpp',
-        'src/ripple/unity/app4.cpp',
-        'src/ripple/unity/app5.cpp',
-        'src/ripple/unity/app6.cpp',
-        'src/ripple/unity/app7.cpp',
-        'src/ripple/unity/app8.cpp',
-        'src/ripple/unity/app9.cpp',
+        'src/ripple/unity/app_ledger.cpp',
+        'src/ripple/unity/app_main.cpp',
+        'src/ripple/unity/app_misc.cpp',
+        'src/ripple/unity/app_paths.cpp',
+        'src/ripple/unity/app_tests.cpp',
+        'src/ripple/unity/app_tx.cpp',
         'src/ripple/unity/core.cpp',
         'src/ripple/unity/basics.cpp',
         'src/ripple/unity/crypto.cpp',
+        'src/ripple/unity/ledger.cpp',
         'src/ripple/unity/net.cpp',
         'src/ripple/unity/overlay.cpp',
         'src/ripple/unity/peerfinder.cpp',
         'src/ripple/unity/json.cpp',
         'src/ripple/unity/protocol.cpp',
+        'src/ripple/unity/rpcx.cpp',
         'src/ripple/unity/shamap.cpp',
-        'src/ripple/unity/legacy.cpp',
+        'src/ripple/unity/test.cpp',
     )
-
-    result += get_soci_sources('unity')
 
     append_sources(
         result,
@@ -701,6 +723,9 @@ def get_unity_sources():
             'src/snappy/snappy',
             'src/snappy/config',
         ])
+
+    result += get_soci_sources('unity')
+    result += get_common_sources()
 
     return result
 
@@ -737,6 +762,31 @@ def should_prepare_targets(style, toolchain, variant):
     for t in COMMAND_LINE_TARGETS:
         if should_prepare_target(t, style, toolchain, variant):
             return True
+
+def should_build_ninja(style, toolchain, variant):
+    """
+    Return True if a ninja build file should be generated.
+
+    Typically, scons will be called as follows to generate a ninja build file:
+    `scons ninja=1 gcc.debug` where `gcc.debug` may be replaced with any of our
+    non-visual studio targets. Raise an exception if we cannot generate the
+    requested ninja build file (for example, if multiple targets are requested).
+    """
+    if not GetOption('ninja'):
+        return False
+    if len(COMMAND_LINE_TARGETS) != 1:
+        raise Exception('Can only generate a ninja file for a single target')
+    cl_target = COMMAND_LINE_TARGETS[0]
+    if 'vcxproj' in cl_target:
+        raise Exception('Cannot generate a ninja file for a vcxproj')
+    s = cl_target.split('.')
+    if ( style == 'unity' and 'nounity' in s or
+         style == 'classic' and 'nounity' not in s or
+         len(s) == 1 ):
+        return False
+    if len(s) == 2 or len(s) == 3:
+        return s[0] == toolchain and s[1] == variant
+    return False
 
 for tu_style in ['classic', 'unity']:
     if tu_style == 'classic':
@@ -789,7 +839,6 @@ for tu_style in ['classic', 'unity']:
                 'src/ripple/unity/protobuf.cpp',
                 'src/ripple/unity/ripple.proto.cpp',
                 'src/ripple/unity/resource.cpp',
-                'src/ripple/unity/rpcx.cpp',
                 'src/ripple/unity/server.cpp',
                 'src/ripple/unity/validators.cpp',
                 'src/ripple/unity/websocket02.cpp'
@@ -866,6 +915,13 @@ for tu_style in ['classic', 'unity']:
                 aliases[variant].extend(target)
                 env.Alias(variant_name, target)
 
+            # ninja support
+            if should_build_ninja(tu_style, toolchain, variant):
+                print('Generating ninja: {}:{}:{}'.format(tu_style, toolchain, variant))
+                scons_to_ninja.GenerateNinjaFile(
+                    [object_builder.env] + object_builder.child_envs,
+                    dest_file='build.ninja')
+
 for key, value in aliases.iteritems():
     env.Alias(key, value)
 
@@ -904,4 +960,3 @@ def do_count(target, source, env):
     print "Total unit test lines: %d" % lines
 
 PhonyTargets(env, count = do_count)
-

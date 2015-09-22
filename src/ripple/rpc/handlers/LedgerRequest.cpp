@@ -20,6 +20,13 @@
 #include <BeastConfig.h>
 #include <ripple/app/ledger/InboundLedgers.h>
 #include <ripple/app/ledger/LedgerToJson.h>
+#include <ripple/app/ledger/LedgerMaster.h>
+#include <ripple/app/main/Application.h>
+#include <ripple/net/RPCErr.h>
+#include <ripple/rpc/Context.h>
+#include <ripple/protocol/ErrorCodes.h>
+#include <ripple/protocol/JsonFields.h>
+#include <ripple/rpc/impl/Tuning.h>
 
 namespace ripple {
 
@@ -46,42 +53,45 @@ Json::Value doLedgerRequest (RPC::Context& context)
         auto const& jsonHash = context.params[jss::ledger_hash];
         if (!jsonHash.isString() || !ledgerHash.SetHex (jsonHash.asString ()))
             return RPC::invalid_field_message (jss::ledger_hash);
-    } else {
+    }
+    else
+    {
         auto const& jsonIndex = context.params[jss::ledger_index];
         if (!jsonIndex.isNumeric ())
             return RPC::invalid_field_message (jss::ledger_index);
 
         // We need a validated ledger to get the hash from the sequence
-        if (ledgerMaster.getValidatedLedgerAge() > 120)
+        if (ledgerMaster.getValidatedLedgerAge() >
+            RPC::Tuning::maxValidatedLedgerAge)
             return rpcError (rpcNO_CURRENT);
 
         auto ledgerIndex = jsonIndex.asInt();
         auto ledger = ledgerMaster.getValidatedLedger();
 
-        if (ledgerIndex >= ledger->getLedgerSeq())
+        if (ledgerIndex >= ledger->info().seq)
             return RPC::make_param_error("Ledger index too large");
 
+        auto const j = deprecatedLogs().journal("RPCHandler");
         // Try to get the hash of the desired ledger from the validated ledger
-        ledgerHash = ledger->getLedgerHash (ledgerIndex);
-
-        if (ledgerHash == zero)
+        auto neededHash = hashOfSeq(*ledger, ledgerIndex, j);
+        if (! neededHash)
         {
             // Find a ledger more likely to have the hash of the desired ledger
-            auto refIndex = (ledgerIndex + 255) & (~255);
-            auto refHash = ledger->getLedgerHash (refIndex);
-            assert (refHash.isNonZero ());
+            auto const refIndex = getCandidateLedger(ledgerIndex);
+            auto refHash = hashOfSeq(*ledger, refIndex, j);
+            assert(refHash);
 
-            ledger = ledgerMaster.getLedgerByHash (refHash);
-            if (!ledger)
+            ledger = ledgerMaster.getLedgerByHash (*refHash);
+            if (! ledger)
             {
                 // We don't have the ledger we need to figure out which ledger
                 // they want. Try to get it.
 
                 if (auto il = getApp().getInboundLedgers().acquire (
-                        refHash, refIndex, InboundLedger::fcGENERIC))
+                        *refHash, refIndex, InboundLedger::fcGENERIC))
                     return getJson (LedgerFill (*il));
 
-                if (auto il = getApp().getInboundLedgers().find (refHash))
+                if (auto il = getApp().getInboundLedgers().find (*refHash))
                 {
                     Json::Value jvResult = il->getJson (0);
 
@@ -93,9 +103,10 @@ Json::Value doLedgerRequest (RPC::Context& context)
                 return Json::Value();
             }
 
-            ledgerHash = ledger->getLedgerHash (ledgerIndex);
-            assert (ledgerHash.isNonZero ());
+            neededHash = hashOfSeq(*ledger, ledgerIndex, j);
         }
+        assert (neededHash);
+        ledgerHash = neededHash ? *neededHash : zero; // kludge
     }
 
     auto ledger = ledgerMaster.getLedgerByHash (ledgerHash);
@@ -103,7 +114,7 @@ Json::Value doLedgerRequest (RPC::Context& context)
     {
         // We already have the ledger they want
         Json::Value jvResult;
-        jvResult[jss::ledger_index] = ledger->getLedgerSeq();
+        jvResult[jss::ledger_index] = ledger->info().seq;
         addJson (jvResult, {*ledger, 0});
         return jvResult;
     }

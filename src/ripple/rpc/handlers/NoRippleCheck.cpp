@@ -18,26 +18,38 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/rpc/impl/Tuning.h>
+#include <ripple/app/main/Application.h>
 #include <ripple/app/paths/RippleState.h>
+#include <ripple/core/LoadFeeTrack.h>
+#include <ripple/ledger/ReadView.h>
+#include <ripple/net/RPCErr.h>
+#include <ripple/protocol/ErrorCodes.h>
+#include <ripple/protocol/JsonFields.h>
 #include <ripple/protocol/TxFlags.h>
+#include <ripple/rpc/Context.h>
+#include <ripple/rpc/impl/AccountFromString.h>
+#include <ripple/rpc/impl/LookupLedger.h>
+#include <ripple/rpc/impl/Tuning.h>
 
 namespace ripple {
 
 static void fillTransaction (
     Json::Value& txArray,
-    RippleAddress const& account,
+    AccountID const& accountID,
     std::uint32_t& sequence,
-    Ledger::ref ledger)
+    ReadView const& ledger)
 {
     txArray["Sequence"] = Json::UInt (sequence++);
-    txArray["Account"] = account.humanAccountID ();
-    txArray["Fee"] = Json::UInt (ledger->scaleFeeLoad (10, false));
+    txArray["Account"] = getApp().accountIDCache().toBase58 (accountID);
+    // VFALCO Needs audit
+    // Why are we hard-coding 10?
+    auto& fees = ledger.fees();
+    txArray["Fee"] = Json::UInt (getApp().getFeeTrack().scaleFeeLoad(
+        10, fees.base, fees.units, false));
 }
 
 // {
 //   account: <account>|<account_public_key>
-//   account_index: <number>        // optional, defaults to 0.
 //   ledger_hash : <ledger>
 //   ledger_index : <ledger_index>
 //   limit: integer                 // optional, number of problems
@@ -80,8 +92,8 @@ Json::Value doNoRippleCheck (RPC::Context& context)
     if (params.isMember (jss::transactions))
         transactions = params["transactions"].asBool();
 
-    Ledger::pointer ledger;
-    Json::Value result (RPC::lookupLedger (params, ledger, context.netOps));
+    std::shared_ptr<ReadView const> ledger;
+    auto result = RPC::lookupLedger (ledger, context);
     if (! ledger)
         return result;
 
@@ -90,29 +102,25 @@ Json::Value doNoRippleCheck (RPC::Context& context)
         transactions ? (result[jss::transactions] = Json::arrayValue) : dummy;
 
     std::string strIdent (params[jss::account].asString ());
-    bool bIndex (params.isMember (jss::account_index));
-    int iIndex (bIndex ? params[jss::account_index].asUInt () : 0);
-    RippleAddress rippleAddress;
+    AccountID accountID;
 
-    Json::Value const jv (RPC::accountFromString (ledger, rippleAddress, bIndex,
-        strIdent, iIndex, false, context.netOps));
-    if (! jv.empty ())
+    if (auto jv = RPC::accountFromString (accountID, strIdent))
     {
-        for (Json::Value::const_iterator it (jv.begin ()); it != jv.end (); ++it)
+        for (auto it (jv.begin ()); it != jv.end (); ++it)
             result[it.memberName ()] = it.key ();
 
         return result;
     }
 
-    AccountState::pointer accountState = ledger->getAccountState (rippleAddress);
-    if (! accountState)
+    auto const sle = ledger->read(keylet::account(accountID));
+    if (! sle)
         return rpcError (rpcACT_NOT_FOUND);
 
-    std::uint32_t seq = accountState->peekSLE().getFieldU32 (sfSequence);
+    std::uint32_t seq = sle->getFieldU32 (sfSequence);
 
     Json::Value& problems = (result["problems"] = Json::arrayValue);
 
-    bool bDefaultRipple = accountState->peekSLE().getFieldU32 (sfFlags) & lsfDefaultRipple;
+    bool bDefaultRipple = sle->getFieldU32 (sfFlags) & lsfDefaultRipple;
 
     if (bDefaultRipple & ! roleGateway)
     {
@@ -127,21 +135,20 @@ Json::Value doNoRippleCheck (RPC::Context& context)
             Json::Value& tx = jvTransactions.append (Json::objectValue);
             tx["TransactionType"] = "AccountSet";
             tx["SetFlag"] = 8;
-            fillTransaction (tx, rippleAddress, seq, ledger);
+            fillTransaction (tx, accountID, seq, *ledger);
         }
     }
 
-    auto const accountID = rippleAddress.getAccountID ();
-
-    ledger->visitAccountItems (accountID, uint256(), 0, limit,
-        [&](SLE::ref ownedItem)
+    forEachItemAfter (*ledger, accountID,
+            uint256(), 0, limit,
+        [&](std::shared_ptr<SLE const> const& ownedItem)
         {
             if (ownedItem->getType() == ltRIPPLE_STATE)
             {
                 bool const bLow = accountID == ownedItem->getFieldAmount(sfLowLimit).getIssuer();
 
                 bool const bNoRipple = ownedItem->getFieldU32(sfFlags) &
-                   (bLow ? lsfLowNoRipple : lsfHighNoRipple);
+                    (bLow ? lsfLowNoRipple : lsfHighNoRipple);
 
                 std::string problem;
                 bool needFix = false;
@@ -157,7 +164,7 @@ Json::Value doNoRippleCheck (RPC::Context& context)
                 }
                 if (needFix)
                 {
-                    Account peer =
+                    AccountID peer =
                         ownedItem->getFieldAmount (bLow ? sfHighLimit : sfLowLimit).getIssuer();
                     STAmount peerLimit = ownedItem->getFieldAmount (bLow ? sfHighLimit : sfLowLimit);
                     problem += to_string (peerLimit.getCurrency());
@@ -172,7 +179,7 @@ Json::Value doNoRippleCheck (RPC::Context& context)
                     tx["TransactionType"] = "TrustSet";
                     tx["LimitAmount"] = limitAmount.getJson (0);
                     tx["Flags"] = bNoRipple ? tfClearNoRipple : tfSetNoRipple;
-                    fillTransaction(tx, rippleAddress, seq, ledger);
+                    fillTransaction(tx, accountID, seq, *ledger);
 
                     return true;
                 }

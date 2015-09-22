@@ -18,6 +18,17 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/app/main/Application.h>
+#include <ripple/app/misc/NetworkOPs.h>
+#include <ripple/basics/Log.h>
+#include <ripple/ledger/ReadView.h>
+#include <ripple/net/RPCErr.h>
+#include <ripple/protocol/ErrorCodes.h>
+#include <ripple/protocol/JsonFields.h>
+#include <ripple/protocol/types.h>
+#include <ripple/resource/Fees.h>
+#include <ripple/rpc/Context.h>
+#include <ripple/rpc/impl/LookupLedger.h>
 
 namespace ripple {
 
@@ -29,9 +40,8 @@ Json::Value doBookOffers (RPC::Context& context)
     if (getApp().getJobQueue ().getJobCountGE (jtCLIENT) > 200)
         return rpcError (rpcTOO_BUSY);
 
-    Ledger::pointer lpLedger;
-    Json::Value jvResult (
-        RPC::lookupLedger (context.params, lpLedger, context.netOps));
+    std::shared_ptr<ReadView const> lpLedger;
+    auto jvResult = RPC::lookupLedger (lpLedger, context);
 
     if (!lpLedger)
         return jvResult;
@@ -82,7 +92,7 @@ Json::Value doBookOffers (RPC::Context& context)
             "Invalid field 'taker_gets.currency', bad currency.");
     }
 
-    Account pay_issuer;
+    AccountID pay_issuer;
 
     if (taker_pays.isMember (jss::issuer))
     {
@@ -112,7 +122,7 @@ Json::Value doBookOffers (RPC::Context& context)
         return RPC::make_error (rpcSRC_ISR_MALFORMED,
             "Invalid field 'taker_pays.issuer', expected non-XRP issuer.");
 
-    Account get_issuer;
+    AccountID get_issuer;
 
     if (taker_gets.isMember (jss::issuer))
     {
@@ -143,19 +153,16 @@ Json::Value doBookOffers (RPC::Context& context)
         return RPC::make_error (rpcDST_ISR_MALFORMED,
             "Invalid field 'taker_gets.issuer', expected non-XRP issuer.");
 
-    RippleAddress raTakerID;
-
+    boost::optional<AccountID> takerID;
     if (context.params.isMember (jss::taker))
     {
         if (! context.params [jss::taker].isString ())
             return RPC::expected_field_error (jss::taker, "string");
 
-        if (! raTakerID.setAccountID (context.params [jss::taker].asString ()))
+        takerID = parseBase58<AccountID>(
+            context.params [jss::taker].asString());
+        if (! takerID)
             return RPC::invalid_field_error (jss::taker);
-    }
-    else
-    {
-        raTakerID.setAccountID (noAccount());
     }
 
     if (pay_currency == get_currency && pay_issuer == get_issuer)
@@ -190,7 +197,7 @@ Json::Value doBookOffers (RPC::Context& context)
         context.role == Role::ADMIN,
         lpLedger,
         {{pay_currency, pay_issuer}, {get_currency, get_issuer}},
-        raTakerID.getAccountID (), bProof, iLimit, jvMarker, jvResult);
+        takerID ? *takerID : zero, bProof, iLimit, jvMarker, jvResult);
 
     context.loadType = Resource::feeMediumBurdenRPC;
 

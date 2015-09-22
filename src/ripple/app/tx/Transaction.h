@@ -58,8 +58,8 @@ class Transaction
 public:
     static char const* getCountedObjectName () { return "Transaction"; }
 
-    typedef std::shared_ptr<Transaction> pointer;
-    typedef const pointer& ref;
+    using pointer = std::shared_ptr<Transaction>;
+    using ref = const pointer&;
 
 public:
     Transaction (STTx::ref, Validate, std::string&) noexcept;
@@ -79,7 +79,7 @@ public:
     static
     TransStatus
     sqlTransactionStatus(boost::optional<std::string> const& status);
-    
+
     bool checkSign (std::string&) const;
 
     STTx::ref getSTransaction ()
@@ -124,19 +124,47 @@ public:
         mInLedger = ledger;
     }
 
+    /**
+     * Set this flag once added to a batch.
+     */
+    void setApplying()
+    {
+        mApplying = true;
+    }
+
+    /**
+     * Detect if transaction is being batched.
+     *
+     * @return Whether transaction is being applied within a batch.
+     */
+    bool getApplying()
+    {
+        return mApplying;
+    }
+
+    /**
+     * Indicate that transaction application has been attempted.
+     */
+    void clearApplying()
+    {
+        mApplying = false;
+    }
+
     Json::Value getJson (int options, bool binary = false) const;
 
     static Transaction::pointer load (uint256 const& id);
 
 private:
     uint256         mTransactionID;
-    RippleAddress   mAccountFrom;
+    // VFALCO NOTE This member appears unused
+    AccountID       mAccountFrom;
     RippleAddress   mFromPubKey;    // Sign transaction with this. mSignPubKey
     RippleAddress   mSourcePrivate; // Sign transaction with this.
 
-    LedgerIndex     mInLedger;
-    TransStatus     mStatus;
-    TER             mResult;
+    LedgerIndex     mInLedger = 0;
+    TransStatus     mStatus = INVALID;
+    TER             mResult = temUNCERTAIN;
+    bool            mApplying = false;
 
     STTx::pointer mTransaction;
 };

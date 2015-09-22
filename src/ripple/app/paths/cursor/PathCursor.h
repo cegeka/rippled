@@ -50,16 +50,17 @@ public:
     {
     }
 
-    void nextIncrement(LedgerEntrySet const& checkpoint) const;
+    void nextIncrement() const;
 
 private:
     PathCursor(PathCursor const&) = default;
 
-    PathCursor increment(int delta = 1) const {
+    PathCursor increment(int delta = 1) const
+    {
         return {rippleCalc_, pathState_, multiQuality_, nodeIndex_ + delta};
     }
 
-    TER liquidity(LedgerEntrySet const& lesCheckpoint) const;
+    TER liquidity() const;
     TER reverseLiquidity () const;
     TER forwardLiquidity () const;
 
@@ -80,24 +81,27 @@ private:
 
     // To deliver from an order book, when computing
     TER deliverNodeReverse (
-        Account const& uOutAccountID,
+        AccountID const& uOutAccountID,
+        STAmount const& saOutReq,
+        STAmount& saOutAct) const;
+
+    // To deliver from an order book, when computing
+    TER deliverNodeReverseImpl (
+        AccountID const& uOutAccountID,
         STAmount const& saOutReq,
         STAmount& saOutAct) const;
 
     TER deliverNodeForward (
-        Account const& uInAccountID,
+        AccountID const& uInAccountID,
         STAmount const& saInReq,
         STAmount& saInAct,
         STAmount& saInFees) const;
 
-    RippleCalc& rippleCalc_;
-    PathState& pathState_;
-    bool multiQuality_;
-    NodeIndex nodeIndex_;
-
-    LedgerEntrySet& ledger() const
+    // VFALCO TODO Rename this to view()
+    PaymentSandbox&
+    view() const
     {
-        return rippleCalc_.mActiveLedger;
+        return pathState_.view();
     }
 
     NodeIndex nodeSize() const
@@ -129,6 +133,11 @@ private:
     {
         return node (restrict (nodeIndex_ + 1));
     }
+
+    RippleCalc& rippleCalc_;
+    PathState& pathState_;
+    bool multiQuality_;
+    NodeIndex nodeIndex_;
 };
 
 } // path
