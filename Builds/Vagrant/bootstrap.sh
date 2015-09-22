@@ -7,9 +7,9 @@ apt-get install -y python-software-properties
 apt-get install -y build-essential g++ python-dev autotools-dev libicu-dev build-essential libbz2-dev
 
 pushd /src/
-if [ ! -d "boost_1_57_0" ]; then
-  if [ ! -f "boost_1_57_0.tar.gz" ]; then
-    wget http://downloads.sourceforge.net/project/boost/boost/1.57.0/boost_1_57_0.tar.gz
+if [ ! -d "boost_1_58_0" ]; then
+  if [ ! -f "boost_1_58_0.tar.gz" ]; then
+    wget http://downloads.sourceforge.net/project/boost/boost/1.58.0/boost_1_58_0.tar.gz
   fi
   tar -vxf boost_1_57_0.tar.gz
 fi
