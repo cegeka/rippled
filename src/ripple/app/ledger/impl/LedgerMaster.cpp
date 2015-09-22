@@ -1352,8 +1352,8 @@ public:
         }
 
         // TODO CS This is a hack; the first 2 ledgers are bugged.
-//        if (index < 2 && referenceLedger->getLedgerSeq() >= 3)
-//            return ledgerHash; // This will be 0
+        if (index < 2 && referenceLedger->info().seq >= 3)
+            return zero; // This will be 0
 
         // See if the hash for the ledger we need is in the reference ledger
         auto ledgerHash = hashOfSeq(*referenceLedger, index, m_journal);
