@@ -19,7 +19,7 @@ pushd boost_1_58_0
 ldconfig
 popd
 
-scons -j 2 release
+scons release
 (service rippled stop &) || true
 cp /src/build/gcc.release/rippled /usr/local/sbin/rippled && strip /usr/local/sbin/rippled
 popd
