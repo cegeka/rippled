@@ -28,7 +28,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   config.vm.provision :shell, :path => "bootstrap.sh"
   config.vm.provision :shell, :path => "isolate.sh"
 
-  config.vm.define "solo", primary: true do |solo|
+  config.vm.define "solo", primary: false do |solo|
     solo.vm.network "private_network", ip: "192.168.50.4"
     solo.vm.network "forwarded_port", guest: 18080, host: 18080, auto_correct: true
     solo.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
@@ -38,6 +38,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     vb.customize ["modifyvm", :id, "--cpus", 2]
     vb.customize ["setextradata", :id, "VBoxInternal2/SharedFoldersEnableSymlinksCreate/vagrant","1"]
     end
+    
     $rippleclient_solo = <<-SCRIPT
     #!/bin/bash
 
@@ -64,50 +65,20 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     vb.customize ["modifyvm", :id, "--cpus", 2]
 	  vb.customize ["setextradata", :id, "VBoxInternal2/SharedFoldersEnableSymlinksCreate/vagrant","1"]
     end
-    $rippleclient_one = <<-SCRIPT
-    #!/bin/bash
 
-    cp /src/Builds/Vagrant/rippled_one.cfg /etc/ripple/rippled.cfg
-	  cp /src/Builds/Vagrant/rippled_one.cfg /root/.config/ripple/rippled.cfg
-	  cp /src/Builds/Vagrant/rippled_one.cfg /home/vagrant/.config/ripple/rippled.cfg
-	  flip -u /etc/ripple/rippled.cfg
-	  service rippled start
-
-    SCRIPT
-
-    config.vm.provision :shell, :inline => $rippleclient_one
+    config.vm.provision :shell, :path => "bootstrap_and_build.sh"
   end
 
   config.vm.define "two", autostart: false, primary: false do |two|
     two.vm.network "private_network", ip: "192.168.50.5"
 
-	  $rippleclient_two = <<-SCRIPT
-    #!/bin/bash
-
-    cp /src/Builds/Vagrant/rippled_two.cfg /etc/ripple/rippled.cfg
-	  cp /src/Builds/Vagrant/rippled_two.cfg /root/.config/ripple/rippled.cfg
-	  cp /src/Builds/Vagrant/rippled_two.cfg /home/vagrant/.config/ripple/rippled.cfg
-	  flip -u /etc/ripple/rippled.cfg
-	  service rippled start
-    SCRIPT
-
-    config.vm.provision :shell, :inline => $rippleclient_two
+    config.vm.provision :shell, :path => "setup_ripple.sh"
   end
 
   config.vm.define "three", autostart: false, primary: false do |three|
     three.vm.network "private_network", ip: "192.168.50.6"
 
-	  $rippleclient_three = <<-SCRIPT
-    #!/bin/bash
-
-    cp /src/Builds/Vagrant/rippled_three.cfg /etc/ripple/rippled.cfg
-	  cp /src/Builds/Vagrant/rippled_three.cfg /root/.config/ripple/rippled.cfg
-	  cp /src/Builds/Vagrant/rippled_three.cfg /home/vagrant/.config/ripple/rippled.cfg
-	  flip -u /etc/ripple/rippled.cfg
-	  service rippled start
-    SCRIPT
-
-    config.vm.provision :shell, :inline => $rippleclient_three
+    config.vm.provision :shell, :path => "setup_ripple.sh"
   end
 
   config.vm.define "four", autostart: false, primary: false do |four|
@@ -117,22 +88,8 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     four.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
     four.vm.network "forwarded_port", guest: 27017, host: 27017, auto_correct: true
 
-	  $rippleclient_four = <<-SCRIPT
-    #!/bin/bash
-
-    cp /src/Builds/Vagrant/rippled_four.cfg /etc/ripple/rippled.cfg
-	  cp /src/Builds/Vagrant/rippled_four.cfg /root/.config/ripple/rippled.cfg
-	  cp /src/Builds/Vagrant/rippled_four.cfg /home/vagrant/.config/ripple/rippled.cfg
-	  flip -u /etc/ripple/rippled.cfg
-    cp /src/Builds/Vagrant/init.d_rippled_four /etc/init.d/rippled
-    chmod +x /etc/init.d/rippled
-    flip -u /etc/init.d/rippled
-	  service rippled start
-
-    SCRIPT
-
+    config.vm.provision :shell, :path => "setup_ripple.sh"
     config.vm.provision :shell, :path => "riweb.sh"
-    config.vm.provision :shell, :inline => $install_riweb
   end
 
 end
