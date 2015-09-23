@@ -10,7 +10,12 @@ mkdir -p /home/vagrant/.config/ripple/
 cp /src/Builds/Vagrant/validators.txt /etc/ripple/validators.txt
 
 # service
-cp /src/Builds/Vagrant/init.d_rippled /etc/init.d/rippled
+if [ "$1" -eq "four" ]; then
+	cp /src/Builds/Vagrant/init.d_rippled_four /etc/init.d/rippled
+else
+	cp /src/Builds/Vagrant/init.d_rippled /etc/init.d/rippled
+fi
+
 chmod +x /etc/init.d/rippled
 cp /src/Builds/Vagrant/init.d_rippled2 /etc/init.d/rippled2
 chmod +x /etc/init.d/rippled2
