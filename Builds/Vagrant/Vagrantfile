@@ -29,7 +29,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   config.vm.provision :shell, :path => "isolate.sh"
 
   config.vm.define "solo", primary: false do |solo|
-    solo.vm.network "private_network", ip: "192.168.50.4"
+    solo.vm.network "private_network", ip: "192.168.50.8"
     #solo.vm.network "forwarded_port", guest: 18080, host: 18080, auto_correct: true
     solo.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
     solo.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
@@ -43,7 +43,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   end
 
   config.vm.define "one", primary: true do |one|
-    one.vm.network "private_network", ip: "192.168.50.8"
+    one.vm.network "private_network", ip: "192.168.50.4"
     #one.vm.network "forwarded_port", guest: 18080, host: 18080, auto_correct: true
 	  #one.vm.network "forwarded_port", guest: 9000, host: 9000, auto_correct: true
 	  #one.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
