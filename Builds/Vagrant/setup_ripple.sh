@@ -19,8 +19,8 @@ flip -u /etc/init.d/rippled2
 flip -u /etc/ripple/validators.txt
 
 # start service
-cp /src/Builds/Vagrant/rippled_one.cfg /etc/ripple/rippled.cfg
-cp /src/Builds/Vagrant/rippled_one.cfg /root/.config/ripple/rippled.cfg
-cp /src/Builds/Vagrant/rippled_one.cfg /home/vagrant/.config/ripple/rippled.cfg
+cp /src/Builds/Vagrant/rippled_$1.cfg /etc/ripple/rippled.cfg
+cp /src/Builds/Vagrant/rippled_$1.cfg /root/.config/ripple/rippled.cfg
+cp /src/Builds/Vagrant/rippled_$1.cfg /home/vagrant/.config/ripple/rippled.cfg
 flip -u /etc/ripple/rippled.cfg
 service rippled start
