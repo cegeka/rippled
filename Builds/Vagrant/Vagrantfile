@@ -30,7 +30,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
   config.vm.define "solo", primary: false do |solo|
     solo.vm.network "private_network", ip: "192.168.50.4"
-    solo.vm.network "forwarded_port", guest: 18080, host: 18080, auto_correct: true
+    #solo.vm.network "forwarded_port", guest: 18080, host: 18080, auto_correct: true
     solo.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
     solo.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
     solo.vm.provider :virtualbox do |vb|
@@ -38,27 +38,16 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     vb.customize ["modifyvm", :id, "--cpus", 2]
     vb.customize ["setextradata", :id, "VBoxInternal2/SharedFoldersEnableSymlinksCreate/vagrant","1"]
     end
-    
-    $rippleclient_solo = <<-SCRIPT
-    #!/bin/bash
 
-    cp /src/Builds/Vagrant/rippled_solo.cfg /etc/ripple/rippled.cfg
-    cp /src/Builds/Vagrant/rippled_solo.cfg /root/.config/ripple/rippled.cfg
-    cp /src/Builds/Vagrant/rippled_solo.cfg /home/vagrant/.config/ripple/rippled.cfg
-    flip -u /etc/ripple/rippled.cfg
-    service rippled start
-
-    SCRIPT
-
-    config.vm.provision :shell, :inline => $rippleclient_solo
+    config.vm.provision :shell, :path => "setup_ripple.sh", :args=>"solo"
   end
 
   config.vm.define "one", primary: true do |one|
-    one.vm.network "private_network", ip: "192.168.50.4"
+    one.vm.network "private_network", ip: "192.168.50.8"
     #one.vm.network "forwarded_port", guest: 18080, host: 18080, auto_correct: true
 	  #one.vm.network "forwarded_port", guest: 9000, host: 9000, auto_correct: true
-	  one.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
-	  one.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
+	  #one.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
+	  #one.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
 	  #one.vm.network "forwarded_port", guest: 27017, host: 27017, auto_correct: true
     one.vm.provider :virtualbox do |vb|
     vb.memory = 4096
@@ -66,30 +55,30 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 	  vb.customize ["setextradata", :id, "VBoxInternal2/SharedFoldersEnableSymlinksCreate/vagrant","1"]
     end
 
-    config.vm.provision :shell, :path => "bootstrap_and_build.sh"
+    config.vm.provision :shell, :path => "bootstrap_and_build.sh", :args=>"one"
   end
 
   config.vm.define "two", autostart: false, primary: false do |two|
     two.vm.network "private_network", ip: "192.168.50.5"
 
-    config.vm.provision :shell, :path => "setup_ripple.sh"
+    config.vm.provision :shell, :path => "setup_ripple.sh", :args=>"two"
   end
 
   config.vm.define "three", autostart: false, primary: false do |three|
     three.vm.network "private_network", ip: "192.168.50.6"
 
-    config.vm.provision :shell, :path => "setup_ripple.sh"
+    config.vm.provision :shell, :path => "setup_ripple.sh", :args=>"three"
   end
 
   config.vm.define "four", autostart: false, primary: false do |four|
     four.vm.network "private_network", ip: "192.168.50.7"
-    four.vm.network "forwarded_port", guest: 9000, host: 9000, auto_correct: true
-    four.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
-    four.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
-    four.vm.network "forwarded_port", guest: 27017, host: 27017, auto_correct: true
+    #four.vm.network "forwarded_port", guest: 9000, host: 9000, auto_correct: true
+    #four.vm.network "forwarded_port", guest: 6006, host: 6006, auto_correct: true
+    #four.vm.network "forwarded_port", guest: 5005, host: 5005, auto_correct: true
+    #four.vm.network "forwarded_port", guest: 27017, host: 27017, auto_correct: true
 
-    config.vm.provision :shell, :path => "setup_ripple.sh"
-    config.vm.provision :shell, :path => "riweb.sh"
+    config.vm.provision :shell, :path => "setup_ripple.sh", :args=>"four"
+    #config.vm.provision :shell, :path => "riweb.sh"
   end
 
 end

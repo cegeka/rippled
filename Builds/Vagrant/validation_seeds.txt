@@ -35,3 +35,13 @@ extra:
       "validation_seed" : "sn12CrGbgko99SpvGnxzAhr5JiSa9"
    }
 }
+
+solo:
+{
+   "result" : {
+      "status" : "success",
+      "validation_key" : "FOSS CARD SIGN ANNE DEAD WICK LA HOST NASH NEAR HOG SHE",
+      "validation_public_key" : "n9LH3E9GgEX1vfY1gBchZqDYE1ci6shNSTujY4S99563GQR9efdL",
+      "validation_seed" : "sh4scVrAc63QdkJX1d1ep13vuPEv3"
+   }
+}
