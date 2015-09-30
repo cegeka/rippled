@@ -1,0 +1,1 @@
+node --debug-brk ../../../../ripple-lib/bin/rsign.js -v shrixAzTwHCDGfYTMUFcqhwdWVzCp '{"TransactionType":"Payment","Account":"r4gzWvzzJS2xLuga9bBc3XmzRMPH3VvxXg","Destination":"rK1PBwQ6TqrM7nx715rm4JP35841QTMcqU","Amount":"200000000","Fee":"0","Sequence":1}'
