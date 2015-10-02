@@ -1,0 +1,16 @@
+chris@hi25546  ~/Desktop/Workspace/rippled/Builds/Vagrant/scripts   secp256r1 ✚  rippled wallet_propose masterpassphrase
+Loading: "/home/chris/.config/ripple/rippled.cfg"
+Connecting to 127.0.0.1:5105
+{
+   "result" : {
+      "account_id" : "rfWpbDgyaFPLkTDNKmF13zkvuy62NPQ8Ku",
+      "key_type" : "secp256r1",
+      "master_key" : "I IRE BOND BOW TRIO LAID SEAT GOAL HEN IBIS IBIS DARE",
+      "master_seed" : "snoPBrXtMeMyMHUVTgbuqAfg1SUTb",
+      "master_seed_hex" : "DEDCE9CE67B451D852FD4E846FCDE31C",
+      "public_key" : "aB42GbStzG8asr5b5uE2wNwGKY7ZhUj6jU9sPcGpExEAbzpg7FxU",
+      "public_key_hex" : "025137AF8AEB8B8994227DED1C23E05491BA71D9B21F32DBE188A9FC4A8D4F9DC9",
+      "status" : "success"
+   }
+}
+

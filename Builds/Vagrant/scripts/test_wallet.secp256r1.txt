@@ -1,0 +1,16 @@
+ chris@hi25546  ~/Desktop/Workspace/rippled/Builds/Vagrant/scripts   secp256r1  rippled wallet_propose secretpass
+Loading: "/home/chris/.config/ripple/rippled.cfg"
+Connecting to 127.0.0.1:5105
+{
+   "result" : {
+      "account_id" : "rJYTxryj4ZudrvvxXk5igGGN7UgZ3tbpzb",
+      "key_type" : "secp256r1",
+      "master_key" : "MELT JAKE CLAW SAME YE CHAD FITS HEAD ALVA LAIR CAN KANE",
+      "master_seed" : "ssjdExJPLzZWh7uKW9zyiuFPcNiyn",
+      "master_seed_hex" : "4AA7D0542FA97281CA6C24EB9D0DF4B9",
+      "public_key" : "aBRcLGAGtGKqNjU94ZRV4CGJS2GhkN61iqCVAbvjBPghhCQ8YZ94",
+      "public_key_hex" : "03E0FDBC3854E87CA2568F491EDDBDA42749B0347545B51C030AF032130A4CE1D5",
+      "status" : "success"
+   }
+}
+
