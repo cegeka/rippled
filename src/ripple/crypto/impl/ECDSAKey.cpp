@@ -25,6 +25,7 @@
 #include <BeastConfig.h>
 #include <ripple/crypto/impl/ECDSAKey.h>
 #include <openssl/ec.h>
+#include <openssl/err.h>
 #include <openssl/hmac.h>
 
 namespace ripple  {
@@ -33,7 +34,7 @@ using openssl::ec_key;
 
 static EC_KEY* new_initialized_EC_KEY()
 {
-    EC_KEY* key = EC_KEY_new_by_curve_name (NID_secp256k1);
+    EC_KEY* key = EC_KEY_new_by_curve_name (NID_secp224r1);
 
     if (key == nullptr)
     {
@@ -78,6 +79,10 @@ ec_key ECDSAPublicKey (std::uint8_t const* data, std::size_t size)
     }
     else
     {
+        long err = ERR_get_error();
+        char buf[180];
+        ERR_error_string(err, buf);
+
         EC_KEY_free (key);
     }
 

@@ -31,6 +31,7 @@ enum class KeyType
 
     secp256k1 = 0,
     ed25519   = 1,
+    secp256r1 = 2,
 };
 
 KeyType keyTypeFromString (std::string const& s);
