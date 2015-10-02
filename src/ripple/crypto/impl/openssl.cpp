@@ -125,9 +125,9 @@ ec_point bn2point (EC_GROUP const* group, BIGNUM const* number)
     return ec_point::acquire (result);
 }
 
-static ec_key ec_key_new_secp256k1_compressed()
+static ec_key ec_key_new_secp256r1_compressed()
 {
-    EC_KEY* key = EC_KEY_new_by_curve_name (NID_secp256k1);
+    EC_KEY* key = EC_KEY_new_by_curve_name (NID_X9_62_prime256v1);
 
     if (key == nullptr)  throw std::runtime_error ("EC_KEY_new_by_curve_name() failed");
 
@@ -138,7 +138,7 @@ static ec_key ec_key_new_secp256k1_compressed()
 
 void serialize_ec_point (ec_point const& point, std::uint8_t* ptr)
 {
-    ec_key key = ec_key_new_secp256k1_compressed();
+    ec_key key = ec_key_new_secp256r1_compressed();
 
     if (EC_KEY_set_public_key((EC_KEY*) key.get(), point.get()) <= 0)
     {

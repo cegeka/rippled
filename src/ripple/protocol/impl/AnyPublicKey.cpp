@@ -25,9 +25,9 @@
 
 namespace ripple {
 
-/** Verify a secp256k1 signature. */
+/** Verify a secp256r1 signature. */
 bool
-verify_secp256k1 (void const* pk,
+verify_secp256r1 (void const* pk,
     void const* msg, std::size_t msg_size,
     void const* sig, std::size_t sig_size)
 {
@@ -66,7 +66,7 @@ AnyPublicKeySlice::type() const noexcept
         return KeyType::ed25519;
     if (len == 33 &&
             (pk[0] == 0x02 || pk[0] == 0x03))
-        return KeyType::secp256k1;
+        return KeyType::secp256r1;
     return KeyType::unknown;
 }
 
@@ -80,8 +80,8 @@ AnyPublicKeySlice::verify (
     case KeyType::ed25519:
         return verify_ed25519(data() + 1,
             msg, msg_size, sig, sig_size);
-    case KeyType::secp256k1:
-        return verify_secp256k1(data() + 1,
+    case KeyType::secp256r1:
+        return verify_secp256r1(data() + 1,
             msg, msg_size, sig, sig_size);
     default:
         break;

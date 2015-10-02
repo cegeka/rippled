@@ -961,7 +961,7 @@ KeyPair generateKeysFromSeed (KeyType type, RippleAddress const& seed)
         return result;
     }
 
-    if (type == KeyType::secp256k1)
+    if (type == KeyType::secp256r1)
     {
         RippleAddress generator = RippleAddress::createGeneratorPublic (seed);
         result.secretKey.setAccountPrivate (generator, seed, 0);

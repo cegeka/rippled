@@ -62,10 +62,10 @@ AnySecretKey::AnySecretKey (KeyType type,
             size != 32)
         throw std::runtime_error(
             "AnySecretKey: wrong ed25519 size");
-    if (type_ == KeyType::secp256k1 &&
+    if (type_ == KeyType::secp256r1 &&
             size != 32)
         throw std::runtime_error(
-            "AnySecretKey: wrong secp256k1 size");
+            "AnySecretKey: wrong secp256r1 size");
 }
 
 AnyPublicKey
@@ -123,7 +123,7 @@ AnySecretKey::make_ed25519()
 }
 
 std::pair<AnySecretKey, AnyPublicKey>
-AnySecretKey::make_secp256k1_pair()
+AnySecretKey::make_secp256r1_pair()
 {
     // VFALCO What a pile
     RippleAddress s;
@@ -136,7 +136,7 @@ AnySecretKey::make_secp256k1_pair()
     pk.setAccountPublic (g, 0);
     return std::pair<AnySecretKey, AnyPublicKey>(
         std::piecewise_construct, std::make_tuple(
-            KeyType::secp256k1, sk.data(), sk.size()),
+            KeyType::secp256r1, sk.data(), sk.size()),
                 std::make_tuple(pk.data(), pk.size()));
 }
 

@@ -74,10 +74,10 @@ public:
     AnySecretKey
     make_ed25519();
 
-    /** Securely generate a new secp256k1 key pair. */
+    /** Securely generate a new secp256kr1 key pair. */
     static
     std::pair<AnySecretKey, AnyPublicKey>
-    make_secp256k1_pair();
+    make_secp256r1_pair();
 };
 
 } // ripple

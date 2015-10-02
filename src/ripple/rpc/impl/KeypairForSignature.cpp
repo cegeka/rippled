@@ -54,7 +54,7 @@ KeyPair keypairForSignature (Json::Value const& params, Json::Value& error)
         return KeyPair();
     }
 
-    KeyType type = KeyType::secp256k1;
+    KeyType type = KeyType::secp256r1;
 
     RippleAddress seed;
 

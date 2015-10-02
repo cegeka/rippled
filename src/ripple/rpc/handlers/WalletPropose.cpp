@@ -38,7 +38,7 @@ Json::Value walletPropose (Json::Value const& params)
     RippleAddress   naSeed;
     RippleAddress   naAccount;
 
-    KeyType type = KeyType::secp256k1;
+    KeyType type = KeyType::secp256r1;
 
     bool const has_key_type   = params.isMember (jss::key_type);
     bool const has_passphrase = params.isMember (jss::passphrase);
@@ -70,7 +70,7 @@ Json::Value walletPropose (Json::Value const& params)
         return rpcError(rpcBAD_SEED);
     }
 
-    if (type == KeyType::secp256k1)
+    if (type == KeyType::secp256r1)
     {
         RippleAddress naGenerator = RippleAddress::createGeneratorPublic (naSeed);
         naAccount.setAccountPublic (naGenerator, 0);

@@ -30,7 +30,7 @@ enum class ECDSA
     strict
 };
 
-/** Checks whether a secp256k1 ECDSA signature is canonical.
+/** Checks whether a secp256r1 ECDSA signature is canonical.
     Return value is true if the signature is canonical.
     If mustBeStrict is specified, the signature must be
     strictly canonical (one and only one valid form).
@@ -47,13 +47,13 @@ inline bool isCanonicalECDSASig (Blob const& signature,
         isCanonicalECDSASig (&signature[0], signature.size(), mustBeStrict);
 }
 
-/** Converts a canonical secp256k1 ECDSA signature to a
+/** Converts a canonical secp256r1 ECDSA signature to a
     fully-canonical one. Returns true if the original signature
     was already fully-canonical. The behavior if something
-    that is not a canonical secp256k1 ECDSA signature is
+    that is not a canonical secp256r1 ECDSA signature is
     passed is unspecified. The signature buffer must be large
     enough to accommodate the largest valid fully-canonical
-    secp256k1 ECDSA signature (72 bytes).
+    secp256r1 ECDSA signature (72 bytes).
 */
 bool makeCanonicalECDSASig (void *signature, std::size_t& sigLen);
 
