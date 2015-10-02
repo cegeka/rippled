@@ -34,7 +34,7 @@ using openssl::ec_key;
 
 static EC_KEY* new_initialized_EC_KEY()
 {
-    EC_KEY* key = EC_KEY_new_by_curve_name (NID_secp224r1);
+    EC_KEY* key = EC_KEY_new_by_curve_name (NID_X9_62_prime256v1);
 
     if (key == nullptr)
     {
