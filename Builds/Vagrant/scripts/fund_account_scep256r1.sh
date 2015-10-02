@@ -11,7 +11,7 @@ if [ -z $PORT ]
 		PORT=5105
 fi
 
-command -v js24 > /dev/null || sudo apt-get install libmozjs-24-bin  
+command -v js24 > /dev/null || sudo apt-get install -y libmozjs-24-bin
 result=`curl -X POST -d '{ "method": "sign", "params": [ { "offline": false, "secret": "masterpassphrase", "tx_json": { "Account": "rfWpbDgyaFPLkTDNKmF13zkvuy62NPQ8Ku" , "Amount": "999000000", "Destination": "'"$ACCOUNT"'", "DestinationTag": "1", "TransactionType": "Payment" } } ] }' http://localhost:$PORT/`
 tx_blob=`echo $result | ./jsawk -j js24 'return this.result.tx_blob'`
 
