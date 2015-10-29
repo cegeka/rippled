@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # rippled
-cp ../../src/build/gcc.release/rippled /usr/local/sbin/rippled
+cp ../../build/gcc.release/rippled /usr/local/sbin/rippled
 
 # configs
 sudo mkdir -p /etc/ripple/
