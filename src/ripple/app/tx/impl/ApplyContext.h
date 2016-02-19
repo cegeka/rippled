@@ -20,9 +20,11 @@
 #ifndef RIPPLE_TX_APPLYCONTEXT_H_INCLUDED
 #define RIPPLE_TX_APPLYCONTEXT_H_INCLUDED
 
+#include <ripple/app/main/Application.h>
 #include <ripple/ledger/ApplyViewImpl.h>
 #include <ripple/core/Config.h>
 #include <ripple/protocol/STTx.h>
+#include <ripple/protocol/XRPAmount.h>
 #include <beast/utility/Journal.h>
 #include <boost/optional.hpp>
 #include <utility>
@@ -36,13 +38,15 @@ class ApplyContext
 {
 public:
     explicit
-    ApplyContext (OpenView& base,
-        STTx const& tx, ApplyFlags flags,
-            Config const& config,
-                beast::Journal = {});
+    ApplyContext (Application& app, OpenView& base,
+        STTx const& tx, TER preclaimResult,
+            std::uint64_t baseFee, ApplyFlags flags,
+                    beast::Journal = {});
 
+    Application& app;
     STTx const& tx;
-    Config const& config;
+    TER const preclaimResult;
+    std::uint64_t const baseFee;
     beast::Journal const journal;
 
     ApplyView&
@@ -79,16 +83,27 @@ public:
     void
     apply (TER);
 
+    /** Get the number of unapplied changes. */
+    std::size_t
+    size ();
+
+    /** Visit unapplied changes. */
     void
-    destroyXRP (std::uint64_t feeDrops)
+    visit (std::function <void (
+        uint256 const& key,
+        bool isDelete,
+        std::shared_ptr <SLE const> const& before,
+        std::shared_ptr <SLE const> const& after)> const& func);
+
+    void
+    destroyXRP (XRPAmount const& fee)
     {
-        view_->rawDestroyXRP(feeDrops);
+        view_->rawDestroyXRP(fee);
     }
 
 private:
     OpenView& base_;
     ApplyFlags flags_;
-    beast::Journal j_;
     boost::optional<ApplyViewImpl> view_;
 };
 

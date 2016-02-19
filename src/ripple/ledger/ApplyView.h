@@ -38,12 +38,16 @@ enum ApplyFlags
     //
     tapENABLE_TESTING   = 0x02,
 
+    // We expect the transaction to have a later
+    // sequence number than the account in the ledger
+    tapPOST_SEQ         = 0x04,
+
     // This is not the transaction's last pass
     // Transaction can be retried, soft failures allowed
     tapRETRY            = 0x20,
 
     // Transaction came from a privileged source
-    tapADMIN            = 0x400,
+    tapUNLIMITED            = 0x400,
 };
 
 inline
@@ -109,6 +113,9 @@ class ApplyView
     : public ReadView
 {
 public:
+
+    ApplyView () = default;
+
     /** Returns the tx apply flags.
 
         Flags can affect the outcome of transaction
@@ -195,12 +202,6 @@ public:
     virtual
     void
     update (std::shared_ptr<SLE> const& sle) = 0;
-
-    /** Get the number of modified entries
-    */
-    virtual
-    std::size_t
-    size () = 0;
 
     //--------------------------------------------------------------------------
 

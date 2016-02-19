@@ -18,12 +18,13 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/basics/contract.h>
 #include <ripple/nodestore/impl/ManagerImp.h>
 #include <ripple/nodestore/impl/DatabaseImp.h>
 #include <ripple/nodestore/impl/DatabaseRotatingImp.h>
 #include <ripple/basics/StringUtilities.h>
 #include <beast/utility/ci_char_traits.h>
-#include <beast/cxx14/memory.h> // <memory>
+#include <memory>
 #include <stdexcept>
 
 namespace ripple {
@@ -32,14 +33,14 @@ namespace NodeStore {
 ManagerImp&
 ManagerImp::instance()
 {
-    static beast::static_initializer<ManagerImp> _;
-    return _.get();
+    static ManagerImp _;
+    return _;
 }
 
 void
 ManagerImp::missing_backend()
 {
-    throw std::runtime_error (
+    Throw<std::runtime_error> (
         "Your rippled.cfg is missing a [node_db] entry, "
         "please see the rippled-example.cfg file!"
         );
@@ -93,11 +94,15 @@ ManagerImp::make_Database (
     int readThreads,
     Section const& backendParameters)
 {
-    std::unique_ptr <Backend> backend (make_Backend (
-        backendParameters, scheduler, journal));
-
-    return std::make_unique <DatabaseImp> (name, scheduler, readThreads,
-        std::move (backend), journal);
+    return std::make_unique <DatabaseImp> (
+        name,
+        scheduler,
+        readThreads,
+        make_Backend (
+            backendParameters,
+            scheduler,
+            journal),
+        journal);
 }
 
 std::unique_ptr <DatabaseRotating>
@@ -109,8 +114,13 @@ ManagerImp::make_DatabaseRotating (
         std::shared_ptr <Backend> archiveBackend,
         beast::Journal journal)
 {
-    return std::make_unique <DatabaseRotatingImp> (name, scheduler,
-            readThreads, writableBackend, archiveBackend, journal);
+    return std::make_unique <DatabaseRotatingImp> (
+        name,
+        scheduler,
+        readThreads,
+        writableBackend,
+        archiveBackend,
+        journal);
 }
 
 Factory*

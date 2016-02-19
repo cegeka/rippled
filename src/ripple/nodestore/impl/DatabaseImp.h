@@ -30,7 +30,6 @@
 #include <ripple/basics/Slice.h>
 #include <ripple/basics/TaggedCache.h>
 #include <beast/threads/Thread.h>
-#include <ripple/nodestore/ScopedMetrics.h>
 #include <chrono>
 #include <condition_variable>
 #include <set>
@@ -72,7 +71,7 @@ public:
         , m_scheduler (scheduler)
         , m_backend (std::move (backend))
         , m_cache ("NodeStore", cacheTargetSize, cacheTargetSeconds,
-            stopwatch(), deprecatedLogs().journal("TaggedCache"))
+            stopwatch(), journal)
         , m_negCache ("NodeStore", stopwatch(),
             cacheTargetSize, cacheTargetSeconds)
         , m_readShut (false)
@@ -119,7 +118,7 @@ public:
 
     //------------------------------------------------------------------------------
 
-    bool asyncFetch (uint256 const& hash, std::shared_ptr<NodeObject>& object)
+    bool asyncFetch (uint256 const& hash, std::shared_ptr<NodeObject>& object) override
     {
         // See if the object is in cache
         object = m_cache.fetch (hash);
@@ -150,7 +149,7 @@ public:
 
     }
 
-    int getDesiredAsyncReadCount ()
+    int getDesiredAsyncReadCount () override
     {
         // We prefer a client not fill our cache
         // We don't want to push data out of the cache
@@ -160,8 +159,6 @@ public:
 
     std::shared_ptr<NodeObject> fetch (uint256 const& hash) override
     {
-        ScopedMetrics::incrementThreadFetches ();
-
         return doTimedFetch (hash, false);
     }
 
@@ -306,12 +303,12 @@ public:
 
     //------------------------------------------------------------------------------
 
-    float getCacheHitRate ()
+    float getCacheHitRate () override
     {
         return m_cache.getHitRate ();
     }
 
-    void tune (int size, int age)
+    void tune (int size, int age) override
     {
         m_cache.setTargetSize (size);
         m_cache.setTargetAge (age);
@@ -319,7 +316,7 @@ public:
         m_negCache.setTargetAge (age);
     }
 
-    void sweep ()
+    void sweep () override
     {
         m_cache.sweep ();
         m_negCache.sweep ();
@@ -381,7 +378,7 @@ public:
         m_backend->for_each (f);
     }
 
-    void import (Database& source)
+    void import (Database& source) override
     {
         importInternal (source, *m_backend.get());
     }

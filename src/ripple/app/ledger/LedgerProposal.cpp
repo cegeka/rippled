@@ -27,11 +27,12 @@
 
 namespace ripple {
 
+// Used to construct received proposals
 LedgerProposal::LedgerProposal (
         uint256 const& pLgr,
         std::uint32_t seq,
         uint256 const& tx,
-        std::uint32_t closeTime,
+        NetClock::time_point closeTime,
         RippleAddress const& publicKey,
         PublicKey const& pk,
         uint256 const& suppression)
@@ -47,11 +48,13 @@ LedgerProposal::LedgerProposal (
     mTime = std::chrono::steady_clock::now ();
 }
 
+// Used to construct local proposals
+// CAUTION: publicKey_ not set
 LedgerProposal::LedgerProposal (
         RippleAddress const& publicKey,
         uint256 const& prevLgr,
         uint256 const& position,
-        std::uint32_t closeTime)
+        NetClock::time_point closeTime)
     : mPreviousLedger (prevLgr)
     , mCurrentHash (position)
     , mCloseTime (closeTime)
@@ -69,57 +72,20 @@ uint256 LedgerProposal::getSigningHash () const
     return sha512Half(
         HashPrefix::proposal,
         std::uint32_t(mProposeSeq),
-        std::uint32_t(mCloseTime),
+        mCloseTime.time_since_epoch().count(),
         mPreviousLedger,
         mCurrentHash);
 }
 
-struct HashStream
+bool LedgerProposal::checkSign () const
 {
-    static beast::endian const endian =
-        beast::endian::big;
-
-    std::vector<std::uint8_t> v;
-
-    std::uint8_t const*
-    data() const
-    {
-        return v.data();
-    }
-
-    std::size_t
-    size() const
-    {
-        return v.size();
-    }
-
-    void
-    operator()(void const* data,
-        std::size_t size) noexcept
-    {
-        auto const p = reinterpret_cast<
-            std::uint8_t const*>(data);
-        v.insert(v.end(), p, p + size);
-    }
-};
-
-bool LedgerProposal::checkSign (std::string const& signature) const
-{
-    auto const valid = mPublicKey.verifyNodePublic(
-        getSigningHash(), signature, ECDSA::not_strict);
-
-    HashStream h;
-    hash_append(h);
-    assert(valid == (publicKey_.verify(
-        Slice(h.data(), h.size()),
-            makeSlice(signature), false)));
-
-    return valid;
+    return mPublicKey.verifyNodePublic(
+        getSigningHash(), signature_, ECDSA::not_strict);
 }
 
 bool LedgerProposal::changePosition (
     uint256 const& newPosition,
-    std::uint32_t closeTime)
+    NetClock::time_point closeTime)
 {
     if (mProposeSeq == seqLeave)
         return false;
@@ -137,13 +103,12 @@ void LedgerProposal::bowOut ()
     mProposeSeq     = seqLeave;
 }
 
-Blob LedgerProposal::sign (RippleAddress const& privateKey)
+Blob const& LedgerProposal::sign (RippleAddress const& privateKey)
 {
-    Blob ret;
-    privateKey.signNodePrivate (getSigningHash (), ret);
+    privateKey.signNodePrivate (getSigningHash (), signature_);
     mSuppression = proposalUniqueId (mCurrentHash, mPreviousLedger, mProposeSeq,
-        mCloseTime, mPublicKey.getNodePublic (), ret);
-    return ret;
+        mCloseTime, mPublicKey.getNodePublic (), signature_);
+    return signature_;
 }
 
 Json::Value LedgerProposal::getJson () const
@@ -157,7 +122,7 @@ Json::Value LedgerProposal::getJson () const
         ret[jss::propose_seq] = mProposeSeq;
     }
 
-    ret[jss::close_time] = mCloseTime;
+    ret[jss::close_time] = mCloseTime.time_since_epoch().count();
 
     if (mPublicKey.isValid ())
         ret[jss::peer_id] = mPublicKey.humanNodePublic ();
@@ -169,7 +134,7 @@ uint256 proposalUniqueId (
     uint256 const& proposeHash,
     uint256 const& previousLedger,
     std::uint32_t proposeSeq,
-    std::uint32_t closeTime,
+    NetClock::time_point closeTime,
     Blob const& pubKey,
     Blob const& signature)
 {
@@ -178,7 +143,7 @@ uint256 proposalUniqueId (
     s.add256 (proposeHash);
     s.add256 (previousLedger);
     s.add32 (proposeSeq);
-    s.add32 (closeTime);
+    s.add32 (closeTime.time_since_epoch().count());
     s.addVL (pubKey);
     s.addVL (signature);
 

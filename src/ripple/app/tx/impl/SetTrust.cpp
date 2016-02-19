@@ -18,35 +18,43 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/protocol/Quality.h>
 #include <ripple/app/tx/impl/SetTrust.h>
 #include <ripple/basics/Log.h>
+#include <ripple/protocol/Feature.h>
+#include <ripple/protocol/Quality.h>
 #include <ripple/protocol/Indexes.h>
-#include <ripple/protocol/TxFlags.h>
+#include <ripple/protocol/st.h>
 #include <ripple/ledger/View.h>
 
 namespace ripple {
 
 TER
-SetTrust::preCheck ()
+SetTrust::preflight (PreflightContext const& ctx)
 {
-    std::uint32_t const uTxFlags = mTxn.getFlags ();
+    auto const ret = preflight1 (ctx);
+    if (!isTesSuccess (ret))
+        return ret;
+
+    auto& tx = ctx.tx;
+    auto& j = ctx.j;
+
+    std::uint32_t const uTxFlags = tx.getFlags ();
 
     if (uTxFlags & tfTrustSetMask)
     {
-        j_.trace <<
+        JLOG(j.trace) <<
             "Malformed transaction: Invalid flags set.";
         return temINVALID_FLAG;
     }
 
-    STAmount const saLimitAmount (mTxn.getFieldAmount (sfLimitAmount));
+    STAmount const saLimitAmount (tx.getFieldAmount (sfLimitAmount));
 
     if (!isLegalNet (saLimitAmount))
         return temBAD_AMOUNT;
 
     if (saLimitAmount.native ())
     {
-        if (j_.trace) j_.trace <<
+        JLOG(j.trace) <<
             "Malformed transaction: specifies native limit " <<
             saLimitAmount.getFullText ();
         return temBAD_LIMIT;
@@ -54,14 +62,14 @@ SetTrust::preCheck ()
 
     if (badCurrency() == saLimitAmount.getCurrency ())
     {
-        if (j_.trace) j_.trace <<
+        JLOG(j.trace) <<
             "Malformed transaction: specifies XRP as IOU";
         return temBAD_CURRENCY;
     }
 
     if (saLimitAmount < zero)
     {
-        if (j_.trace) j_.trace <<
+        JLOG(j.trace) <<
             "Malformed transaction: Negative credit limit.";
         return temBAD_LIMIT;
     }
@@ -71,12 +79,55 @@ SetTrust::preCheck ()
 
     if (!issuer || issuer == noAccount())
     {
-        if (j_.trace) j_.trace <<
+        JLOG(j.trace) <<
             "Malformed transaction: no destination account.";
         return temDST_NEEDED;
     }
 
-    return Transactor::preCheck ();
+    return preflight2 (ctx);
+}
+
+TER
+SetTrust::preclaim(PreclaimContext const& ctx)
+{
+    auto const id = ctx.tx[sfAccount];
+
+    auto const sle = ctx.view.read(
+        keylet::account(id));
+
+    std::uint32_t const uTxFlags = ctx.tx.getFlags();
+
+    bool const bSetAuth = (uTxFlags & tfSetfAuth);
+
+    if (bSetAuth && !(sle->getFieldU32(sfFlags) & lsfRequireAuth))
+    {
+        JLOG(ctx.j.trace) <<
+            "Retry: Auth not required.";
+        return tefNO_AUTH_REQUIRED;
+    }
+
+    auto const saLimitAmount = ctx.tx[sfLimitAmount];
+
+    auto const currency = saLimitAmount.getCurrency();
+    auto const uDstAccountID = saLimitAmount.getIssuer();
+
+    if (id == uDstAccountID)
+    {
+        // Prevent trustline to self from being created,
+        // unless one has somehow already been created
+        // (in which case doApply will clean it up).
+        auto const sleDelete = ctx.view.read(
+            keylet::line(id, uDstAccountID, currency));
+
+        if (!sleDelete)
+        {
+            JLOG(ctx.j.trace) <<
+                "Malformed transaction: Can not extend credit to self.";
+            return temDST_IS_SRC;
+        }
+    }
+
+    return tesSUCCESS;
 }
 
 TER
@@ -84,9 +135,9 @@ SetTrust::doApply ()
 {
     TER terResult = tesSUCCESS;
 
-    STAmount const saLimitAmount (mTxn.getFieldAmount (sfLimitAmount));
-    bool const bQualityIn (mTxn.isFieldPresent (sfQualityIn));
-    bool const bQualityOut (mTxn.isFieldPresent (sfQualityOut));
+    STAmount const saLimitAmount (ctx_.tx.getFieldAmount (sfLimitAmount));
+    bool const bQualityIn (ctx_.tx.isFieldPresent (sfQualityIn));
+    bool const bQualityOut (ctx_.tx.isFieldPresent (sfQualityOut));
 
     Currency const currency (saLimitAmount.getCurrency ());
     AccountID uDstAccountID (saLimitAmount.getIssuer ());
@@ -111,17 +162,17 @@ SetTrust::doApply ()
     // to fund accounts in a way where there's no incentive to trick them
     // into creating an account you have no intention of using.
 
-    STAmount const reserveCreate ((uOwnerCount < 2)
-        ? 0
+    XRPAmount const reserveCreate ((uOwnerCount < 2)
+        ? XRPAmount (zero)
         : view().fees().accountReserve(uOwnerCount + 1));
 
-    std::uint32_t uQualityIn (bQualityIn ? mTxn.getFieldU32 (sfQualityIn) : 0);
-    std::uint32_t uQualityOut (bQualityOut ? mTxn.getFieldU32 (sfQualityOut) : 0);
+    std::uint32_t uQualityIn (bQualityIn ? ctx_.tx.getFieldU32 (sfQualityIn) : 0);
+    std::uint32_t uQualityOut (bQualityOut ? ctx_.tx.getFieldU32 (sfQualityOut) : 0);
 
     if (bQualityOut && QUALITY_ONE == uQualityOut)
         uQualityOut = 0;
 
-    std::uint32_t const uTxFlags = mTxn.getFlags ();
+    std::uint32_t const uTxFlags = ctx_.tx.getFlags ();
 
     bool const bSetAuth = (uTxFlags & tfSetfAuth);
     bool const bSetNoRipple = (uTxFlags & tfSetNoRipple);
@@ -129,12 +180,7 @@ SetTrust::doApply ()
     bool const bSetFreeze = (uTxFlags & tfSetFreeze);
     bool const bClearFreeze = (uTxFlags & tfClearFreeze);
 
-    if (bSetAuth && !(sle->getFieldU32 (sfFlags) & lsfRequireAuth))
-    {
-        j_.trace <<
-            "Retry: Auth not required.";
-        return tefNO_AUTH_REQUIRED;
-    }
+    auto viewJ = ctx_.app.journal ("View");
 
     if (account_ == uDstAccountID)
     {
@@ -145,20 +191,11 @@ SetTrust::doApply ()
         SLE::pointer sleDelete = view().peek (
             keylet::line(account_, uDstAccountID, currency));
 
-        if (sleDelete)
-        {
-            j_.warning <<
-                "Clearing redundant line.";
+        j_.warning <<
+            "Clearing redundant line.";
 
-            return trustDelete (view(),
-                sleDelete, account_, uDstAccountID);
-        }
-        else
-        {
-            j_.trace <<
-                "Malformed transaction: Can not extend credit to self.";
-            return temDST_IS_SRC;
-        }
+        return trustDelete (view(),
+            sleDelete, account_, uDstAccountID, viewJ);
     }
 
     SLE::pointer sleDst =
@@ -328,7 +365,7 @@ SetTrust::doApply ()
         {
             // Set reserve for low account.
             adjustOwnerCount(view(),
-                sleLowAccount, 1);
+                sleLowAccount, 1, viewJ);
             uFlagsOut |= lsfLowReserve;
 
             if (!bHigh)
@@ -339,7 +376,7 @@ SetTrust::doApply ()
         {
             // Clear reserve for low account.
             adjustOwnerCount(view(),
-                sleLowAccount, -1);
+                sleLowAccount, -1, viewJ);
             uFlagsOut &= ~lsfLowReserve;
         }
 
@@ -347,7 +384,7 @@ SetTrust::doApply ()
         {
             // Set reserve for high account.
             adjustOwnerCount(view(),
-                sleHighAccount, 1);
+                sleHighAccount, 1, viewJ);
             uFlagsOut |= lsfHighReserve;
 
             if (bHigh)
@@ -358,7 +395,7 @@ SetTrust::doApply ()
         {
             // Clear reserve for high account.
             adjustOwnerCount(view(),
-                sleHighAccount, -1);
+                sleHighAccount, -1, viewJ);
             uFlagsOut &= ~lsfHighReserve;
         }
 
@@ -370,7 +407,7 @@ SetTrust::doApply ()
             // Delete.
 
             terResult = trustDelete (view(),
-                sleRippleState, uLowAccountID, uHighAccountID);
+                sleRippleState, uLowAccountID, uHighAccountID, viewJ);
         }
         // Reserve is not scaled by load.
         else if (bReserveIncrease && mPriorBalance < reserveCreate)
@@ -390,9 +427,10 @@ SetTrust::doApply ()
         }
     }
     // Line does not exist.
-    else if (!saLimitAmount                       // Setting default limit.
-                && (!bQualityIn || !uQualityIn)      // Not setting quality in or setting default quality in.
-                && (!bQualityOut || !uQualityOut))   // Not setting quality out or setting default quality out.
+    else if (! saLimitAmount &&                          // Setting default limit.
+        (! bQualityIn || ! uQualityIn) &&           // Not setting quality in or setting default quality in.
+        (! bQualityOut || ! uQualityOut) &&         // Not setting quality out or setting default quality out.
+        (! (view().rules().enabled(featureTrustSetAuth, ctx_.app.config().features)) || ! bSetAuth))
     {
         j_.trace <<
             "Redundant: Setting non-existent ripple line to defaults.";
@@ -431,7 +469,7 @@ SetTrust::doApply ()
             saBalance,
             saLimitAllow,       // Limit for who is being charged.
             uQualityIn,
-            uQualityOut);
+            uQualityOut, viewJ);
     }
 
     return terResult;

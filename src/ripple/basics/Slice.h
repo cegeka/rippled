@@ -20,8 +20,8 @@
 #ifndef RIPPLE_BASICS_SLICE_H_INCLUDED
 #define RIPPLE_BASICS_SLICE_H_INCLUDED
 
+#include <ripple/basics/contract.h>
 #include <ripple/basics/strHex.h>
-#include <beast/utility/noexcept.h>
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -29,7 +29,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <beast/cxx14/type_traits.h> // <type_traits>
+#include <type_traits>
 
 namespace ripple {
 
@@ -58,8 +58,6 @@ public:
             std::uint8_t const*>(data))
         , size_ (size)
     {
-        assert(data_ != nullptr);
-        assert(size_ > 0);
     }
 
     /** Return `true` if the byte range is empty. */
@@ -103,7 +101,7 @@ public:
     operator+= (std::size_t n)
     {
         if (n > size_)
-            throw std::domain_error("too small");
+            Throw<std::domain_error> ("too small");
         data_ += n;
         size_ -= n;
         return *this;

@@ -20,8 +20,9 @@
 #include <BeastConfig.h>
 #include <ripple/core/DatabaseCon.h>
 #include <ripple/core/SociDB.h>
+#include <ripple/basics/contract.h>
 #include <ripple/basics/Log.h>
-#include <beast/cxx14/memory.h>  // <memory>
+#include <memory>
 
 namespace ripple {
 
@@ -61,15 +62,20 @@ DatabaseCon::Setup setup_DatabaseCon (Config const& c)
     setup.startUp = c.START_UP;
     setup.standAlone = c.RUN_STANDALONE;
     setup.dataDir = c.legacy ("database_path");
+    if (!setup.standAlone && setup.dataDir.empty())
+    {
+        Throw<std::runtime_error>(
+            "database_path must be set.");
+    }
 
     return setup;
 }
 
-void DatabaseCon::setupCheckpointing (JobQueue* q)
+void DatabaseCon::setupCheckpointing (JobQueue* q, Logs& l)
 {
     if (! q)
-        throw std::logic_error ("No JobQueue");
-    checkpointer_ = makeCheckpointer (session_, *q);
+        Throw<std::logic_error> ("No JobQueue");
+    checkpointer_ = makeCheckpointer (session_, *q, l);
 }
 
 } // ripple

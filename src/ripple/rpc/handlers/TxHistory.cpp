@@ -19,7 +19,7 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/main/Application.h>
-#include <ripple/app/tx/Transaction.h>
+#include <ripple/app/misc/Transaction.h>
 #include <ripple/core/DatabaseCon.h>
 #include <ripple/core/SociDB.h>
 #include <ripple/net/RPCErr.h>
@@ -44,7 +44,7 @@ Json::Value doTxHistory (RPC::Context& context)
 
     unsigned int startIndex = context.params[jss::start].asUInt ();
 
-    if ((startIndex > 10000) &&  (context.role != Role::ADMIN))
+    if ((startIndex > 10000) &&  (! isUnlimited (context.role)))
         return rpcError (rpcNO_PERMISSION);
 
     Json::Value obj;
@@ -59,7 +59,7 @@ Json::Value doTxHistory (RPC::Context& context)
                     % startIndex);
 
     {
-        auto db = getApp().getTxnDB ().checkoutDb ();
+        auto db = context.app.getTxnDB ().checkoutDb ();
 
         boost::optional<std::uint64_t> ledgerSeq;
         boost::optional<std::string> status;
@@ -81,7 +81,7 @@ Json::Value doTxHistory (RPC::Context& context)
                 rawTxn.clear ();
 
             if (auto trans = Transaction::transactionFromSQL (
-                    ledgerSeq, status, rawTxn, Validate::NO))
+                    ledgerSeq, status, rawTxn, context.app))
                 txs.append (trans->getJson (0));
         }
     }

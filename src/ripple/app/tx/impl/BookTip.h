@@ -23,11 +23,12 @@
 #include <ripple/protocol/Quality.h>
 #include <ripple/ledger/View.h>
 #include <ripple/protocol/Indexes.h>
-#include <beast/utility/noexcept.h>
 
 #include <functional>
 
 namespace ripple {
+
+class Logs;
 
 /** Iterates and consumes raw offers in an order book.
     Offers are presented from highest quality to lowest quality. This will
@@ -47,7 +48,7 @@ private:
 
 public:
     /** Create the iterator. */
-    BookTip (ApplyView& view, BookRef book);
+    BookTip (ApplyView& view, Book const& book);
 
     uint256 const&
     dir() const noexcept
@@ -78,7 +79,7 @@ public:
         @return `true` if there is a next offer
     */
     bool
-    step ();
+    step (Logs& l);
 };
 
 }

@@ -20,11 +20,14 @@
 #ifndef RIPPLE_PROTOCOL_STAMOUNT_H_INCLUDED
 #define RIPPLE_PROTOCOL_STAMOUNT_H_INCLUDED
 
+#include <ripple/basics/chrono.h>
 #include <ripple/protocol/SField.h>
 #include <ripple/protocol/Serializer.h>
 #include <ripple/protocol/STBase.h>
 #include <ripple/protocol/Issue.h>
-#include <beast/cxx14/memory.h> // <memory>
+#include <ripple/protocol/IOUAmount.h>
+#include <ripple/protocol/XRPAmount.h>
+#include <memory>
 
 namespace ripple {
 
@@ -54,6 +57,8 @@ private:
     bool mIsNegative;
 
 public:
+    using value_type = STAmount;
+
     static const int cMinOffset = -96;
     static const int cMaxOffset = 80;
 
@@ -68,6 +73,9 @@ public:
     static const std::uint64_t cPosNative  = 0x4000000000000000ull;
 
     static std::uint64_t const uRateOne;
+
+    static STAmount const saZero;
+    static STAmount const saOne;
 
     //--------------------------------------------------------------------------
     STAmount(SerialIter& sit, SField const& name);
@@ -108,6 +116,10 @@ public:
     STAmount (Issue const& issue, std::int64_t mantissa, int exponent = 0);
 
     STAmount (Issue const& issue, int mantissa, int exponent = 0);
+
+    // Legacy support for new-style amounts
+    STAmount (IOUAmount const& amount, Issue const& issue);
+    STAmount (XRPAmount const& amount);
 
     STBase*
     copy (std::size_t n, void* buf) const override
@@ -166,6 +178,12 @@ public:
     void
     setJson (Json::Value&) const;
 
+    STAmount const&
+    value() const noexcept
+    {
+        return *this;
+    }
+
     //--------------------------------------------------------------------------
     //
     // Operators
@@ -183,6 +201,12 @@ public:
     STAmount& operator= (beast::Zero)
     {
         clear();
+        return *this;
+    }
+
+    STAmount& operator= (XRPAmount const& amount)
+    {
+        *this = STAmount (amount);
         return *this;
     }
 
@@ -260,6 +284,9 @@ public:
     {
         return (mValue == 0) && mIsNative;
     }
+
+    XRPAmount xrp () const;
+    IOUAmount iou () const;
 };
 
 //------------------------------------------------------------------------------
@@ -351,15 +378,32 @@ divide (STAmount const& v1, STAmount const& v2, Issue const& issue);
 STAmount
 multiply (STAmount const& v1, STAmount const& v2, Issue const& issue);
 
-// multiply, or divide rounding result in specified direction
+/** Control when bugfixes that require switchover dates are enabled */
+class STAmountCalcSwitchovers
+{
+    bool enableUnderflowFix_ {false};
+  public:
+    STAmountCalcSwitchovers () = delete;
+    explicit
+    STAmountCalcSwitchovers (NetClock::time_point parentCloseTime);
+    explicit
+    STAmountCalcSwitchovers (bool enableAll)
+        : enableUnderflowFix_ (enableAll) {}
+    bool enableUnderflowFix () const;
+    // for tests
+    static NetClock::time_point enableUnderflowFixCloseTime ();
+};
 
+// multiply, or divide rounding result in specified direction
 STAmount
 mulRound (STAmount const& v1, STAmount const& v2,
-    Issue const& issue, bool roundUp);
+    Issue const& issue, bool roundUp,
+        STAmountCalcSwitchovers const& switchovers);
 
 STAmount
 divRound (STAmount const& v1, STAmount const& v2,
-    Issue const& issue, bool roundUp);
+    Issue const& issue, bool roundUp,
+        STAmountCalcSwitchovers const& switchovers);
 
 // Someone is offering X for Y, what is the rate?
 // Rate: smaller is better, the taker wants the most out: in/out
@@ -373,10 +417,6 @@ inline bool isXRP(STAmount const& amount)
 {
     return isXRP (amount.issue().currency);
 }
-
-// VFALCO TODO Make static member accessors for these in STAmount
-extern const STAmount saZero;
-extern const STAmount saOne;
 
 } // ripple
 

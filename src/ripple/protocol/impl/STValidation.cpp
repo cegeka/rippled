@@ -20,6 +20,7 @@
 #include <BeastConfig.h>
 #include <ripple/protocol/STValidation.h>
 #include <ripple/protocol/HashPrefix.h>
+#include <ripple/basics/contract.h>
 #include <ripple/basics/Log.h>
 #include <ripple/json/to_string.h>
 
@@ -27,7 +28,6 @@ namespace ripple {
 
 STValidation::STValidation (SerialIter& sit, bool checkSignature)
     : STObject (getFormat (), sit, sfValidation)
-    , mTrusted (false)
 {
     mNodeID = RippleAddress::createNodePublic (getFieldVL (sfSigningPubKey)).getNodeID ();
     assert (mNodeID.isNonZero ());
@@ -35,19 +35,19 @@ STValidation::STValidation (SerialIter& sit, bool checkSignature)
     if  (checkSignature && !isValid ())
     {
         WriteLog (lsTRACE, Ledger) << "Invalid validation " << getJson (0);
-        throw std::runtime_error ("Invalid validation");
+        Throw<std::runtime_error> ("Invalid validation");
     }
 }
 
 STValidation::STValidation (
-    uint256 const& ledgerHash, std::uint32_t signTime,
+    uint256 const& ledgerHash, NetClock::time_point signTime,
     RippleAddress const& raPub, bool isFull)
     : STObject (getFormat (), sfValidation)
-    , mTrusted (false)
+    , mSeen (signTime)
 {
     // Does not sign
     setFieldH256 (sfLedgerHash, ledgerHash);
-    setFieldU32 (sfSigningTime, signTime);
+    setFieldU32 (sfSigningTime, signTime.time_since_epoch().count());
 
     setFieldVL (sfSigningPubKey, raPub.getNodePublic ());
     mNodeID = raPub.getNodeID ();
@@ -79,9 +79,15 @@ uint256 STValidation::getLedgerHash () const
     return getFieldH256 (sfLedgerHash);
 }
 
-std::uint32_t STValidation::getSignTime () const
+NetClock::time_point
+STValidation::getSignTime () const
 {
-    return getFieldU32 (sfSigningTime);
+    return NetClock::time_point{NetClock::duration{getFieldU32(sfSigningTime)}};
+}
+
+NetClock::time_point STValidation::getSeenTime () const
+{
+    return mSeen;
 }
 
 std::uint32_t STValidation::getFlags () const
@@ -104,7 +110,7 @@ bool STValidation::isValid (uint256 const& signingHash) const
         return raPublicKey.isValid () &&
             raPublicKey.verifyNodePublic (signingHash, getFieldVL (sfSignature), fullyCanonical);
     }
-    catch (...)
+    catch (std::exception const&)
     {
         WriteLog (lsINFO, Ledger) << "exception validating validation";
         return false;

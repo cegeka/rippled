@@ -18,11 +18,12 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/basics/contract.h>
 #include <ripple/nodestore/Factory.h>
 #include <ripple/nodestore/Manager.h>
 #include <beast/utility/ci_char_traits.h>
-#include <beast/cxx14/memory.h> // <memory>
 #include <map>
+#include <memory>
 #include <mutex>
 
 namespace ripple {
@@ -63,7 +64,7 @@ public:
             std::make_tuple(path), std::make_tuple());
         MemoryDB& db = result.first->second;
         if (db.open)
-            throw std::runtime_error("already open");
+            Throw<std::runtime_error> ("already open");
         return db;
     }
 };
@@ -88,7 +89,7 @@ public:
         , journal_ (journal)
     {
         if (name_.empty())
-            throw std::runtime_error ("Missing path in Memory backend");
+            Throw<std::runtime_error> ("Missing path in Memory backend");
         db_ = &memoryFactory.open(name_);
     }
 
@@ -98,7 +99,7 @@ public:
     }
 
     std::string
-    getName ()
+    getName () override
     {
         return name_;
     }
@@ -112,7 +113,7 @@ public:
     //--------------------------------------------------------------------------
 
     Status
-    fetch (void const* key, std::shared_ptr<NodeObject>* pObject)
+    fetch (void const* key, std::shared_ptr<NodeObject>* pObject) override
     {
         uint256 const hash (uint256::fromVoid (key));
 
@@ -137,33 +138,33 @@ public:
     std::vector<std::shared_ptr<NodeObject>>
     fetchBatch (std::size_t n, void const* const* keys) override
     {
-        throw std::runtime_error("pure virtual called");
+        Throw<std::runtime_error> ("pure virtual called");
         return {};
     }
 
     void
-    store (std::shared_ptr<NodeObject> const& object)
+    store (std::shared_ptr<NodeObject> const& object) override
     {
         std::lock_guard<std::mutex> _(db_->mutex);
         db_->table.emplace (object->getHash(), object);
     }
 
     void
-    storeBatch (Batch const& batch)
+    storeBatch (Batch const& batch) override
     {
         for (auto const& e : batch)
             store (e);
     }
 
     void
-    for_each (std::function <void(std::shared_ptr<NodeObject>)> f)
+    for_each (std::function <void(std::shared_ptr<NodeObject>)> f) override
     {
         for (auto const& e : db_->table)
             f (e.second);
     }
 
     int
-    getWriteLoad()
+    getWriteLoad() override
     {
         return 0;
     }

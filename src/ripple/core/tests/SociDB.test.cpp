@@ -21,6 +21,7 @@
 
 #include <ripple/core/ConfigSections.h>
 #include <ripple/core/SociDB.h>
+#include <ripple/basics/contract.h>
 #include <ripple/basics/TestSuite.h>
 #include <ripple/basics/BasicConfig.h>
 #include <boost/filesystem.hpp>
@@ -59,8 +60,8 @@ private:
         if (!is_directory (dbPath))
         {
             // someone created a file where we want to put out directory
-            throw std::runtime_error ("Cannot create directory: " +
-                                      dbPath.string ());
+            Throw<std::runtime_error> (
+                "Cannot create directory: " + dbPath.string ());
         }
     }
     static boost::filesystem::path getDatabasePath ()
@@ -75,7 +76,7 @@ public:
         {
             setupDatabaseDir (getDatabasePath ());
         }
-        catch (...)
+        catch (std::exception const&)
         {
         }
     }
@@ -85,7 +86,7 @@ public:
         {
             cleanupDatabaseDir (getDatabasePath ());
         }
-        catch (...)
+        catch (std::exception const&)
         {
         }
     }
@@ -232,7 +233,7 @@ public:
             // There are too many issues when working with soci::row and boost::tuple. DO NOT USE
             // soci row! I had a set of workarounds to make soci row less error prone, I'm keeping
             // these tests in case I try to add soci::row and boost::tuple back into soci.
-#if 0            
+#if 0
             try
             {
                 std::int32_t ig = 0;
@@ -285,7 +286,7 @@ public:
             {
                 fail ();
             }
-#endif        
+#endif
         }
         {
             using namespace boost::filesystem;

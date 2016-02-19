@@ -23,6 +23,7 @@
 #include <ripple/protocol/STLedgerEntry.h>
 #include <ripple/protocol/STArray.h>
 #include <ripple/protocol/TER.h>
+#include <beast/utility/Journal.h>
 #include <boost/container/flat_set.hpp>
 #include <boost/optional.hpp>
 
@@ -38,26 +39,29 @@ public:
 private:
     struct CtorHelper{};
     template<class T>
-    TxMeta (uint256 const& txID, std::uint32_t ledger, T const& data,
+    TxMeta (uint256 const& txID, std::uint32_t ledger, T const& data, beast::Journal j,
                         CtorHelper);
 public:
-    TxMeta ()
+    TxMeta (beast::Journal j)
         : mLedger (0)
         , mIndex (static_cast<std::uint32_t> (-1))
         , mResult (255)
+        , j_ (j)
     {
     }
 
-    TxMeta (uint256 const& txID, std::uint32_t ledger, std::uint32_t index)
+    TxMeta (uint256 const& txID, std::uint32_t ledger, std::uint32_t index, beast::Journal j)
         : mTransactionID (txID)
         , mLedger (ledger)
         , mIndex (static_cast<std::uint32_t> (-1))
         , mResult (255)
+        , j_(j)
     {
     }
 
-    TxMeta (uint256 const& txID, std::uint32_t ledger, Blob const&);
-    TxMeta (uint256 const& txID, std::uint32_t ledger, std::string const&);
+    TxMeta (uint256 const& txID, std::uint32_t ledger, Blob const&, beast::Journal j);
+    TxMeta (uint256 const& txID, std::uint32_t ledger, std::string const&, beast::Journal j);
+    TxMeta (uint256 const& txID, std::uint32_t ledger, STObject const&, beast::Journal j);
 
     void init (uint256 const& transactionID, std::uint32_t ledger);
     void clear ()
@@ -93,7 +97,7 @@ public:
     STObject& getAffectedNode (SLE::ref node, SField const& type); // create if needed
     STObject& getAffectedNode (uint256 const& );
     const STObject& peekAffectedNode (uint256 const& ) const;
-    
+
     /** Return a list of accounts affected by this transaction */
     boost::container::flat_set<AccountID>
     getAffectedAccounts() const;
@@ -137,6 +141,8 @@ private:
     boost::optional <STAmount> mDelivered;
 
     STArray mNodes;
+
+    beast::Journal j_;
 };
 
 } // ripple

@@ -18,38 +18,43 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/ledger/TransactionStateSF.h>
+#include <ripple/app/ledger/LedgerMaster.h>
+#include <ripple/app/ledger/TransactionMaster.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/NetworkOPs.h>
-#include <ripple/app/tx/TransactionMaster.h>
 #include <ripple/nodestore/Database.h>
 #include <ripple/protocol/HashPrefix.h>
 
 namespace ripple {
 
+TransactionStateSF::TransactionStateSF(Application& app)
+    : app_ (app)
+{
+}
+
 // VFALCO This might be better as Blob&&
 void TransactionStateSF::gotNode (bool fromFilter,
                                   SHAMapNodeID const& id,
-                                  uint256 const& nodeHash,
+                                  SHAMapHash const& nodeHash,
                                   Blob& nodeData,
-                                  SHAMapTreeNode::TNType type)
+                                  SHAMapTreeNode::TNType type) const
 {
     // VFALCO SHAMapSync filters should be passed the SHAMap, the
     //        SHAMap should provide an accessor to get the injected Database,
     //        and this should use that Database instad of getNodeStore
     assert(type !=
         SHAMapTreeNode::tnTRANSACTION_NM);
-    getApp().getNodeStore().store(
+    app_.getNodeStore().store(
         hotTRANSACTION_NODE,
-            std::move (nodeData), nodeHash);
+            std::move (nodeData), nodeHash.as_uint256());
 }
 
 bool TransactionStateSF::haveNode (SHAMapNodeID const& id,
-                                   uint256 const& nodeHash,
-                                   Blob& nodeData)
+                                   SHAMapHash const& nodeHash,
+                                   Blob& nodeData) const
 {
-    return getApp().getLedgerMaster ().getFetchPack (nodeHash, nodeData);
+    return app_.getLedgerMaster ().getFetchPack (nodeHash.as_uint256(), nodeData);
 }
 
 } // ripple

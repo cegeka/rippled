@@ -21,12 +21,14 @@
 #define RIPPLE_APP_PATHS_PATHREQUEST_H_INCLUDED
 
 #include <ripple/app/ledger/Ledger.h>
+#include <ripple/app/paths/Pathfinder.h>
 #include <ripple/app/paths/RippleLineCache.h>
 #include <ripple/json/json_value.h>
 #include <ripple/net/InfoSub.h>
 #include <ripple/protocol/types.h>
 #include <boost/optional.hpp>
 #include <map>
+#include <mutex>
 #include <set>
 
 namespace ripple {
@@ -57,12 +59,14 @@ public:
 public:
     // VFALCO TODO Break the cyclic dependency on InfoSub
     PathRequest (
+        Application& app,
         std::shared_ptr <InfoSub> const& subscriber,
         int id,
         PathRequests&,
         beast::Journal journal);
 
     PathRequest (
+        Application& app,
         std::function <void (void)> const& completion,
         int id,
         PathRequests&,
@@ -70,7 +74,6 @@ public:
 
     ~PathRequest ();
 
-    bool        isValid ();
     bool        isNew ();
     bool        needsUpdate (bool newOnly, LedgerIndex index);
     void        updateComplete ();
@@ -89,16 +92,26 @@ public:
     bool hasCompletion ();
 
 private:
+    using ScopedLockType = std::lock_guard <std::recursive_mutex>;
+
     bool isValid (RippleLineCache::ref crCache);
     void setValid ();
     void resetLevel (int level);
-    int parseJson (Json::Value const&, bool complete);
 
+    std::unique_ptr<Pathfinder> const&
+    getPathFinder(RippleLineCache::ref,
+        hash_map<Currency, std::unique_ptr<Pathfinder>>&, Currency const&,
+            STAmount const&, int const);
+
+    void
+    findPaths (RippleLineCache::ref, int const, Json::Value&);
+
+    int parseJson (Json::Value const&);
+
+    Application& app_;
     beast::Journal m_journal;
 
-    using LockType = RippleRecursiveMutex;
-    using ScopedLockType = std::lock_guard <LockType>;
-    LockType mLock;
+    std::recursive_mutex mLock;
 
     PathRequests& mOwner;
 
@@ -112,13 +125,14 @@ private:
     boost::optional<AccountID> raSrcAccount;
     boost::optional<AccountID> raDstAccount;
     STAmount saDstAmount;
+    boost::optional<STAmount> saSendMax;
 
     std::set<Issue> sciSourceCurrencies;
     std::map<Issue, STPathSet> mContext;
 
-    bool bValid;
+    bool convert_all_;
 
-    LockType mIndexLock;
+    std::recursive_mutex mIndexLock;
     LedgerIndex mLastIndex;
     bool mInProgress;
 
@@ -130,6 +144,8 @@ private:
     boost::posix_time::ptime ptCreated;
     boost::posix_time::ptime ptQuickReply;
     boost::posix_time::ptime ptFullReply;
+
+    static unsigned int const max_paths_ = 4;
 };
 
 } // ripple

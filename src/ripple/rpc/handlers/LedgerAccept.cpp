@@ -33,10 +33,10 @@ namespace ripple {
 
 Json::Value doLedgerAccept (RPC::Context& context)
 {
-    auto lock = beast::make_lock(getApp().getMasterMutex());
+    auto lock = beast::make_lock(context.app.getMasterMutex());
     Json::Value jvResult;
 
-    if (!getConfig ().RUN_STANDALONE)
+    if (!context.app.config().RUN_STANDALONE)
     {
         jvResult[jss::error] = "notStandAlone";
     }

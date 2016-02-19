@@ -18,7 +18,6 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <beast/utility/static_initializer.h>
 #include <ripple/protocol/TxFormats.h>
 
 namespace ripple {
@@ -67,6 +66,25 @@ TxFormats::TxFormats ()
         << SOElement (sfDeliverMin,          SOE_OPTIONAL)
         ;
 
+    add ("SuspendedPaymentCreate", ttSUSPAY_CREATE) <<
+        SOElement (sfDestination,       SOE_REQUIRED) <<
+        SOElement (sfAmount,            SOE_REQUIRED) <<
+        SOElement (sfDigest,            SOE_OPTIONAL) <<
+        SOElement (sfCancelAfter,       SOE_OPTIONAL) <<
+        SOElement (sfFinishAfter,       SOE_OPTIONAL) <<
+        SOElement (sfDestinationTag,    SOE_OPTIONAL);
+
+    add ("SuspendedPaymentFinish", ttSUSPAY_FINISH) <<
+        SOElement (sfOwner,               SOE_REQUIRED) <<
+        SOElement (sfOfferSequence,       SOE_REQUIRED) <<
+        SOElement (sfMethod,              SOE_OPTIONAL) <<
+        SOElement (sfDigest,              SOE_OPTIONAL) <<
+        SOElement (sfProof,               SOE_OPTIONAL);
+
+    add ("SuspendedPaymentCancel", ttSUSPAY_CANCEL) <<
+        SOElement (sfOwner,               SOE_REQUIRED) <<
+        SOElement (sfOfferSequence,       SOE_REQUIRED);
+
     add ("EnableAmendment", ttAMENDMENT)
         << SOElement (sfLedgerSequence,      SOE_OPTIONAL)
         << SOElement (sfAmendment,           SOE_REQUIRED)
@@ -113,16 +131,15 @@ void TxFormats::addCommonFields (Item& item)
         << SOElement(sfMemos,               SOE_OPTIONAL)
         << SOElement(sfSigningPubKey,       SOE_REQUIRED)
         << SOElement(sfTxnSignature,        SOE_OPTIONAL)
-        << SOElement(sfMultiSigners,        SOE_OPTIONAL) // submit_multisigned
+        << SOElement(sfSigners,             SOE_OPTIONAL) // submit_multisigned
         ;
 }
 
 TxFormats const&
 TxFormats::getInstance ()
 {
-    static beast::static_initializer<
-        TxFormats> instance;
-    return *instance;
+    static TxFormats const instance;
+    return instance;
 }
 
 } // ripple

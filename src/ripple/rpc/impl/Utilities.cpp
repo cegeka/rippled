@@ -18,8 +18,12 @@
 //==============================================================================
 
 #include <ripple/rpc/impl/Utilities.h>
+#include <ripple/app/ledger/LedgerMaster.h>
+#include <ripple/app/misc/Transaction.h>
 #include <ripple/json/json_value.h>
 #include <ripple/protocol/JsonFields.h>
+#include <ripple/protocol/ErrorCodes.h>
+#include <ripple/rpc/Context.h>
 #include <boost/algorithm/string.hpp>
 #include <boost/format.hpp>
 
@@ -30,25 +34,34 @@ void
 addPaymentDeliveredAmount (
     Json::Value& meta,
     RPC::Context& context,
-    Transaction::pointer transaction,
+    std::shared_ptr<Transaction> transaction,
     TxMeta::pointer transactionMeta)
 {
     // We only want to add a "delivered_amount" field if the transaction
     // succeeded - otherwise nothing could have been delivered.
-    if (!transaction || transaction->getResult () != tesSUCCESS)
+    if (! transaction)
         return;
 
     auto serializedTx = transaction->getSTransaction ();
-
-    if (!serializedTx || serializedTx->getTxnType () != ttPAYMENT)
+    if (! serializedTx || serializedTx->getTxnType () != ttPAYMENT)
         return;
 
-    // If the transaction explicitly specifies a DeliveredAmount in the
-    // metadata then we use it.
-    if (transactionMeta && transactionMeta->hasDeliveredAmount ())
+    if (transactionMeta)
     {
-        meta[jss::delivered_amount] =
-            transactionMeta->getDeliveredAmount ().getJson (1);
+        if (transactionMeta->getResultTER() != tesSUCCESS)
+            return;
+
+        // If the transaction explicitly specifies a DeliveredAmount in the
+        // metadata then we use it.
+        if (transactionMeta->hasDeliveredAmount ())
+        {
+            meta[jss::delivered_amount] =
+                transactionMeta->getDeliveredAmount ().getJson (1);
+            return;
+        }
+    }
+    else if (transaction->getResult() != tesSUCCESS)
+    {
         return;
     }
 
@@ -57,6 +70,20 @@ addPaymentDeliveredAmount (
     // that the amount delivered is listed in the Amount field.
     if (transaction->getLedger () >= 4594095)
     {
+        meta[jss::delivered_amount] =
+            serializedTx->getFieldAmount (sfAmount).getJson (1);
+        return;
+    }
+
+    // If the ledger closed long after the DeliveredAmount code was deployed
+    // then its absence indicates that the amount delivered is listed in the
+    // Amount field. DeliveredAmount went live January 24, 2014.
+    using namespace std::chrono_literals;
+    auto ct =
+        context.ledgerMaster.getCloseTimeBySeq (transaction->getLedger ());
+    if (ct && (*ct > NetClock::time_point{446000000s}))
+    {
+        // 446000000 is in Feb 2014, well after DeliveredAmount went live
         meta[jss::delivered_amount] =
             serializedTx->getFieldAmount (sfAmount).getJson (1);
         return;
@@ -92,6 +119,24 @@ injectSLE (Json::Value& jv,
     {
         jv[jss::Invalid] = true;
     }
+}
+
+boost::optional<Json::Value> readLimitField(
+    unsigned int& limit,
+    Tuning::LimitRange const& range,
+    Context const& context)
+{
+    limit = range.rdefault;
+    if (auto const& jvLimit = context.params[jss::limit])
+    {
+        if (! (jvLimit.isUInt() || (jvLimit.isInt() && jvLimit.asInt() >= 0)))
+            return RPC::expected_field_error (jss::limit, "unsigned integer");
+
+        limit = jvLimit.asUInt();
+        if (! isUnlimited (context.role))
+            limit = std::max(range.rmin, std::min(range.rmax, limit));
+    }
+    return boost::none;
 }
 
 } // ripple

@@ -21,7 +21,6 @@
 #define RIPPLE_PROTOCOL_QUALITY_H_INCLUDED
 
 #include <ripple/protocol/STAmount.h>
-#include <beast/utility/noexcept.h>
 #include <cstdint>
 #include <ostream>
 
@@ -74,7 +73,7 @@ operator!= (Amounts const& lhs, Amounts const& rhs) noexcept
 //------------------------------------------------------------------------------
 
 // Ripple specific constant used for parsing qualities and other things
-#define QUALITY_ONE         1000000000  // 10e9
+#define QUALITY_ONE 1000000000
 
 /** Represents the logical ratio of output currency to input currency.
     Internally this is stored using a custom floating point representation,
@@ -132,14 +131,16 @@ public:
         to prevent money creation.
     */
     Amounts
-    ceil_in (Amounts const& amount, STAmount const& limit) const;
+    ceil_in (Amounts const& amount, STAmount const& limit,
+             STAmountCalcSwitchovers const& switchovers) const;
 
     /** Returns the scaled amount with out capped.
         Math is avoided if the result is exact. The input is clamped
         to prevent money creation.
     */
     Amounts
-    ceil_out (Amounts const& amount, STAmount const& limit) const;
+    ceil_out (Amounts const& amount, STAmount const& limit,
+              STAmountCalcSwitchovers const& switchovers) const;
 
     /** Returns `true` if lhs is lower quality than `rhs`.
         Lower quality means the taker receives a worse deal.
@@ -180,7 +181,8 @@ public:
     @param rhs  The second leg of the path: intermediate to output.
 */
 Quality
-composed_quality (Quality const& lhs, Quality const& rhs);
+composed_quality (Quality const& lhs, Quality const& rhs,
+                  STAmountCalcSwitchovers const& switchovers);
 
 }
 

@@ -28,6 +28,7 @@
 #include <cassert>
 #include <deque>
 #include <locale>
+#include <memory>
 
 namespace ripple {
 
@@ -299,11 +300,11 @@ public:
 
 //-----------------------------------------------------------------------------
 
-ResolverAsio *ResolverAsio::New (
+std::unique_ptr<ResolverAsio> ResolverAsio::New (
     boost::asio::io_service& io_service,
     beast::Journal journal)
 {
-    return new ResolverAsioImpl (io_service, journal);
+    return std::make_unique<ResolverAsioImpl> (io_service, journal);
 }
 
 //-----------------------------------------------------------------------------

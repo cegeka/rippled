@@ -22,7 +22,9 @@
 
 #include <ripple/app/ledger/AcceptedLedgerTx.h>
 #include <ripple/app/ledger/BookListeners.h>
+#include <ripple/app/main/Application.h>
 #include <ripple/app/misc/OrderBook.h>
+#include <mutex>
 
 namespace ripple {
 
@@ -30,10 +32,10 @@ class OrderBookDB
     : public beast::Stoppable
 {
 public:
-    explicit OrderBookDB (Stoppable& parent);
+    OrderBookDB (Application& app, Stoppable& parent);
 
-    void setup (Ledger::ref ledger);
-    void update (Ledger::pointer ledger);
+    void setup (std::shared_ptr<ReadView const> const& ledger);
+    void update (std::shared_ptr<ReadView const> const& ledger);
     void invalidate ();
 
     void addOrderBook(Book const&);
@@ -42,8 +44,8 @@ public:
      */
     OrderBook::List getBooksByTakerPays (Issue const&);
 
-    /** @return a count of all orderbooks that want this issuerID and currencyID.
-     */
+    /** @return a count of all orderbooks that want this issuerID and
+        currencyID. */
     int getBookSize(Issue const&);
 
     bool isBookToXRP (Issue const&);
@@ -53,13 +55,15 @@ public:
 
     // see if this txn effects any orderbook
     void processTxn (
-        Ledger::ref ledger, const AcceptedLedgerTx& alTx,
-        Json::Value const& jvObj);
+        std::shared_ptr<ReadView const> const& ledger,
+        const AcceptedLedgerTx& alTx, Json::Value const& jvObj);
 
     using IssueToOrderBook = hash_map <Issue, OrderBook::List>;
 
 private:
     void rawAddBook(Book const&);
+
+    Application& app_;
 
     // by ci/ii
     IssueToOrderBook mSourceMap;
@@ -70,15 +74,15 @@ private:
     // does an order book to XRP exist
     hash_set <Issue> mXRPBooks;
 
-    using LockType = RippleRecursiveMutex;
-    using ScopedLockType = std::lock_guard <LockType>;
-    LockType mLock;
+    std::recursive_mutex mLock;
 
     using BookToListenersMap = hash_map <Book, BookListeners::pointer>;
 
     BookToListenersMap mListeners;
 
     std::uint32_t mSeq;
+
+    beast::Journal j_;
 };
 
 } // ripple

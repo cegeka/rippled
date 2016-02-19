@@ -36,14 +36,19 @@ class SetAccount
     static std::size_t const PUBLIC_BYTES_MAX = 33;
 
 public:
-    template <class... Args>
-    SetAccount (Args&&... args)
-        : Transactor(std::forward<
-            Args>(args)...)
+    SetAccount (ApplyContext& ctx)
+        : Transactor(ctx)
     {
     }
 
-    TER preCheck () override;
+    static
+    TER
+    preflight (PreflightContext const& ctx);
+
+    static
+    TER
+    preclaim(PreclaimContext const& ctx);
+
     TER doApply () override;
 };
 

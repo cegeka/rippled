@@ -30,8 +30,6 @@ class Dir
 private:
     ReadView const* view_ = nullptr;
     Keylet root_;
-
-    // memoization
     std::shared_ptr<SLE const> sle_;
     STVector256 const* indexes_ = nullptr;
 
@@ -66,9 +64,6 @@ public:
         std::forward_iterator_tag;
 
     const_iterator() = default;
-
-    const_iterator&
-    operator=(const_iterator const& other);
 
     bool
     operator==(const_iterator const& other) const;
@@ -110,8 +105,7 @@ private:
     friend class Dir;
 
     const_iterator(ReadView const& view,
-        Keylet const& root,
-        Keylet const& page)
+        Keylet const& root, Keylet const& page)
     : view_(&view)
     , root_(root)
     , page_(page)
@@ -123,8 +117,6 @@ private:
     Keylet page_;
     uint256 index_;
     boost::optional<value_type> mutable cache_;
-
-    // memoization
     std::shared_ptr<SLE const> sle_;
     STVector256 const* indexes_ = nullptr;
     std::vector<uint256>::const_iterator it_;

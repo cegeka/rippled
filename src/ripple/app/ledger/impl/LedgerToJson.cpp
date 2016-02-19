@@ -65,14 +65,17 @@ void fillJson(Object& json, LedgerInfo const& info, bool bFull)
     json[jss::hash] = to_string (info.hash);
     json[jss::totalCoins] = to_string (info.drops);
     json[jss::accepted] = ! info.open;
+    json[jss::close_flags] = info.closeFlags;
 
-    if (auto closeTime = info.closeTime)
+    // Always show fields that contribute to the ledger hash
+    json[jss::parent_close_time] = info.parentCloseTime.time_since_epoch().count();
+    json[jss::close_time] = info.closeTime.time_since_epoch().count();
+    json[jss::close_time_resolution] = info.closeTimeResolution.count();
+
+    if (info.closeTime != NetClock::time_point{})
     {
-        json[jss::close_time] = closeTime;
         json[jss::close_time_human] = boost::posix_time::to_simple_string (
-            ptFromSeconds (closeTime));
-        json[jss::close_time_resolution] = info.closeTimeResolution;
-
+            ptFromSeconds (info.closeTime.time_since_epoch().count()));
         if (! getCloseAgree(info))
             json[jss::close_time_estimated] = true;
     }
@@ -85,36 +88,49 @@ void fillJsonTx (Object& json, LedgerFill const& fill)
     auto bBinary = isBinary(fill);
     auto bExpanded = isExpanded(fill);
 
-    RPC::CountedYield count (
-        fill.yieldStrategy.transactionYieldCount, fill.yield);
-
     try
     {
         for (auto& i: fill.ledger.txs)
         {
-            count.yield();
-
             if (! bExpanded)
             {
                 txns.append(to_string(i.first->getTransactionID()));
             }
-            else if (bBinary)
-            {
-                auto&& txJson = appendObject (txns);
-                txJson[jss::tx_blob] = serializeHex(*i.first);
-                if (i.second)
-                    txJson[jss::meta] = serializeHex(*i.second);
-            }
             else
             {
-                auto&& txJson = appendObject (txns);
-                copyFrom(txJson, i.first->getJson(0));
-                if (i.second)
-                    txJson[jss::metaData] = i.second->getJson(0);
+                auto&& txJson = appendObject(txns);
+                if (bBinary)
+                {
+                    txJson[jss::tx_blob] = serializeHex(*i.first);
+                    if (i.second)
+                        txJson[jss::meta] = serializeHex(*i.second);
+                }
+                else
+                {
+                    copyFrom(txJson, i.first->getJson(0));
+                    if (i.second)
+                        txJson[jss::metaData] = i.second->getJson(0);
+                }
+
+                if ((fill.options & LedgerFill::ownerFunds) &&
+                    i.first->getTxnType() == ttOFFER_CREATE)
+                {
+                    auto const account = i.first->getAccountID(sfAccount);
+                    auto const amount = i.first->getFieldAmount(sfTakerGets);
+
+                    // If the offer create is not self funded then add the
+                    // owner balance
+                    if (account != amount.getIssuer())
+                    {
+                        auto const ownerFunds = accountFunds(fill.ledger,
+                            account, amount, fhIGNORE_FREEZE, beast::Journal());
+                        txJson[jss::owner_funds] = ownerFunds.getText ();
+                    }
+                }
             }
         }
     }
-    catch (...)
+    catch (std::exception const&)
     {
         // Nothing the user can do about this.
     }
@@ -125,26 +141,22 @@ void fillJsonState(Object& json, LedgerFill const& fill)
 {
     auto& ledger = fill.ledger;
     auto&& array = Json::setArray (json, jss::accountState);
-    RPC::CountedYield count (
-        fill.yieldStrategy.accountYieldCount, fill.yield);
-
     auto expanded = isExpanded(fill);
     auto binary = isBinary(fill);
 
-    forEachSLE(ledger, [&] (SLE const& sle) {
-        count.yield();
+    for(auto const& sle : ledger.sles)
+    {
         if (binary)
         {
             auto&& obj = appendObject(array);
-            obj[jss::hash] = to_string(sle.key());
-            obj[jss::tx_blob] = serializeHex(sle);
+            obj[jss::hash] = to_string(sle->key());
+            obj[jss::tx_blob] = serializeHex(*sle);
         }
         else if (expanded)
-            array.append(sle.getJson(0));
+            array.append(sle->getJson(0));
         else
-            array.append(to_string(sle.key()));
-        return true;
-    });
+            array.append(to_string(sle->key()));
+    }
 }
 
 template <class Object>

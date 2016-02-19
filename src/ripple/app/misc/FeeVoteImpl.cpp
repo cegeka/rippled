@@ -18,6 +18,7 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/protocol/st.h>
 #include <ripple/app/misc/FeeVote.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/Validations.h>
@@ -118,7 +119,7 @@ void
 FeeVoteImpl::doValidation (Ledger::ref lastClosedLedger,
     STObject& baseValidation)
 {
-    if (lastClosedLedger->getBaseFee () != target_.reference_fee)
+    if (lastClosedLedger->fees().base != target_.reference_fee)
     {
         if (journal_.info) journal_.info <<
             "Voting for base fee of " << target_.reference_fee;
@@ -126,7 +127,7 @@ FeeVoteImpl::doValidation (Ledger::ref lastClosedLedger,
         baseValidation.setFieldU64 (sfBaseFee, target_.reference_fee);
     }
 
-    if (lastClosedLedger->getReserve (0) != target_.account_reserve)
+    if (lastClosedLedger->fees().accountReserve(0) != target_.account_reserve)
     {
         if (journal_.info) journal_.info <<
             "Voting for base resrve of " << target_.account_reserve;
@@ -134,7 +135,7 @@ FeeVoteImpl::doValidation (Ledger::ref lastClosedLedger,
         baseValidation.setFieldU32(sfReserveBase, target_.account_reserve);
     }
 
-    if (lastClosedLedger->getReserveInc () != target_.owner_reserve)
+    if (lastClosedLedger->fees().increment != target_.owner_reserve)
     {
         if (journal_.info) journal_.info <<
             "Voting for reserve increment of " << target_.owner_reserve;
@@ -153,13 +154,13 @@ FeeVoteImpl::doVoting (Ledger::ref lastClosedLedger,
     assert ((lastClosedLedger->info().seq % 256) == 0);
 
     detail::VotableInteger<std::uint64_t> baseFeeVote (
-        lastClosedLedger->getBaseFee (), target_.reference_fee);
+        lastClosedLedger->fees().base, target_.reference_fee);
 
     detail::VotableInteger<std::uint32_t> baseReserveVote (
-        lastClosedLedger->getReserve (0), target_.account_reserve);
+        lastClosedLedger->fees().accountReserve(0).drops(), target_.account_reserve);
 
     detail::VotableInteger<std::uint32_t> incReserveVote (
-        lastClosedLedger->getReserveInc (), target_.owner_reserve);
+        lastClosedLedger->fees().increment, target_.owner_reserve);
 
     for (auto const& e : set)
     {
@@ -200,31 +201,35 @@ FeeVoteImpl::doVoting (Ledger::ref lastClosedLedger,
     std::uint64_t const baseFee = baseFeeVote.getVotes ();
     std::uint32_t const baseReserve = baseReserveVote.getVotes ();
     std::uint32_t const incReserve = incReserveVote.getVotes ();
+    std::uint32_t const feeUnits = target_.reference_fee_units;
 
     // add transactions to our position
-    if ((baseFee != lastClosedLedger->getBaseFee ()) ||
-            (baseReserve != lastClosedLedger->getReserve (0)) ||
-            (incReserve != lastClosedLedger->getReserveInc ()))
+    if ((baseFee != lastClosedLedger->fees().base) ||
+            (baseReserve != lastClosedLedger->fees().accountReserve(0)) ||
+            (incReserve != lastClosedLedger->fees().increment))
     {
         if (journal_.warning) journal_.warning <<
             "We are voting for a fee change: " << baseFee <<
             "/" << baseReserve <<
             "/" << incReserve;
 
-        STTx trans (ttFEE);
-        trans.setAccountID (sfAccount, AccountID ());
-        trans.setFieldU64 (sfBaseFee, baseFee);
-        trans.setFieldU32 (sfReferenceFeeUnits, 10);
-        trans.setFieldU32 (sfReserveBase, baseReserve);
-        trans.setFieldU32 (sfReserveIncrement, incReserve);
+        STTx feeTx (ttFEE,
+            [baseFee,baseReserve,incReserve,feeUnits](auto& obj)
+            {
+                obj[sfAccount] = AccountID();
+                obj[sfBaseFee] = baseFee;
+                obj[sfReserveBase] = baseReserve;
+                obj[sfReserveIncrement] = incReserve;
+                obj[sfReferenceFeeUnits] = feeUnits;
+            });
 
-        uint256 txID = trans.getTransactionID ();
+        uint256 txID = feeTx.getTransactionID ();
 
         if (journal_.warning)
             journal_.warning << "Vote: " << txID;
 
         Serializer s;
-        trans.add (s);
+        feeTx.add (s);
 
         auto tItem = std::make_shared<SHAMapItem> (txID, s.peekData ());
 

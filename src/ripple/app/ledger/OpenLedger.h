@@ -24,11 +24,9 @@
 #include <ripple/ledger/CachedSLEs.h>
 #include <ripple/ledger/OpenView.h>
 #include <ripple/app/misc/CanonicalTXSet.h>
-#include <ripple/app/misc/IHashRouter.h>
 #include <ripple/basics/Log.h>
 #include <ripple/basics/UnorderedContainers.h>
 #include <ripple/core/Config.h>
-#include <beast/container/aged_unordered_map.h>
 #include <beast/utility/Journal.h>
 #include <cassert>
 #include <mutex>
@@ -53,12 +51,25 @@ class OpenLedger
 private:
     beast::Journal j_;
     CachedSLEs& cache_;
-    Config const& config_;
     std::mutex mutable modify_mutex_;
     std::mutex mutable current_mutex_;
     std::shared_ptr<OpenView const> current_;
 
 public:
+    /** Signature for modification functions.
+
+        The modification function is called during
+        apply and modify with an OpenView to accumulate
+        changes and the Journal to use for logging.
+
+        A return value of `true` informs OpenLedger
+        that changes were made. Always returning
+        `true` won't cause harm, but it may be
+        sub-optimal.
+    */
+    using modify_type = std::function<
+        bool(OpenView&, beast::Journal)>;
+
     OpenLedger() = delete;
     OpenLedger (OpenLedger const&) = delete;
     OpenLedger& operator= (OpenLedger const&) = delete;
@@ -68,10 +79,26 @@ public:
         @param ledger A closed ledger
     */
     explicit
-    OpenLedger (std::shared_ptr<
+    OpenLedger(std::shared_ptr<
         Ledger const> const& ledger,
-            Config const& config, CachedSLEs& cache,
+            CachedSLEs& cache,
                 beast::Journal journal);
+
+    /** Returns `true` if there are no transactions.
+
+        The behavior of ledger closing can be different
+        depending on whether or not transactions exist
+        in the open ledger.
+
+        @note The value returned is only meaningful for
+              that specific instant in time. An open,
+              empty ledger can become non empty from
+              subsequent modifications. Caller is
+              responsible for synchronizing the meaning of
+              the return value.
+    */
+    bool
+    empty() const;
 
     /** Returns a view to the current open ledger.
 
@@ -83,7 +110,7 @@ public:
             non-modifiable snapshot of the open ledger
             at the time of the call.
     */
-    std::shared_ptr<ReadView const>
+    std::shared_ptr<OpenView const>
     current() const;
 
     /** Modify the open ledger
@@ -91,17 +118,13 @@ public:
         Thread safety:
             Can be called concurrently from any thread.
 
-        `f` will be called as
-            bool(ReadView&)
-
         If `f` returns `true`, the changes made in the
         OpenView will be published to the open ledger.
 
         @return `true` if the open view was changed
     */
     bool
-    modify (std::function<
-        bool(OpenView&, beast::Journal)> const& f);
+    modify (modify_type const& f);
 
     /** Accept a new ledger.
 
@@ -121,20 +144,28 @@ public:
             The list of local transactions are applied
             to the new open view.
 
+            The optional modify function f is called
+            to perform further modifications to the
+            open view, atomically. Changes made in
+            the modify function are not visible to
+            callers until accept() returns.
+
             Any failed, retriable transactions are left
             in `retries` for the caller.
 
             The current view is atomically set to the
             new open view.
 
+        @param rules The rules for the open ledger
         @param ledger A new closed ledger
     */
     void
-    accept(std::shared_ptr<Ledger const> const& ledger,
-        OrderedTxs const& locals, bool retriesFirst,
-            OrderedTxs& retries, ApplyFlags flags,
-                IHashRouter& router,
-                    std::string const& suffix = "");
+    accept (Application& app, Rules const& rules,
+        std::shared_ptr<Ledger const> const& ledger,
+            OrderedTxs const& locals, bool retriesFirst,
+                OrderedTxs& retries, ApplyFlags flags,
+                    std::string const& suffix = "",
+                        modify_type const& f = {});
 
     /** Algorithm for applying transactions.
 
@@ -144,10 +175,10 @@ public:
     template <class FwdRange>
     static
     void
-    apply (OpenView& view, ReadView const& check,
-        FwdRange const& txs, OrderedTxs& retries,
-            ApplyFlags flags, IHashRouter& router,
-                Config const& config, beast::Journal j);
+    apply (Application& app, OpenView& view,
+        ReadView const& check, FwdRange const& txs,
+            OrderedTxs& retries, ApplyFlags flags,
+                beast::Journal j);
 
 private:
     enum Result
@@ -158,37 +189,25 @@ private:
     };
 
     std::shared_ptr<OpenView>
-    create (std::shared_ptr<
-        Ledger const> const& ledger);
+    create (Rules const& rules,
+        std::shared_ptr<Ledger const> const& ledger);
 
     static
     Result
-    apply_one (OpenView& view, std::shared_ptr<
-        STTx const> const& tx, bool retry,
-            ApplyFlags flags, IHashRouter& router,
-                Config const& config, beast::Journal j);
-
-public:    
-    //--------------------------------------------------------------------------
-    //
-    // TEST CODE
-    //
-    // Verify that the open ledger has the right contents
-    // This is called while holding the master and ledger master mutexes
-    bool
-    verify (Ledger const& ledger,
-        std::string const& suffix = "") const;
+    apply_one (Application& app, OpenView& view,
+        std::shared_ptr< STTx const> const& tx,
+            bool retry, ApplyFlags flags,
+                beast::Journal j);
 };
 
 //------------------------------------------------------------------------------
 
 template <class FwdRange>
 void
-OpenLedger::apply (OpenView& view,
+OpenLedger::apply (Application& app, OpenView& view,
     ReadView const& check, FwdRange const& txs,
         OrderedTxs& retries, ApplyFlags flags,
-            IHashRouter& router, Config const& config,
-                beast::Journal j)
+            beast::Journal j)
 {
     for (auto iter = txs.begin();
         iter != txs.end(); ++iter)
@@ -200,12 +219,12 @@ OpenLedger::apply (OpenView& view,
             auto const tx = *iter;
             if (check.txExists(tx->getTransactionID()))
                 continue;
-            auto const result = apply_one(view,
-                tx, true, flags, router, config, j);
+            auto const result = apply_one(app, view,
+                tx, true, flags, j);
             if (result == Result::retry)
                 retries.insert(tx);
         }
-        catch(...)
+        catch(std::exception const&)
         {
             JLOG(j.error) <<
                 "Caught exception";
@@ -220,9 +239,9 @@ OpenLedger::apply (OpenView& view,
         auto iter = retries.begin();
         while (iter != retries.end())
         {
-            switch (apply_one(view,
+            switch (apply_one(app, view,
                 iter->second, retry, flags,
-                    router, config, j))
+                    j))
             {
             case Result::success:
                 ++changes;

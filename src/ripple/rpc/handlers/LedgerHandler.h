@@ -89,19 +89,18 @@ void LedgerHandler::writeResult (Object& value)
     if (ledger_)
     {
         Json::copyFrom (value, result_);
-        addJson (value, {*ledger_, options_, context_.yield});
+        addJson (value, {*ledger_, options_});
     }
     else
     {
-        auto& master = getApp().getLedgerMaster ();
-        auto& yield = context_.yield;
+        auto& master = context_.app.getLedgerMaster ();
         {
             auto&& closed = Json::addObject (value, jss::closed);
-            addJson (closed, {*master.getClosedLedger(), 0, yield});
+            addJson (closed, {*master.getClosedLedger(), 0});
         }
         {
             auto&& open = Json::addObject (value, jss::open);
-            addJson (open, {*master.getCurrentLedger(), 0, yield});
+            addJson (open, {*master.getCurrentLedger(), 0});
         }
     }
 }

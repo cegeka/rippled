@@ -30,17 +30,21 @@ namespace ripple {
 class SetRegularKey
     : public Transactor
 {
-    std::uint64_t calculateBaseFee () override;
-
 public:
-    template <class... Args>
-    SetRegularKey (Args&&... args)
-        : Transactor(std::forward<
-            Args>(args)...)
+    SetRegularKey (ApplyContext& ctx)
+        : Transactor(ctx)
     {
     }
 
-    TER preCheck () override;
+    static
+    TER
+    preflight (PreflightContext const& ctx);
+
+    static
+    std::uint64_t
+    calculateBaseFee (
+        PreclaimContext const& ctx);
+
     TER doApply () override;
 };
 

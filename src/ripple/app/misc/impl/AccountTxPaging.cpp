@@ -21,12 +21,12 @@
 #include <ripple/app/ledger/LedgerToJson.h>
 #include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/main/Application.h>
+#include <ripple/app/misc/Transaction.h>
 #include <ripple/app/misc/impl/AccountTxPaging.h>
-#include <ripple/app/tx/Transaction.h>
 #include <ripple/protocol/Serializer.h>
 #include <ripple/protocol/types.h>
-#include <beast/cxx14/memory.h> // <memory>
 #include <boost/format.hpp>
+#include <memory>
 
 namespace ripple {
 
@@ -36,34 +36,36 @@ convertBlobsToTxResult (
     std::uint32_t ledger_index,
     std::string const& status,
     Blob const& rawTxn,
-    Blob const& rawMeta)
+    Blob const& rawMeta,
+    Application& app)
 {
     SerialIter it (makeSlice(rawTxn));
-    STTx::pointer txn = std::make_shared<STTx> (it);
+    auto txn = std::make_shared<STTx const> (it);
     std::string reason;
 
-    auto tr = std::make_shared<Transaction> (txn, Validate::NO, reason);
+    auto tr = std::make_shared<Transaction> (txn, reason, app);
 
     tr->setStatus (Transaction::sqlTransactionStatus(status));
     tr->setLedger (ledger_index);
 
     auto metaset = std::make_shared<TxMeta> (
-        tr->getID (), tr->getLedger (), rawMeta);
+        tr->getID (), tr->getLedger (), rawMeta, app.journal ("TxMeta"));
 
     to.emplace_back(std::move(tr), metaset);
 };
 
 void
-saveLedgerAsync (std::uint32_t seq)
+saveLedgerAsync (Application& app, std::uint32_t seq)
 {
-    Ledger::pointer ledger = getApp().getLedgerMaster().getLedgerBySeq(seq);
+    Ledger::pointer ledger = app.getLedgerMaster().getLedgerBySeq(seq);
     if (ledger)
-        ledger->pendSaveValidated(false, false);
+        pendSaveValidated(app, ledger, false, false);
 }
 
 void
 accountTxPage (
     DatabaseCon& connection,
+    AccountIDCache const& idCache,
     std::function<void (std::uint32_t)> const& onUnsavedLedger,
     std::function<void (std::uint32_t,
                         std::string const&,
@@ -104,7 +106,7 @@ accountTxPage (
             findLedger = token[jss::ledger].asInt();
             findSeq = token[jss::seq].asInt();
         }
-        catch (...)
+        catch (std::exception const&)
         {
             return;
         }
@@ -134,7 +136,7 @@ accountTxPage (
              ORDER BY AccountTransactions.LedgerSeq ASC,
              AccountTransactions.TxnSeq ASC
              LIMIT %u;)"))
-            % getApp().accountIDCache().toBase58(account)
+            % idCache.toBase58(account)
             % minLedger
             % maxLedger
             % queryLimit);
@@ -151,7 +153,7 @@ accountTxPage (
             AccountTransactions.TxnSeq ASC
             LIMIT %u;
             )"))
-        % getApp().accountIDCache().toBase58(account)
+        % idCache.toBase58(account)
         % (findLedger + 1)
         % maxLedger
         % findLedger
@@ -166,7 +168,7 @@ accountTxPage (
              ORDER BY AccountTransactions.LedgerSeq DESC,
              AccountTransactions.TxnSeq DESC
              LIMIT %u;)"))
-            % getApp().accountIDCache().toBase58(account)
+            % idCache.toBase58(account)
             % minLedger
             % maxLedger
             % queryLimit);
@@ -181,7 +183,7 @@ accountTxPage (
              ORDER BY AccountTransactions.LedgerSeq DESC,
              AccountTransactions.TxnSeq DESC
              LIMIT %u;)"))
-            % getApp().accountIDCache().toBase58(account)
+            % idCache.toBase58(account)
             % minLedger
             % (findLedger - 1)
             % findLedger

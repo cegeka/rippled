@@ -18,6 +18,7 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/basics/contract.h>
 #include <ripple/protocol/ErrorCodes.h>
 #include <unordered_map>
 #include <utility>
@@ -77,6 +78,7 @@ public:
         add (rpcLGR_IDXS_INVALID,      "lgrIdxsInvalid",    "Ledger indexes invalid.");
         add (rpcLGR_IDX_MALFORMED,     "lgrIdxMalformed",   "Ledger index malformed.");
         add (rpcLGR_NOT_FOUND,         "lgrNotFound",       "Ledger not found.");
+        add (rpcLGR_NOT_VALIDATED,     "lgrNotValidated",   "Ledger not validated.");
         add (rpcLOAD_FAILED,           "loadFailed",        "Load failed");
         add (rpcMASTER_DISABLED,       "masterDisabled",    "Master key is disabled.");
         add (rpcNOT_ENABLED,           "notEnabled",        "Not enabled in configuration.");
@@ -108,6 +110,7 @@ public:
         add (rpcSRC_ISR_MALFORMED,     "srcIsrMalformed",   "Source issuer is malformed.");
         add (rpcSRC_MISSING,           "srcMissing",        "Source is missing.");
         add (rpcSRC_UNCLAIMED,         "srcUnclaimed",      "Source account is not claimed.");
+        add (rpcSTREAM_MALFORMED,      "malformedStream",   "Stream malformed.");
         add (rpcTOO_BUSY,              "tooBusy",           "The server is too busy to help you now.");
         add (rpcTXN_NOT_FOUND,         "txnNotFound",       "Transaction not found.");
         add (rpcUNKNOWN_COMMAND,       "unknownCmd",        "Unknown method.");
@@ -131,7 +134,7 @@ private:
                 std::forward_as_tuple (code), std::forward_as_tuple (
                     code, token, message)));
         if (! result.second)
-            throw std::invalid_argument ("duplicate error code");
+            Throw<std::invalid_argument> ("duplicate error code");
     }
 
 private:

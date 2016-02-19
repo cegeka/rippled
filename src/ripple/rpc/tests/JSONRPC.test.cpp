@@ -18,12 +18,13 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/app/paths/FindPaths.h>
-#include <ripple/basics/StringUtilities.h>
+#include <ripple/basics/contract.h>
+#include <ripple/core/LoadFeeTrack.h>
 #include <ripple/json/json_reader.h>
-#include <ripple/protocol/SecretKey.h>
-#include <ripple/protocol/TxFlags.h>
+#include <ripple/protocol/ErrorCodes.h>
+#include <ripple/protocol/Feature.h>
 #include <ripple/rpc/impl/TransactionSign.h>
+#include <ripple/test/jtx.h>
 #include <beast/unit_test/suite.h>
 
 namespace ripple {
@@ -80,14 +81,13 @@ R"({
 {
 "",
 "",
-"Missing field 'signing_for'.",
+"Missing field 'tx_json.Sequence'.",
 "Missing field 'tx_json.Sequence'."}},
 
 { "Pass in Sequence.",
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Sequence": 0,
@@ -100,14 +100,13 @@ R"({
 {
 "",
 "",
-"Missing field 'tx_json.SigningPubKey'.",
+"Missing field 'tx_json.Fee'.",
 "Missing field 'tx_json.SigningPubKey'."}},
 
 { "Pass in Sequence and Fee with minimal payment.",
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Sequence": 0,
@@ -121,14 +120,13 @@ R"({
 {
 "",
 "",
-"Missing field 'tx_json.SigningPubKey'.",
+"A Signer may not be the transaction's Account (rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh).",
 "Missing field 'tx_json.SigningPubKey'."}},
 
 { "Add 'fee_mult_max' field.",
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "fee_mult_max": 7,
     "tx_json": {
@@ -142,14 +140,34 @@ R"({
 {
 "",
 "",
-"Missing field 'tx_json.SigningPubKey'.",
+"Missing field 'tx_json.Fee'.",
+"Missing field 'tx_json.SigningPubKey'."}},
+
+{ "Add 'fee_mult_max' and 'fee_div_max' field.",
+R"({
+    "command": "doesnt_matter",
+    "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+    "secret": "masterpassphrase",
+    "fee_mult_max": 7,
+    "fee_div_max": 4,
+    "tx_json": {
+        "Sequence": 0,
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"",
+"",
+"Missing field 'tx_json.Fee'.",
 "Missing field 'tx_json.SigningPubKey'."}},
 
 { "fee_mult_max is ignored if 'Fee' is present.",
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "fee_mult_max": 0,
     "tx_json": {
@@ -164,14 +182,35 @@ R"({
 {
 "",
 "",
-"Missing field 'tx_json.SigningPubKey'.",
+"A Signer may not be the transaction's Account (rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh).",
+"Missing field 'tx_json.SigningPubKey'."}},
+
+{ "fee_div_max is ignored if 'Fee' is present.",
+R"({
+    "command": "doesnt_matter",
+    "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+    "secret": "masterpassphrase",
+    "fee_mult_max": 100,
+    "fee_div_max": 1000,
+    "tx_json": {
+        "Sequence": 0,
+        "Fee": 10,
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"",
+"",
+"A Signer may not be the transaction's Account (rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh).",
 "Missing field 'tx_json.SigningPubKey'."}},
 
 { "Invalid 'fee_mult_max' field.",
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "fee_mult_max": "NotAFeeMultiplier",
     "tx_json": {
@@ -185,14 +224,34 @@ R"({
 {
 "Invalid field 'fee_mult_max', not a number.",
 "Invalid field 'fee_mult_max', not a number.",
-"Missing field 'tx_json.SigningPubKey'.",
+"Missing field 'tx_json.Fee'.",
+"Missing field 'tx_json.SigningPubKey'."}},
+
+{ "Invalid 'fee_div_max' field.",
+R"({
+    "command": "doesnt_matter",
+    "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+    "secret": "masterpassphrase",
+    "fee_mult_max": 5,
+    "fee_div_max": "NotAFeeMultiplier",
+    "tx_json": {
+        "Sequence": 0,
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Invalid field 'fee_div_max', not a number.",
+"Invalid field 'fee_div_max', not a number.",
+"Missing field 'tx_json.Fee'.",
 "Missing field 'tx_json.SigningPubKey'."}},
 
 { "Invalid value for 'fee_mult_max' field.",
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "fee_mult_max": 0,
     "tx_json": {
@@ -206,14 +265,55 @@ R"({
 {
 "Fee of 10 exceeds the requested tx limit of 0",
 "Fee of 10 exceeds the requested tx limit of 0",
-"Missing field 'tx_json.SigningPubKey'.",
+"Missing field 'tx_json.Fee'.",
+"Missing field 'tx_json.SigningPubKey'."}},
+
+{ "Invalid value for 'fee_div_max' field.",
+R"({
+    "command": "doesnt_matter",
+    "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+    "secret": "masterpassphrase",
+    "fee_mult_max": 4,
+    "fee_div_max": 7,
+    "tx_json": {
+        "Sequence": 0,
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Fee of 10 exceeds the requested tx limit of 5",
+"Fee of 10 exceeds the requested tx limit of 5",
+"Missing field 'tx_json.Fee'.",
+"Missing field 'tx_json.SigningPubKey'."}},
+
+{ "Invalid zero value for 'fee_div_max' field.",
+R"({
+    "command": "doesnt_matter",
+    "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+    "secret": "masterpassphrase",
+    "fee_mult_max": 4,
+    "fee_div_max": 0,
+    "tx_json": {
+        "Sequence": 0,
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Invalid field 'fee_div_max', not non-zero.",
+"Invalid field 'fee_div_max', not non-zero.",
+"Missing field 'tx_json.Fee'.",
 "Missing field 'tx_json.SigningPubKey'."}},
 
 { "Missing 'Amount'.",
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
@@ -231,7 +331,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
@@ -250,7 +349,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
@@ -268,7 +366,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
@@ -287,7 +384,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "build_path": 1,
     "tx_json": {
@@ -307,7 +403,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "build_path": 1,
     "tx_json": {
@@ -315,7 +410,7 @@ R"({
         "Amount": {
             "value": "10",
             "currency": "USD",
-            "issuer": "0123456789012345678901234567890123456789"
+            "issuer": "rLPwWB1itaUGMV8kbMLLysjGkEpTM2Soy4"
         },
         "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
         "TransactionType": "Payment"
@@ -331,7 +426,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "build_path": 1,
     "tx_json": {
@@ -339,7 +433,7 @@ R"({
         "Amount": {
             "value": "10",
             "currency": "USD",
-            "issuer": "0123456789012345678901234567890123456789"
+            "issuer": "rLPwWB1itaUGMV8kbMLLysjGkEpTM2Soy4"
         },
         "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
         "Paths": "",
@@ -356,7 +450,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "build_path": 1,
     "tx_json": {
@@ -364,12 +457,12 @@ R"({
         "Amount": {
             "value": "10",
             "currency": "USD",
-            "issuer": "0123456789012345678901234567890123456789"
+            "issuer": "rLPwWB1itaUGMV8kbMLLysjGkEpTM2Soy4"
         },
         "SendMax": {
             "value": "5",
             "currency": "USD",
-            "issuer": "0123456789012345678901234567890123456789"
+            "issuer": "rLPwWB1itaUGMV8kbMLLysjGkEpTM2Soy4"
         },
         "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
         "TransactionType": "Payment"
@@ -385,7 +478,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "build_path": 1,
     "tx_json": {
@@ -393,7 +485,7 @@ R"({
         "Amount": {
             "value": "10",
             "currency": "USD",
-            "issuer": "0123456789012345678901234567890123456789"
+            "issuer": "rLPwWB1itaUGMV8kbMLLysjGkEpTM2Soy4"
         },
         "SendMax": 10000,
         "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
@@ -410,7 +502,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "tx_json": {
         "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
         "Amount": "1000000000",
@@ -428,7 +519,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "",
     "tx_json": {
         "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
@@ -447,7 +537,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "rx_json": {
         "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
@@ -466,7 +555,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
@@ -484,7 +572,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
@@ -503,7 +590,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
@@ -522,7 +608,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Amount": "1000000000",
@@ -540,7 +625,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Account": "NotAnAccount",
@@ -559,7 +643,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "offline": 0,
     "tx_json": {
@@ -579,10 +662,10 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "offline": 1,
     "tx_json": {
+        "Fee": 10,
         "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
         "Amount": "1000000000",
         "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
@@ -595,11 +678,10 @@ R"({
 "Missing field 'tx_json.Sequence'.",
 "Missing field 'tx_json.Sequence'."}},
 
-{ "Valid transaction if 'offline' is true.",
+{ "If 'offline' is true then a 'Fee' field must be supplied.",
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "offline": 1,
     "tx_json": {
@@ -611,16 +693,58 @@ R"({
     }
 })",
 {
+"Missing field 'tx_json.Fee'.",
+"Missing field 'tx_json.Fee'.",
+"Missing field 'tx_json.Fee'.",
+"Missing field 'tx_json.SigningPubKey'."}},
+
+{ "Valid transaction if 'offline' is true.",
+R"({
+    "command": "doesnt_matter",
+    "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+    "secret": "masterpassphrase",
+    "offline": 1,
+    "tx_json": {
+        "Sequence": 0,
+        "Fee": 10,
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "TransactionType": "Payment"
+    }
+})",
+{
 "",
 "",
-"Missing field 'tx_json.SigningPubKey'.",
+"A Signer may not be the transaction's Account (rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh).",
+"Missing field 'tx_json.SigningPubKey'."}},
+
+{ "'offline' and 'build_path' are mutually exclusive.",
+R"({
+    "command": "doesnt_matter",
+    "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+    "secret": "masterpassphrase",
+    "offline": 1,
+    "build_path": 1,
+    "tx_json": {
+        "Sequence": 0,
+        "Fee": 10,
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Field 'build_path' not allowed in this context.",
+"Field 'build_path' not allowed in this context.",
+"Field 'build_path' not allowed in this context.",
 "Missing field 'tx_json.SigningPubKey'."}},
 
 { "A 'Flags' field may be specified.",
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Flags": 0,
@@ -640,7 +764,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Flags": "NotGoodFlags",
@@ -660,7 +783,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "debug_signing": 0,
     "tx_json": {
@@ -680,8 +802,29 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
+    "tx_json": {
+        "Account": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Amount": "1000000000",
+        "Destination": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Fee": 50,
+        "Sequence": 0,
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Secret does not match account.",
+"Secret does not match account.",
+"",
+"Missing field 'tx_json.Signers'."}},
+
+{ "Minimal offline sign_for.",
+R"({
+    "command": "doesnt_matter",
+    "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+    "secret": "masterpassphrase",
+    "offline": 1,
     "tx_json": {
         "Account": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
         "Amount": "1000000000",
@@ -696,13 +839,12 @@ R"({
 "",
 "",
 "",
-"Missing field 'MultiSigners'."}},
+"Missing field 'tx_json.Signers'."}},
 
 { "Missing 'Account' in sign_for.",
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Amount": "1000000000",
@@ -723,7 +865,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Account": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
@@ -744,7 +885,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Account": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
@@ -765,7 +905,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Account": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
@@ -777,8 +916,8 @@ R"({
     }
 })",
 {
-"",
-"",
+"Secret does not match account.",
+"Secret does not match account.",
 "Missing field 'tx_json.Fee'.",
 "Missing field 'tx_json.Fee'."}},
 
@@ -786,7 +925,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Account": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
@@ -798,17 +936,36 @@ R"({
     }
 })",
 {
-"",
-"",
+"Secret does not match account.",
+"Secret does not match account.",
 "Missing field 'tx_json.Sequence'.",
 "Missing field 'tx_json.Sequence'."}},
 
-{ "Missing 'SigningPubKey' in sign_for.",
+{ "Missing 'SigningPubKey' in sign_for is automatically filled in.",
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
+    "tx_json": {
+        "Account": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Amount": "1000000000",
+        "Destination": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Fee": 50,
+        "Sequence": 0,
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Secret does not match account.",
+"Secret does not match account.",
+"",
+"Missing field 'tx_json.SigningPubKey'."}},
+
+{ "In sign_for, an account may not sign for itself.",
+R"({
+    "command": "doesnt_matter",
+    "account": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+    "secret": "a",
     "tx_json": {
         "Account": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
         "Amount": "1000000000",
@@ -821,14 +978,103 @@ R"({
 {
 "",
 "",
-"Missing field 'tx_json.SigningPubKey'.",
+"A Signer may not be the transaction's Account (rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA).",
 "Missing field 'tx_json.SigningPubKey'."}},
+
+{ "Cannot put duplicate accounts in Signers array",
+R"({
+    "command": "doesnt_matter",
+    "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+    "secret": "masterpassphrase",
+    "tx_json": {
+        "Account" : "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Amount" : "1000000000",
+        "Destination" : "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Fee" : "50",
+        "Sequence" : 0,
+        "Signers" : [
+            {
+                "Signer" : {
+                    "Account" : "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+                    "SigningPubKey" : "0330E7FC9D56BB25D6893BA3F317AE5BCF33B3291BD63DB32654A313222F7FD020",
+                    "TxnSignature" : "304502210080EB23E78A841DDC5E3A4F10DE6EAF052207D6B519BF8954467ADB221B3F349002202CA458E8D4E4DE7176D27A91628545E7B295A5DFC8ADF0B5CD3E279B6FA02998"
+                }
+            }
+        ],
+        "SigningPubKey" : "",
+        "TransactionType" : "Payment"
+    }
+})",
+{
+"Secret does not match account.",
+"Secret does not match account.",
+"Duplicate Signers:Signer:Account entries (rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh) are not allowed.",
+""}},
+
+{ "Correctly append to pre-established Signers array",
+R"({
+    "command": "doesnt_matter",
+    "account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+    "secret": "c",
+    "tx_json": {
+        "Account" : "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Amount" : "1000000000",
+        "Destination" : "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Fee" : "50",
+        "Sequence" : 0,
+        "Signers" : [
+            {
+                "Signer" : {
+                    "Account" : "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+                    "SigningPubKey" : "0330E7FC9D56BB25D6893BA3F317AE5BCF33B3291BD63DB32654A313222F7FD020",
+                    "TxnSignature" : "304502210080EB23E78A841DDC5E3A4F10DE6EAF052207D6B519BF8954467ADB221B3F349002202CA458E8D4E4DE7176D27A91628545E7B295A5DFC8ADF0B5CD3E279B6FA02998"
+                }
+            }
+        ],
+        "SigningPubKey" : "",
+        "TransactionType" : "Payment"
+    }
+})",
+{
+"Secret does not match account.",
+"Secret does not match account.",
+"",
+""}},
+
+{ "Append to pre-established Signers array with bad signature",
+R"({
+    "command": "doesnt_matter",
+    "account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+    "secret": "c",
+    "tx_json": {
+        "Account" : "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Amount" : "1000000000",
+        "Destination" : "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Fee" : "50",
+        "Sequence" : 0,
+        "Signers" : [
+            {
+                "Signer" : {
+                    "Account" : "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+                    "SigningPubKey" : "0330E7FC9D56BB25D6893BA3F317AE5BCF33B3291BD63DB32654A313222F7FD020",
+                    "TxnSignature" : "304502210080EB23E78A841DDC5E3A4F10DE6EAF052207D6B519BF8954467ACB221B3F349002202CA458E8D4E4DE7176D27A91628545E7B295A5DFC8ADF0B5CD3E279B6FA02998"
+                }
+            }
+        ],
+        "SigningPubKey" : "",
+        "TransactionType" : "Payment"
+    }
+})",
+{
+"Secret does not match account.",
+"Secret does not match account.",
+"Invalid signature.",
+"Invalid signature."}},
 
 { "Non-empty 'SigningPubKey' in sign_for.",
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Account": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
@@ -841,8 +1087,8 @@ R"({
     }
 })",
 {
-"",
-"",
+"Secret does not match account.",
+"Secret does not match account.",
 "When multi-signing 'tx_json.SigningPubKey' must be empty.",
 "When multi-signing 'tx_json.SigningPubKey' must be empty."}},
 
@@ -850,7 +1096,6 @@ R"({
 R"({
     "command": "doesnt_matter",
     "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-    "signing_for": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
     "secret": "masterpassphrase",
     "tx_json": {
         "Account": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
@@ -870,22 +1115,467 @@ R"({
 { "Minimal submit_multisigned.",
 R"({
     "command": "submit_multisigned",
-    "MultiSigners": [
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Sequence": 0,
+        "Signers" : [
+             {
+                "Signer" : {
+                    "Account" : "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "SigningPubKey" : "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8",
+                    "TxnSignature" : "3045022100909D01399AFFAD1E30D250CE61F93975B7F61E47B5244D78C3E86D9806535D95022012E389E0ACB016334052B7FE07FA6CEFDC8BE82CB410FA841D5049641C89DC8F"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+""}},
+
+{ "Minimal submit_multisigned with bad signature.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Sequence": 0,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Invalid signature."}},
+
+{ "Missing tx_json in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "Signers": [
         {
-            "SigningFor": {
-                "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-                "SigningAccounts": [
-                    {
-                        "SigningAccount": {
-                            "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
-                            "MultiSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
-                            "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
-                        }
-                    }
-                ]
+            "Signer": {
+                "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
             }
         }
-    ],
+    ]
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Missing field 'tx_json'."}},
+
+{ "Missing sequence in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Missing field 'tx_json.Sequence'."}},
+
+{ "Missing SigningPubKey in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "Sequence": 0,
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Missing field 'tx_json.SigningPubKey'."}},
+
+{ "Non-empty SigningPubKey in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Sequence": 0,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"When multi-signing 'tx_json.SigningPubKey' must be empty."}},
+
+{ "Missing TransactionType in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "Sequence": 0,
+        "SigningPubKey": "",
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Missing field 'tx_json.TransactionType'."}},
+
+{ "Missing Account in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Sequence": 0,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Missing field 'tx_json.Account'."}},
+
+{ "Malformed Account in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "NotAnAccount",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Sequence": 0,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Invalid field 'tx_json.Account'."}},
+
+{ "Account not in ledger in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rDg53Haik2475DJx8bjMDSDPj4VX7htaMd",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Sequence": 0,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Source account not found."}},
+
+{ "Missing Fee in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Sequence": 0,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Missing field 'tx_json.Fee'."}},
+
+{ "Non-numeric Fee in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50.1,
+        "Sequence": 0,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Field 'tx_json.Fee' has invalid data."}},
+
+{ "Missing Amount in submit_multisigned Payment.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50000000,
+        "Sequence": 0,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Missing field 'tx_json.Amount'."}},
+
+{ "Invalid Amount in submit_multisigned Payment.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "NotANumber",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Sequence": 0,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Invalid field 'tx_json.Amount'."}},
+
+{ "No build_path in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "build_path": 1,
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Sequence": 0,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Field 'build_path' not allowed in this context."}},
+
+{ "Missing Destination in submit_multisigned Payment.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Fee": 50,
+        "Sequence": 0,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Missing field 'tx_json.Destination'."}},
+
+{ "Malformed Destination in submit_multisigned Payment.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "NotADestination",
+        "Fee": 50,
+        "Sequence": 0,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Invalid field 'tx_json.Destination'."}},
+
+{ "Missing Signers field in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
     "tx_json": {
         "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
         "Amount": "1000000000",
@@ -900,7 +1590,115 @@ R"({
 "Missing field 'secret'.",
 "Missing field 'secret'.",
 "Missing field 'account'.",
-""}},
+"Missing field 'tx_json.Signers'."}},
+
+{ "Signers not an array in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Sequence": 0,
+        "Signers": {
+            "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+            "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+            "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+        },
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Field 'tx_json.Signers' is not a JSON array."}},
+
+{ "Empty Signers array in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Sequence": 0,
+        "Signers": [
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"tx_json.Signers array may not be empty."}},
+
+{ "Duplicate Signer in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Sequence": 0,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            },
+            {
+                "Signer": {
+                    "Account": "rPcNzota6B8YBokhYtcTNqQVCngtbnWfux",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"Duplicate Signers:Signer:Account entries (rPcNzota6B8YBokhYtcTNqQVCngtbnWfux) are not allowed."}},
+
+{ "Signer is tx_json Account in submit_multisigned.",
+R"({
+    "command": "submit_multisigned",
+    "tx_json": {
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Amount": "1000000000",
+        "Destination": "rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA",
+        "Fee": 50,
+        "Sequence": 0,
+        "Signers": [
+            {
+                "Signer": {
+                    "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+                    "TxnSignature": "3045022100F9ED357606932697A4FAB2BE7F222C21DD93CA4CFDD90357AADD07465E8457D6022038173193E3DFFFB5D78DD738CC0905395F885DA65B98FDB9793901FE3FD26ECE",
+                    "SigningPubKey": "02FE36A690D6973D55F88553F5D2C4202DE75F2CF8A6D0E17C70AC223F044501F8"
+                }
+            }
+        ],
+        "SigningPubKey": "",
+        "TransactionType": "Payment"
+    }
+})",
+{
+"Missing field 'secret'.",
+"Missing field 'secret'.",
+"Missing field 'account'.",
+"A Signer may not be the transaction's Account (rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh)."}},
 
 };
 
@@ -910,22 +1708,33 @@ class JSONRPC_test : public beast::unit_test::suite
 public:
     void testAutoFillFees ()
     {
-        Config const config;
-        auto const ledger =
-            std::make_shared<Ledger>(
-                create_genesis, config);
-
-        using namespace detail;
-        TxnSignApiFacade apiFacade (TxnSignApiFacade::noNetOPs, ledger);
+        test::jtx::Env env(*this);
+        std::shared_ptr<const ReadView> ledger =
+            std::make_shared<Ledger>(create_genesis,
+                env.app().config(), env.app().family());
+        LoadFeeTrack const feeTrack;
 
         {
             Json::Value req;
             Json::Reader ().parse (
                 "{ \"fee_mult_max\" : 1, \"tx_json\" : { } } ", req);
             Json::Value result =
-                checkFee (req, apiFacade, Role::ADMIN, AutoFill::might);
+                checkFee (req, Role::ADMIN, true,
+                    env.app().config(), feeTrack, ledger);
 
             expect (! RPC::contains_error (result), "Legal checkFee");
+        }
+
+        {
+            Json::Value req;
+            Json::Reader().parse(
+                "{ \"fee_mult_max\" : 3, \"fee_div_max\" : 2, "
+                    "\"tx_json\" : { } } ", req);
+            Json::Value result =
+                checkFee(req, Role::ADMIN, true,
+                    env.app().config(), feeTrack, ledger);
+
+            expect(!RPC::contains_error(result), "Legal checkFee");
         }
 
         {
@@ -933,30 +1742,112 @@ public:
             Json::Reader ().parse (
                 "{ \"fee_mult_max\" : 0, \"tx_json\" : { } } ", req);
             Json::Value result =
-                checkFee (req, apiFacade, Role::ADMIN, AutoFill::might);
+                checkFee (req, Role::ADMIN, true,
+                    env.app().config(), feeTrack, ledger);
 
             expect (RPC::contains_error (result), "Invalid checkFee");
         }
+
+        {
+            // 3/6 = 1/2, but use the bigger number make sure
+            // we're dividing.
+            Json::Value req;
+            Json::Reader().parse(
+                "{ \"fee_mult_max\" : 3, \"fee_div_max\" : 6, "
+                    "\"tx_json\" : { } } ", req);
+            Json::Value result =
+                checkFee(req, Role::ADMIN, true,
+                    env.app().config(), feeTrack, ledger);
+
+            expect(RPC::contains_error(result), "Invalid checkFee");
+        }
+
+        {
+            Json::Value req;
+            Json::Reader().parse(
+                "{ \"fee_mult_max\" : 0, \"fee_div_max\" : 2, "
+                    "\"tx_json\" : { } } ", req);
+            Json::Value result =
+                checkFee(req, Role::ADMIN, true,
+                    env.app().config(), feeTrack, ledger);
+
+            expect(RPC::contains_error(result), "Invalid checkFee");
+        }
+
+        {
+            Json::Value req;
+            Json::Reader().parse(
+                "{ \"fee_mult_max\" : 10, \"fee_div_max\" : 0, "
+                    "\"tx_json\" : { } } ", req);
+            Json::Value result =
+                checkFee(req, Role::ADMIN, true,
+                    env.app().config(), feeTrack, ledger);
+
+            expect(RPC::contains_error(result), "Divide by 0");
+        }
+    }
+
+    // A function that can be called as though it would process a transaction.
+    static void fakeProcessTransaction (
+        std::shared_ptr<Transaction>&, bool, bool, NetworkOPs::FailHard)
+    {
+        ;
     }
 
     void testTransactionRPC ()
     {
-        // A list of all the functions we want to test and their fail bits.
-        using transactionFunc = Json::Value (*) (
+        using namespace std::chrono_literals;
+        // Use jtx to set up a ledger so the tests will do the right thing.
+        test::jtx::Account const a {"a"}; // rnUy2SHTrB9DubsPmkJZUXTf5FcNDGrYEA
+        test::jtx::Account const g {"g"}; // rLPwWB1itaUGMV8kbMLLysjGkEpTM2Soy4
+        auto const USD = g["USD"];
+        // master is rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh.
+        // "b" (not in the ledger) is rDg53Haik2475DJx8bjMDSDPj4VX7htaMd.
+        // "c" (phantom signer) is rPcNzota6B8YBokhYtcTNqQVCngtbnWfux.
+
+        test::jtx::Env env(*this, test::jtx::features(featureMultiSign));
+        env.fund(test::jtx::XRP(100000), a, g);
+        env.close();
+
+        env(trust(a, USD(1000)));
+        env(trust(env.master, USD(1000)));
+        env(pay(g, a, USD(50)));
+        env(pay(g, env.master, USD(50)));
+        env.close();
+
+        auto const ledger = env.current();
+
+        ProcessTransactionFn processTxn = fakeProcessTransaction;
+
+        // A list of all the functions we want to test.
+        using signFunc = Json::Value (*) (
             Json::Value params,
             NetworkOPs::FailHard failType,
-            detail::TxnSignApiFacade& apiFacade,
-            Role role);
+            Role role,
+            std::chrono::seconds validatedLedgerAge,
+            Application& app,
+            std::shared_ptr<ReadView const> ledger,
+            ApplyFlags flags);
+
+        using submitFunc = Json::Value (*) (
+            Json::Value params,
+            NetworkOPs::FailHard failType,
+            Role role,
+            std::chrono::seconds validatedLedgerAge,
+            Application& app,
+            std::shared_ptr<ReadView const> ledger,
+            ProcessTransactionFn const& processTransaction,
+            ApplyFlags flags);
 
         using TestStuff =
-            std::tuple <transactionFunc, char const*, unsigned int>;
+            std::tuple <signFunc, submitFunc, char const*, unsigned int>;
 
         static TestStuff const testFuncs [] =
         {
-            TestStuff {transactionSign,              "sign",               0},
-            TestStuff {transactionSubmit,            "submit",             1},
-            TestStuff {transactionSignFor,           "sign_for",           2},
-            TestStuff {transactionSubmitMultiSigned, "submit_multisigned", 3}
+            TestStuff {transactionSign, nullptr,              "sign",               0},
+            TestStuff {nullptr, transactionSubmit,            "submit",             1},
+            TestStuff {transactionSignFor, nullptr,           "sign_for",           2},
+            TestStuff {nullptr, transactionSubmitMultiSigned, "submit_multisigned", 3}
         };
 
         for (auto testFunc : testFuncs)
@@ -967,7 +1858,7 @@ public:
                 Json::Value req;
                 Json::Reader ().parse (txnTest.json, req);
                 if (RPC::contains_error (req))
-                    throw std::runtime_error (
+                    Throw<std::runtime_error> (
                         "Internal JSONRPC_test error.  Bad test JSON.");
 
                 static Role const testedRoles[] =
@@ -975,24 +1866,43 @@ public:
 
                 for (Role testRole : testedRoles)
                 {
-                    // Mock so we can run without a ledger.
-                    detail::TxnSignApiFacade apiFacade (
-                        detail::TxnSignApiFacade::noNetOPs);
-
-                    Json::Value result = get<0>(testFunc) (
-                        req,
-                        NetworkOPs::FailHard::yes,
-                        apiFacade,
-                        testRole);
+                    Json::Value result;
+                    auto const signFn = get<0>(testFunc);
+                    if (signFn != nullptr)
+                    {
+                        assert (get<1>(testFunc) == nullptr);
+                        result = signFn (
+                            req,
+                            NetworkOPs::FailHard::yes,
+                            testRole,
+                            1s,
+                            env.app(),
+                            ledger,
+                            tapENABLE_TESTING);
+                    }
+                    else
+                    {
+                        auto const submitFn = get<1>(testFunc);
+                        assert (submitFn != nullptr);
+                        result = submitFn (
+                            req,
+                            NetworkOPs::FailHard::yes,
+                            testRole,
+                            1s,
+                            env.app(),
+                            ledger,
+                            processTxn,
+                            tapENABLE_TESTING);
+                    }
 
                     std::string errStr;
                     if (RPC::contains_error (result))
                         errStr = result["error_message"].asString ();
 
-                    std::string const expStr (txnTest.expMsg[get<2>(testFunc)]);
+                    std::string const expStr (txnTest.expMsg[get<3>(testFunc)]);
                     expect (errStr == expStr,
                         "Expected: \"" + expStr + "\"\n  Got: \"" + errStr +
-                        "\"\nIn " + std::string (get<1>(testFunc)) +
+                        "\"\nIn " + std::string (get<2>(testFunc)) +
                             ": " + txnTest.description);
                 }
             }

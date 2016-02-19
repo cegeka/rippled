@@ -23,7 +23,7 @@
 #include <cassert>
 #include <cstring>
 #include <memory>
-#include <beast/cxx14/type_traits.h> // <type_traits>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -157,7 +157,7 @@ encodeBase58(
         Wallet Seed
         Account Public Key
         Account ID
-    
+
     @param temp A pointer to storage of not
                 less than 2*(size+6) bytes
 */

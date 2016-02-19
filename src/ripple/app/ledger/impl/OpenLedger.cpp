@@ -20,23 +20,31 @@
 #include <BeastConfig.h>
 #include <ripple/app/ledger/OpenLedger.h>
 #include <ripple/app/tx/apply.h>
-#include <ripple/ledger/CachingReadView.h>
+#include <ripple/ledger/CachedView.h>
+#include <ripple/protocol/Feature.h>
 #include <boost/range/adaptor/transformed.hpp>
 
 namespace ripple {
 
-OpenLedger::OpenLedger(
-    std::shared_ptr<Ledger const> const& ledger,
-        Config const& config, CachedSLEs& cache,
+OpenLedger::OpenLedger(std::shared_ptr<
+    Ledger const> const& ledger,
+        CachedSLEs& cache,
             beast::Journal journal)
     : j_ (journal)
     , cache_ (cache)
-    , config_ (config)
-    , current_ (create(ledger))
+    , current_ (create(ledger->rules(), ledger))
 {
 }
 
-std::shared_ptr<ReadView const>
+bool
+OpenLedger::empty() const
+{
+    std::lock_guard<
+        std::mutex> lock(modify_mutex_);
+    return current_->txCount() == 0;
+}
+
+std::shared_ptr<OpenView const>
 OpenLedger::current() const
 {
     std::lock_guard<
@@ -46,8 +54,7 @@ OpenLedger::current() const
 }
 
 bool
-OpenLedger::modify (std::function<
-    bool(OpenView&, beast::Journal)> const& f)
+OpenLedger::modify (modify_type const& f)
 {
     std::lock_guard<
         std::mutex> lock1(modify_mutex_);
@@ -65,23 +72,24 @@ OpenLedger::modify (std::function<
 }
 
 void
-OpenLedger::accept (std::shared_ptr<
-    Ledger const> const& ledger,
+OpenLedger::accept(Application& app, Rules const& rules,
+    std::shared_ptr<Ledger const> const& ledger,
         OrderedTxs const& locals, bool retriesFirst,
             OrderedTxs& retries, ApplyFlags flags,
-                IHashRouter& router, std::string const& suffix)
+                std::string const& suffix,
+                    modify_type const& f)
 {
-    JLOG(j_.error) <<
+    JLOG(j_.trace) <<
         "accept ledger " << ledger->seq() << " " << suffix;
-    auto next = create(ledger);
+    auto next = create(rules, ledger);
     if (retriesFirst)
     {
         // Handle disputed tx, outside lock
         using empty =
             std::vector<std::shared_ptr<
                 STTx const>>;
-        apply (*next, *ledger, empty{},
-            retries, flags, router, config_, j_);
+        apply (app, *next, *ledger, empty{},
+            retries, flags, j_);
     }
     // Block calls to modify, otherwise
     // new tx going into the open ledger
@@ -90,7 +98,7 @@ OpenLedger::accept (std::shared_ptr<
         std::mutex> lock1(modify_mutex_);
     // Apply tx from the current open view
     if (! current_->txs.empty())
-        apply (*next, *ledger,
+        apply (app, *next, *ledger,
             boost::adaptors::transform(
                 current_->txs,
             [](std::pair<std::shared_ptr<
@@ -99,11 +107,14 @@ OpenLedger::accept (std::shared_ptr<
             {
                 return p.first;
             }),
-                retries, flags, router, config_, j_);
+                retries, flags, j_);
     // Apply local tx
     for (auto const& item : locals)
-        ripple::apply(*next, *item.second,
-            flags, config_, j_);
+        ripple::apply(app, *next,
+            *item.second, flags, j_);
+    // Call the modifier
+    if (f)
+        f(*next, j_);
     // Switch to the new open view
     std::lock_guard<
         std::mutex> lock2(current_mutex_);
@@ -113,30 +124,25 @@ OpenLedger::accept (std::shared_ptr<
 //------------------------------------------------------------------------------
 
 std::shared_ptr<OpenView>
-OpenLedger::create (std::shared_ptr<
-    Ledger const> const& ledger)
+OpenLedger::create (Rules const& rules,
+    std::shared_ptr<Ledger const> const& ledger)
 {
     return std::make_shared<OpenView>(
-        open_ledger, std::make_shared<
-            CachingReadView const>(ledger,
+        open_ledger, rules, std::make_shared<
+            CachedLedger const>(ledger,
                 cache_));
 }
 
 auto
-OpenLedger::apply_one (OpenView& view,
+OpenLedger::apply_one (Application& app, OpenView& view,
     std::shared_ptr<STTx const> const& tx,
         bool retry, ApplyFlags flags,
-            IHashRouter& router, Config const& config,
-                beast::Journal j) -> Result
+            beast::Journal j) -> Result
 {
     if (retry)
         flags = flags | tapRETRY;
-    if ((router.getFlags(
-        tx->getTransactionID()) & SF_SIGGOOD) ==
-            SF_SIGGOOD)
-        flags = flags | tapNO_CHECK_SIGN;
     auto const result = ripple::apply(
-        view, *tx, flags, config, j);
+        app, view, *tx, flags, j);
     if (result.second)
         return Result::success;
     if (isTefFailure (result.first) ||
@@ -144,40 +150,6 @@ OpenLedger::apply_one (OpenView& view,
             isTelLocal (result.first))
         return Result::failure;
     return Result::retry;
-}
-
-//------------------------------------------------------------------------------
-
-static
-std::vector<uint256>
-txList (ReadView const& view)
-{
-    std::vector<uint256> v;
-    for (auto const& item : view.txs)
-        v.push_back(item.first->getTransactionID());
-    std::sort(v.begin(), v.end());
-    return v;
-}
-
-bool
-OpenLedger::verify (Ledger const& ledger,
-    std::string const& suffix) const
-{
-#if 1
-    std::lock_guard<
-        std::mutex> lock(modify_mutex_);
-    auto list1 = txList(ledger);
-    auto list2 = txList(*current_);
-    if (list1 == list2)
-        return true;
-    JLOG(j_.error) <<
-        "verify ledger " << ledger.seq() << ": " <<
-        list1.size() << " / " << list2.size() << 
-            " " << " MISMATCH " << suffix;
-    return false;
-#else
-    return true;
-#endif
 }
 
 //------------------------------------------------------------------------------
@@ -212,7 +184,7 @@ debugTostr (SHAMap const& set)
                 STTx const>(sit);
             ss << debugTxstr(tx) << ", ";
         }
-        catch(...)
+        catch(std::exception const&)
         {
             ss << "THRO, ";
         }

@@ -29,7 +29,8 @@
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/basics/chrono.h>
 #include <ripple/core/JobQueue.h>
-#include <beast/cxx14/memory.h> // <memory>
+#include <ripple/core/TimeKeeper.h>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -41,6 +42,8 @@ private:
     using LockType = std::mutex;
     using ScopedLockType = std::lock_guard <LockType>;
     using ScopedUnlockType = beast::GenericScopedUnlock <LockType>;
+
+    Application& app_;
     std::mutex mutable mLock;
 
     TaggedCache<uint256, ValidationSet> mValidations;
@@ -48,6 +51,7 @@ private:
     ValidationVector mStaleValidations;
 
     bool mWriting;
+    beast::Journal j_;
 
 private:
     std::shared_ptr<ValidationSet> findCreateSet (uint256 const& ledgerHash)
@@ -69,35 +73,32 @@ private:
     }
 
 public:
-    ValidationsImp ()
-        : mValidations ("Validations", 128, 600, stopwatch(),
-            deprecatedLogs().journal("TaggedCache"))
+    ValidationsImp (Application& app)
+        : app_ (app)
+        , mValidations ("Validations", 4096, 600, stopwatch(),
+            app.journal("TaggedCache"))
         , mWriting (false)
+        , j_ (app.journal ("Validations"))
     {
         mStaleValidations.reserve (512);
     }
 
 private:
-    bool addValidation (STValidation::ref val, std::string const& source)
+    bool addValidation (STValidation::ref val, std::string const& source) override
     {
         RippleAddress signer = val->getSignerPublic ();
-        bool isCurrent = false;
+        bool isCurrent = current (val);
 
-        if (!val->isTrusted() && getApp().getUNL().nodeInUNL (signer))
+        if (! val->isTrusted() && app_.getUNL().nodeInUNL (signer))
             val->setTrusted();
-
-        std::uint32_t now = getApp().getOPs().getCloseTimeNC();
-        std::uint32_t valClose = val->getSignTime();
-
-        if ((now > (valClose - LEDGER_EARLY_INTERVAL)) && (now < (valClose + LEDGER_VAL_INTERVAL)))
-            isCurrent = true;
-        else
-            WriteLog (lsWARNING, Validations) << "Received stale validation now=" << now << ", close=" << valClose;
 
         if (!val->isTrusted ())
         {
-            WriteLog (lsDEBUG, Validations) << "Node " << signer.humanNodePublic () << " not in UNL st=" << val->getSignTime () <<
-                                            ", hash=" << val->getLedgerHash () << ", shash=" << val->getSigningHash () << " src=" << source;
+            JLOG (j_.debug) << "Node " << signer.humanNodePublic ()
+                            << " not in UNL st="
+                            << val->getSignTime().time_since_epoch().count()
+                            << ", hash=" << val->getLedgerHash ()
+                            << ", shash=" << val->getSigningHash () << " src=" << source;
         }
 
         auto hash = val->getLedgerHash ();
@@ -137,12 +138,13 @@ private:
             }
         }
 
-        WriteLog (lsDEBUG, Validations) << "Val for " << hash << " from " << signer.humanNodePublic ()
-                                        << " added " << (val->isTrusted () ? "trusted/" : "UNtrusted/") << (isCurrent ? "current" : "stale");
+        JLOG (j_.debug) << "Val for " << hash << " from " << signer.humanNodePublic ()
+            << " added " << (val->isTrusted () ? "trusted/" : "UNtrusted/")
+            << (isCurrent ? "current" : "stale");
 
         if (val->isTrusted () && isCurrent)
         {
-            getApp().getLedgerMaster ().checkAccept (hash, val->getFieldU32 (sfLedgerSequence));
+            app_.getLedgerMaster ().checkAccept (hash, val->getFieldU32 (sfLedgerSequence));
             return true;
         }
 
@@ -150,13 +152,13 @@ private:
         return false;
     }
 
-    void tune (int size, int age)
+    void tune (int size, int age) override
     {
         mValidations.setTargetSize (size);
         mValidations.setTargetAge (age);
     }
 
-    ValidationSet getValidations (uint256 const& ledger)
+    ValidationSet getValidations (uint256 const& ledger) override
     {
         {
             ScopedLockType sl (mLock);
@@ -168,7 +170,25 @@ private:
         return ValidationSet ();
     }
 
-    void getValidationCount (uint256 const& ledger, bool currentOnly, int& trusted, int& untrusted)
+    bool current (STValidation::ref val) override
+    {
+        // Because this can be called on untrusted, possibly
+        // malicious validations, we do our math in a way
+        // that avoids any chance of overflowing or underflowing
+        // the signing time.
+
+        auto const now = app_.timeKeeper().closeTime();
+        auto const signTime = val->getSignTime();
+
+        return
+            (signTime > (now - VALIDATION_VALID_EARLY)) &&
+            (signTime < (now + VALIDATION_VALID_WALL)) &&
+            ((val->getSeenTime() == NetClock::time_point{}) ||
+                (val->getSeenTime() < (now + VALIDATION_VALID_LOCAL)));
+    }
+
+    void getValidationCount (uint256 const& ledger, bool currentOnly,
+                             int& trusted, int& untrusted) override
     {
         trusted = untrusted = 0;
         ScopedLockType sl (mLock);
@@ -176,21 +196,14 @@ private:
 
         if (set)
         {
-            std::uint32_t now = getApp().getOPs ().getNetworkTimeNC ();
             for (auto& it: *set)
             {
                 bool isTrusted = it.second->isTrusted ();
 
-                if (isTrusted && currentOnly)
+                if (isTrusted && currentOnly && ! current (it.second))
                 {
-                    std::uint32_t closeTime = it.second->getSignTime ();
-
-                    if ((now < (closeTime - LEDGER_EARLY_INTERVAL)) || (now > (closeTime + LEDGER_VAL_INTERVAL)))
-                        isTrusted = false;
-                    else
-                    {
-                        WriteLog (lsTRACE, Validations) << "VC: Untrusted due to time " << ledger;
-                    }
+                    JLOG (j_.trace) << "VC: Untrusted due to time " << ledger;
+                    isTrusted = false;
                 }
 
                 if (isTrusted)
@@ -200,10 +213,10 @@ private:
             }
         }
 
-        WriteLog (lsTRACE, Validations) << "VC: " << ledger << "t:" << trusted << " u:" << untrusted;
+        JLOG (j_.trace) << "VC: " << ledger << "t:" << trusted << " u:" << untrusted;
     }
 
-    void getValidationTypes (uint256 const& ledger, int& full, int& partial)
+    void getValidationTypes (uint256 const& ledger, int& full, int& partial) override
     {
         full = partial = 0;
         ScopedLockType sl (mLock);
@@ -223,11 +236,11 @@ private:
             }
         }
 
-        WriteLog (lsTRACE, Validations) << "VC: " << ledger << "f:" << full << " p:" << partial;
+        JLOG (j_.trace) << "VC: " << ledger << "f:" << full << " p:" << partial;
     }
 
 
-    int getTrustedValidationCount (uint256 const& ledger)
+    int getTrustedValidationCount (uint256 const& ledger) override
     {
         int trusted = 0;
         ScopedLockType sl (mLock);
@@ -268,7 +281,7 @@ private:
         return result;
     }
 
-    int getNodesAfter (uint256 const& ledger)
+    int getNodesAfter (uint256 const& ledger) override
     {
         // Number of trusted nodes that have moved past this ledger
         int count = 0;
@@ -281,7 +294,7 @@ private:
         return count;
     }
 
-    int getLoadRatio (bool overLoaded)
+    int getLoadRatio (bool overLoaded) override
     {
         // how many trusted nodes are able to keep up, higher is better
         int goodNodes = overLoaded ? 1 : 0;
@@ -302,10 +315,8 @@ private:
         return (goodNodes * 100) / (goodNodes + badNodes);
     }
 
-    std::list<STValidation::pointer> getCurrentTrustedValidations ()
+    std::list<STValidation::pointer> getCurrentTrustedValidations () override
     {
-        std::uint32_t cutoff = getApp().getOPs ().getNetworkTimeNC () - LEDGER_VAL_INTERVAL;
-
         std::list<STValidation::pointer> ret;
 
         ScopedLockType sl (mLock);
@@ -315,7 +326,7 @@ private:
         {
             if (!it->second) // contains no record
                 it = mCurrentValidations.erase (it);
-            else if (it->second->getSignTime () < cutoff)
+            else if (! current (it->second))
             {
                 // contains a stale record
                 mStaleValidations.push_back (it->second);
@@ -337,9 +348,10 @@ private:
     }
 
     LedgerToValidationCounter getCurrentValidations (
-        uint256 currentLedger, uint256 priorLedger)
+        uint256 currentLedger,
+        uint256 priorLedger,
+        LedgerIndex cutoffBefore) override
     {
-        std::uint32_t cutoff = getApp().getOPs ().getNetworkTimeNC () - LEDGER_VAL_INTERVAL;
         bool valCurrentLedger = currentLedger.isNonZero ();
         bool valPriorLedger = priorLedger.isNonZero ();
 
@@ -352,7 +364,7 @@ private:
         {
             if (!it->second) // contains no record
                 it = mCurrentValidations.erase (it);
-            else if (it->second->getSignTime () < cutoff)
+            else if (! current (it->second))
             {
                 // contains a stale record
                 mStaleValidations.push_back (it->second);
@@ -360,7 +372,8 @@ private:
                 condWrite ();
                 it = mCurrentValidations.erase (it);
             }
-            else
+            else if (! it->second->isFieldPresent (sfLedgerSequence) ||
+                (it->second->getFieldU32 (sfLedgerSequence) >= cutoffBefore))
             {
                 // contains a live record
                 bool countPreferred = valCurrentLedger && (it->second->getLedgerHash () == currentLedger);
@@ -370,7 +383,7 @@ private:
                          (valPriorLedger && (it->second->getLedgerHash () == priorLedger))))
                 {
                     countPreferred = true;
-                    WriteLog (lsTRACE, Validations) << "Counting for " << currentLedger << " not " << it->second->getLedgerHash ();
+                    JLOG (j_.trace) << "Counting for " << currentLedger << " not " << it->second->getLedgerHash ();
                 }
 
                 ValidationCounter& p = countPreferred ? ret[currentLedger] : ret[it->second->getLedgerHash ()];
@@ -382,15 +395,19 @@ private:
 
                 ++it;
             }
+            else
+            {
+                ++it;
+            }
         }
 
         return ret;
     }
 
-    std::vector<uint32_t>
-    getValidationTimes (uint256 const& hash)
+    std::vector<NetClock::time_point>
+    getValidationTimes (uint256 const& hash) override
     {
-        std::vector <std::uint32_t> times;
+        std::vector <NetClock::time_point> times;
         ScopedLockType sl (mLock);
         if (auto j = findSet (hash))
             for (auto& it : *j)
@@ -399,11 +416,11 @@ private:
         return times;
     }
 
-    void flush ()
+    void flush () override
     {
         bool anyNew = false;
 
-        WriteLog (lsINFO, Validations) << "Flushing validations";
+        JLOG (j_.info) << "Flushing validations";
         ScopedLockType sl (mLock);
         for (auto& it: mCurrentValidations)
         {
@@ -423,7 +440,7 @@ private:
             std::this_thread::sleep_for (std::chrono::milliseconds (100));
         }
 
-        WriteLog (lsDEBUG, Validations) << "Validations flushed";
+        JLOG (j_.debug) << "Validations flushed";
     }
 
     void condWrite ()
@@ -432,14 +449,14 @@ private:
             return;
 
         mWriting = true;
-        getApp().getJobQueue ().addJob (jtWRITE, "Validations::doWrite",
-                                       std::bind (&ValidationsImp::doWrite,
-                                                  this, std::placeholders::_1));
+        app_.getJobQueue ().addJob (
+            jtWRITE, "Validations::doWrite",
+            [this] (Job&) { doWrite(); });
     }
 
-    void doWrite (Job&)
+    void doWrite ()
     {
-        LoadEvent::autoptr event (getApp().getJobQueue ().getLoadEventAP (jtDISK, "ValidationWrite"));
+        LoadEvent::autoptr event (app_.getJobQueue ().getLoadEventAP (jtDISK, "ValidationWrite"));
         boost::format insVal ("INSERT INTO Validations "
                               "(LedgerHash,NodePubKey,SignTime,RawData) VALUES ('%s','%s','%u',%s);");
 
@@ -455,7 +472,7 @@ private:
             {
                 ScopedUnlockType sul (mLock);
                 {
-                    auto db = getApp().getLedgerDB ().checkoutDb ();
+                    auto db = app_.getLedgerDB ().checkoutDb ();
 
                     Serializer s (1024);
                     soci::transaction tr(*db);
@@ -466,7 +483,8 @@ private:
                         *db << boost::str (
                             insVal % to_string (it->getLedgerHash ()) %
                             it->getSignerPublic ().humanNodePublic () %
-                            it->getSignTime () % sqlEscape (s.peekData ()));
+                            it->getSignTime().time_since_epoch().count() %
+                            sqlEscape (s.peekData ()));
                     }
 
                     tr.commit ();
@@ -477,16 +495,16 @@ private:
         mWriting = false;
     }
 
-    void sweep ()
+    void sweep () override
     {
         ScopedLockType sl (mLock);
         mValidations.sweep ();
     }
 };
 
-std::unique_ptr <Validations> make_Validations ()
+std::unique_ptr <Validations> make_Validations (Application& app)
 {
-    return std::make_unique <ValidationsImp> ();
+    return std::make_unique <ValidationsImp> (app);
 }
 
 } // ripple

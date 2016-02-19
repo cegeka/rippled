@@ -19,6 +19,7 @@
 
 #include <BeastConfig.h>
 #include <ripple/shamap/SHAMapTreeNode.h>
+#include <ripple/basics/contract.h>
 #include <ripple/basics/Log.h>
 #include <ripple/protocol/digest.h>
 #include <ripple/basics/Slice.h>
@@ -65,7 +66,7 @@ SHAMapTreeNode::SHAMapTreeNode (std::shared_ptr<SHAMapItem const> const& item,
 }
 
 SHAMapTreeNode::SHAMapTreeNode (std::shared_ptr<SHAMapItem const> const& item,
-                                TNType type, std::uint32_t seq, uint256 const& hash)
+                                TNType type, std::uint32_t seq, SHAMapHash const& hash)
     : SHAMapAbstractNode(type, seq, hash)
     , mItem (item)
 {
@@ -74,7 +75,7 @@ SHAMapTreeNode::SHAMapTreeNode (std::shared_ptr<SHAMapItem const> const& item,
 
 std::shared_ptr<SHAMapAbstractNode>
 SHAMapAbstractNode::make(Blob const& rawNode, std::uint32_t seq, SHANodeFormat format,
-                         uint256 const& hash, bool hashValid)
+                         SHAMapHash const& hash, bool hashValid, beast::Journal j)
 {
     if (format == snfWIRE)
     {
@@ -103,13 +104,13 @@ SHAMapAbstractNode::make(Blob const& rawNode, std::uint32_t seq, SHANodeFormat f
         {
             // account state
             if (len < (256 / 8))
-                throw std::runtime_error ("short AS node");
+                Throw<std::runtime_error> ("short AS node");
 
             uint256 u;
             s.get256 (u, len - (256 / 8));
             s.chop (256 / 8);
 
-            if (u.isZero ()) throw std::runtime_error ("invalid AS node");
+            if (u.isZero ()) Throw<std::runtime_error> ("invalid AS node");
 
             auto item = std::make_shared<SHAMapItem const> (u, s.peekData ());
             if (hashValid)
@@ -120,12 +121,12 @@ SHAMapAbstractNode::make(Blob const& rawNode, std::uint32_t seq, SHANodeFormat f
         {
             // full inner
             if (len != 512)
-                throw std::runtime_error ("invalid FI node");
+                Throw<std::runtime_error> ("invalid FI node");
 
             auto ret = std::make_shared<SHAMapInnerNode>(seq);
             for (int i = 0; i < 16; ++i)
             {
-                s.get256 (ret->mHashes[i], i * 32);
+                s.get256 (ret->mHashes[i].as_uint256(), i * 32);
 
                 if (ret->mHashes[i].isNonZero ())
                     ret->mIsBranch |= (1 << i);
@@ -143,11 +144,11 @@ SHAMapAbstractNode::make(Blob const& rawNode, std::uint32_t seq, SHANodeFormat f
             for (int i = 0; i < (len / 33); ++i)
             {
                 int pos;
-                if (!s.get8 (pos, 32 + (i * 33)))
-                    throw std::runtime_error ("short CI node");
+                if (! s.get8 (pos, 32 + (i * 33)))
+                    Throw<std::runtime_error> ("short CI node");
                 if ((pos < 0) || (pos >= 16))
-                    throw std::runtime_error ("invalid CI node");
-                s.get256 (ret->mHashes[pos], i * 33);
+                Throw<std::runtime_error> ("invalid CI node");
+                s.get256 (ret->mHashes[pos].as_uint256(), i * 33);
                 if (ret->mHashes[pos].isNonZero ())
                     ret->mIsBranch |= (1 << pos);
             }
@@ -161,14 +162,14 @@ SHAMapAbstractNode::make(Blob const& rawNode, std::uint32_t seq, SHANodeFormat f
         {
             // transaction with metadata
             if (len < (256 / 8))
-                throw std::runtime_error ("short TM node");
+                Throw<std::runtime_error> ("short TM node");
 
             uint256 u;
             s.get256 (u, len - (256 / 8));
             s.chop (256 / 8);
 
             if (u.isZero ())
-                throw std::runtime_error ("invalid TM node");
+                Throw<std::runtime_error> ("invalid TM node");
 
             auto item = std::make_shared<SHAMapItem const> (u, s.peekData ());
             if (hashValid)
@@ -181,8 +182,8 @@ SHAMapAbstractNode::make(Blob const& rawNode, std::uint32_t seq, SHANodeFormat f
     {
         if (rawNode.size () < 4)
         {
-            WriteLog (lsINFO, SHAMapNodeID) << "size < 4";
-            throw std::runtime_error ("invalid P node");
+            JLOG (j.info) << "size < 4";
+            Throw<std::runtime_error> ("invalid P node");
         }
 
         std::uint32_t prefix = rawNode[0];
@@ -206,7 +207,7 @@ SHAMapAbstractNode::make(Blob const& rawNode, std::uint32_t seq, SHANodeFormat f
         else if (prefix == HashPrefix::leafNode)
         {
             if (s.getLength () < 32)
-                throw std::runtime_error ("short PLN node");
+                Throw<std::runtime_error> ("short PLN node");
 
             uint256 u;
             s.get256 (u, s.getLength () - 32);
@@ -214,8 +215,8 @@ SHAMapAbstractNode::make(Blob const& rawNode, std::uint32_t seq, SHANodeFormat f
 
             if (u.isZero ())
             {
-                WriteLog (lsINFO, SHAMapNodeID) << "invalid PLN node";
-                throw std::runtime_error ("invalid PLN node");
+                JLOG (j.info) << "invalid PLN node";
+                Throw<std::runtime_error> ("invalid PLN node");
             }
 
             auto item = std::make_shared<SHAMapItem const> (u, s.peekData ());
@@ -226,11 +227,11 @@ SHAMapAbstractNode::make(Blob const& rawNode, std::uint32_t seq, SHANodeFormat f
         else if (prefix == HashPrefix::innerNode)
         {
             if (s.getLength () != 512)
-                throw std::runtime_error ("invalid PIN node");
+                Throw<std::runtime_error> ("invalid PIN node");
             auto ret = std::make_shared<SHAMapInnerNode>(seq);
             for (int i = 0; i < 16; ++i)
             {
-                s.get256 (ret->mHashes[i], i * 32);
+                s.get256 (ret->mHashes[i].as_uint256(), i * 32);
 
                 if (ret->mHashes[i].isNonZero ())
                     ret->mIsBranch |= (1 << i);
@@ -245,7 +246,7 @@ SHAMapAbstractNode::make(Blob const& rawNode, std::uint32_t seq, SHANodeFormat f
         {
             // transaction with metadata
             if (s.getLength () < 32)
-                throw std::runtime_error ("short TXN node");
+                Throw<std::runtime_error> ("short TXN node");
 
             uint256 txID;
             s.get256 (txID, s.getLength () - 32);
@@ -257,12 +258,13 @@ SHAMapAbstractNode::make(Blob const& rawNode, std::uint32_t seq, SHANodeFormat f
         }
         else
         {
-            WriteLog (lsINFO, SHAMapNodeID) << "Unknown node prefix " << std::hex << prefix << std::dec;
-            throw std::runtime_error ("invalid node prefix");
+            JLOG (j.info) << "Unknown node prefix " << std::hex << prefix << std::dec;
+            Throw<std::runtime_error> ("invalid node prefix");
         }
     }
     assert (false);
-    throw std::runtime_error ("Unknown format");
+    Throw<std::runtime_error> ("Unknown format");
+    return{}; // Silence compiler warning.
 }
 
 bool
@@ -276,9 +278,9 @@ SHAMapInnerNode::updateHash()
             Slice(reinterpret_cast<unsigned char const*>(mHashes),
                 sizeof (mHashes)));
     }
-    if (nh == mHash)
+    if (nh == mHash.as_uint256())
         return false;
-    mHash = nh;
+    mHash = SHAMapHash{nh};
     return true;
 }
 
@@ -317,10 +319,10 @@ SHAMapTreeNode::updateHash()
     else
         assert (false);
 
-    if (nh == mHash)
+    if (nh == mHash.as_uint256())
         return false;
 
-    mHash = nh;
+    mHash = SHAMapHash{nh};
     return true;
 }
 
@@ -330,11 +332,11 @@ SHAMapInnerNode::addRaw(Serializer& s, SHANodeFormat format) const
     assert ((format == snfPREFIX) || (format == snfWIRE) || (format == snfHASH));
 
     if (mType == tnERROR)
-        throw std::runtime_error ("invalid I node type");
+        Throw<std::runtime_error> ("invalid I node type");
 
     if (format == snfHASH)
     {
-        s.add256 (getNodeHash ());
+        s.add256 (mHash.as_uint256());
     }
     else if (mType == tnINNER)
     {
@@ -345,7 +347,7 @@ SHAMapInnerNode::addRaw(Serializer& s, SHANodeFormat format) const
             s.add32 (HashPrefix::innerNode);
 
             for (int i = 0; i < 16; ++i)
-                s.add256 (mHashes[i]);
+                s.add256 (mHashes[i].as_uint256());
         }
         else
         {
@@ -355,7 +357,7 @@ SHAMapInnerNode::addRaw(Serializer& s, SHANodeFormat format) const
                 for (int i = 0; i < 16; ++i)
                     if (!isEmptyBranch (i))
                     {
-                        s.add256 (mHashes[i]);
+                        s.add256 (mHashes[i].as_uint256());
                         s.add8 (i);
                     }
 
@@ -364,7 +366,7 @@ SHAMapInnerNode::addRaw(Serializer& s, SHANodeFormat format) const
             else
             {
                 for (int i = 0; i < 16; ++i)
-                    s.add256 (mHashes[i]);
+                    s.add256 (mHashes[i].as_uint256());
 
                 s.add8 (2);
             }
@@ -380,11 +382,11 @@ SHAMapTreeNode::addRaw(Serializer& s, SHANodeFormat format) const
     assert ((format == snfPREFIX) || (format == snfWIRE) || (format == snfHASH));
 
     if (mType == tnERROR)
-        throw std::runtime_error ("invalid I node type");
+        Throw<std::runtime_error> ("invalid I node type");
 
     if (format == snfHASH)
     {
-        s.add256 (getNodeHash ());
+        s.add256 (mHash.as_uint256());
     }
     else if (mType == tnACCOUNT_STATE)
     {

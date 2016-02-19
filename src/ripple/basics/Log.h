@@ -23,7 +23,6 @@
 #include <ripple/basics/UnorderedContainers.h>
 #include <beast/utility/ci_char_traits.h>
 #include <beast/utility/Journal.h>
-#include <beast/utility/noexcept.h>
 #include <boost/filesystem.hpp>
 #include <map>
 #include <mutex>
@@ -149,6 +148,7 @@ private:
     std::map <std::string, Sink, beast::ci_less> sinks_;
     beast::Journal::Severity level_;
     File file_;
+    bool silent_ = false;
 
 public:
     Logs();
@@ -183,6 +183,17 @@ public:
 
     std::string
     rotate();
+
+    /**
+     * Set flag to write logs to stderr (false) or not (true).
+     *
+     * @param bSilent Set flag accordingly.
+     */
+    void
+    silent (bool bSilent)
+    {
+        silent_ = bSilent;
+    }
 
 public:
     static
@@ -219,11 +230,10 @@ private:
         beast::Journal::Severity severity, std::string const& partition);
 };
 
-
 // Wraps a Journal::Stream to skip evaluation of
 // expensive argument lists if the stream is not active.
 #ifndef JLOG
-#define JLOG(x) if((x))(x)
+#define JLOG(x) if (!x) { } else x
 #endif
 
 //------------------------------------------------------------------------------
@@ -235,6 +245,25 @@ deprecatedLogs()
     static Logs logs;
     return logs;
 }
+
+class LogSquelcher
+{
+public:
+    LogSquelcher()
+        : severity_(deprecatedLogs().severity())
+    {
+        deprecatedLogs().severity(
+            beast::Journal::Severity::kNone);
+    }
+
+    ~LogSquelcher()
+    {
+        deprecatedLogs().severity(severity_);
+    }
+
+private:
+    beast::Journal::Severity const severity_;
+};
 
 // VFALCO DEPRECATED Inject beast::Journal instead
 #define ShouldLog(s, k) \

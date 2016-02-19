@@ -21,6 +21,7 @@
 #include <ripple/basics/Log.h>
 #include <ripple/test/jtx.h>
 #include <ripple/json/to_string.h>
+#include <ripple/protocol/Feature.h>
 #include <ripple/protocol/TxFlags.h>
 #include <beast/hash/uhash.h>
 #include <beast/unit_test/suite.h>
@@ -329,10 +330,10 @@ public:
         env(noop("alice"), sig("bob"),                          ter(tefBAD_AUTH));
         env(fset("alice", asfDisableMaster),                    ter(tecNEED_MASTER_KEY));
         env(fset("alice", asfDisableMaster), sig("eric"),       ter(tecNEED_MASTER_KEY));
-        env.require(nflags("alice", asfDisableMaster)); 
+        env.require(nflags("alice", asfDisableMaster));
         env(fset("alice", asfDisableMaster), sig("alice"));
         env.require(flags("alice", asfDisableMaster));
-        env(regkey("alice", disabled),                          ter(tecMASTER_DISABLED));
+        env(regkey("alice", disabled),                          ter(tecNO_ALTERNATIVE_KEY));
         env(noop("alice"));
         env(noop("alice"), sig("alice"),                        ter(tefMASTER_DISABLED));
         env(noop("alice"), sig("eric"));
@@ -352,7 +353,7 @@ public:
     {
         using namespace jtx;
 
-        Env env(*this);
+        Env env(*this, features(featureMultiSign));
         env.fund(XRP(10000), "alice");
         env(signers("alice", 1,
             { { "alice", 1 }, { "bob", 2 } }),                  ter(temBAD_SIGNER));
@@ -360,43 +361,14 @@ public:
             { { "bob", 1 }, { "carol", 2 } }));
         env(noop("alice"));
 
-        env(noop("alice"), msig("bob"));
-        env(noop("alice"), msig("carol"));
-        env(noop("alice"), msig("bob", "carol"));
-        env(noop("alice"), msig("bob", "carol", "dilbert"),     ter(tefBAD_SIGNATURE));
-    }
+        auto const baseFee = env.current()->fees().base;
+        env(noop("alice"), msig("bob"), fee(2 * baseFee));
+        env(noop("alice"), msig("carol"), fee(2 * baseFee));
+        env(noop("alice"), msig("bob", "carol"), fee(3 * baseFee));
+        env(noop("alice"), msig("bob", "carol", "dilbert"),
+            fee(4 * baseFee),                                   ter(tefBAD_SIGNATURE));
 
-    // Two level Multi-sign
-    void
-    testMultiSign2()
-    {
-        using namespace jtx;
-
-        Env env(*this);
-        env.fund(XRP(10000), "alice", "bob", "carol");
-        env.fund(XRP(10000), "david", "eric", "frank", "greg");
-        env(signers("alice", 2, { { "bob", 1 },   { "carol", 1 } }));
-        env(signers("bob",   1, { { "david", 1 }, { "eric", 1 } }));
-        env(signers("carol", 1, { { "frank", 1 }, { "greg", 1 } }));
-
-        env(noop("alice"), msig2(
-        { { "bob", "david" } }),                                ter(tefBAD_QUORUM));
-        
-        env(noop("alice"), msig2(
-        { { "bob", "david" }, { "bob", "eric" } }),             ter(tefBAD_QUORUM));
-
-        env(noop("alice"), msig2(
-        { { "carol", "frank" } }),                              ter(tefBAD_QUORUM));
-        
-        env(noop("alice"), msig2(
-        { { "carol", "frank" }, { "carol", "greg" } }),         ter(tefBAD_QUORUM));
-
-        env(noop("alice"), msig2(
-        { { "bob", "david" }, { "carol", "frank" } }));
-
-        env(noop("alice"), msig2(
-        { { "bob", "david" }, { "bob", "eric" },
-          { "carol", "frank" }, { "carol", "greg" } }));
+        env(signers("alice", none));
     }
 
     void
@@ -410,14 +382,12 @@ public:
         ticket::create("alice", 60, "bob");
 
         {
-            Env env(*this);
+            Env env(*this, features(featureTickets));
             env.fund(XRP(10000), "alice");
             env(noop("alice"),                  require(owners("alice", 0), tickets("alice", 0)));
             env(ticket::create("alice"),        require(owners("alice", 1), tickets("alice", 1)));
             env(ticket::create("alice"),        require(owners("alice", 2), tickets("alice", 2)));
         }
-
-        Env env(*this);
     }
 
     struct UDT
@@ -545,14 +515,14 @@ public:
     {
         using namespace jtx;
         Env env(*this);
-        auto seq = env.open()->seq();
+        auto seq = env.current()->seq();
         expect(seq == env.closed()->seq() + 1);
         env.close();
         expect(env.closed()->seq() == seq);
-        expect(env.open()->seq() == seq + 1);
+        expect(env.current()->seq() == seq + 1);
         env.close();
         expect(env.closed()->seq() == seq + 1);
-        expect(env.open()->seq() == seq + 2);
+        expect(env.current()->seq() == seq + 2);
     }
 
     void
@@ -572,12 +542,45 @@ public:
     }
 
     void
+    testPath()
+    {
+        using namespace jtx;
+        Env env(*this);
+        auto const gw = Account("gw");
+        auto const USD = gw["USD"];
+        env.fund(XRP(10000), "alice", "bob");
+        env.json(
+            pay("alice", "bob", USD(10)),
+                path(Account("alice")),
+                path("bob"),
+                path(USD),
+                path(~XRP),
+                path(~USD),
+                path("bob", USD, ~XRP, ~USD)
+                );
+    }
+
+    // Test that jtx can re-sign a transaction that's already been signed.
+    void testResignSigned()
+    {
+        using namespace jtx;
+        Env env(*this);
+
+        env.fund(XRP(10000), "alice");
+        auto const baseFee = env.current()->fees().base;
+        std::uint32_t const aliceSeq = env.seq ("alice");
+
+        // Sign jsonNoop.
+        Json::Value jsonNoop = env.json (
+            noop ("alice"), fee(baseFee), seq(aliceSeq), sig("alice"));
+        // Re-sign jsonNoop.
+        JTx jt = env.jt (jsonNoop);
+        env (jt);
+    }
+
+    void
     run()
     {
-        // Hack to silence logging
-        deprecatedLogs().severity(
-            beast::Journal::Severity::kNone);
-
         testAccount();
         testAmount();
         testEnv();
@@ -585,7 +588,6 @@ public:
         testKeyType();
         testPayments();
         testMultiSign();
-        testMultiSign2();
         testTicket();
         testJTxProperties();
         testProp();
@@ -594,6 +596,8 @@ public:
         testMemo();
         testAdvance();
         testClose();
+        testPath();
+        testResignSigned();
     }
 };
 

@@ -23,6 +23,7 @@
 #include <ripple/test/jtx/requires.h>
 #include <ripple/test/jtx/basic_prop.h>
 #include <ripple/json/json_value.h>
+#include <ripple/protocol/STTx.h>
 #include <ripple/protocol/TER.h>
 #include <functional>
 #include <memory>
@@ -40,42 +41,19 @@ class Env;
 struct JTx
 {
     Json::Value jv;
+    requires_t requires;
+    boost::optional<TER> ter = tesSUCCESS;
     bool fill_fee = true;
     bool fill_seq = true;
     bool fill_sig = true;
+    std::shared_ptr<STTx const> stx;
     std::function<void(Env&, JTx&)> signer;
-    requires_t requires;
-    TER ter = tesSUCCESS;
 
     JTx() = default;
-
-#if defined(_MSC_VER) && _MSC_VER <= 1800
-    JTx(JTx&& src)
-        : jv(std::move(src.jv))
-        , fill_fee(std::move(src.fill_fee))
-        , fill_seq(std::move(src.fill_seq))
-        , fill_sig(std::move(src.fill_sig))
-        , signer(std::move(src.signer))
-        , requires(std::move(src.requires))
-        , ter(std::move(src.ter))
-        , props_(std::move(src.props_))
-    {
-    }
-
-    JTx& operator=(JTx&& src) noexcept
-    {
-        jv = std::move(src.jv);
-        fill_fee = std::move(src.fill_fee);
-        fill_seq = std::move(src.fill_seq);
-        fill_sig = std::move(src.fill_sig);
-        signer = std::move(src.signer);
-        requires = std::move(src.requires);
-        ter = std::move(src.ter);
-        props_ = std::move(src.props_);
-
-        return *this;
-    }
-#endif
+    JTx (JTx const&) = default;
+    JTx& operator=(JTx const&) = default;
+    JTx(JTx&&) = default;
+    JTx& operator=(JTx&&) = default;
 
     JTx (Json::Value&& jv_)
         : jv(std::move(jv_))
@@ -94,7 +72,6 @@ struct JTx
         return jv[key];
     }
 
-public:
     /** Return a property if it exists
 
         @return nullptr if the Prop does not exist
@@ -164,38 +141,25 @@ private:
     {
         prop_list() = default;
 
-        prop_list(prop_list const& src)
+        prop_list(prop_list const& other)
         {
-            for (auto const& prop : src.list)
+            for (auto const& prop : other.list)
                 list.emplace_back(prop->clone());
         }
 
-        prop_list& operator=(prop_list const& src)
+        prop_list& operator=(prop_list const& other)
         {
-            if (this != &src)
+            if (this != &other)
             {
                 list.clear();
-                for (auto const& prop : src.list)
+                for (auto const& prop : other.list)
                     list.emplace_back(prop->clone());
             }
             return *this;
         }
 
-#if defined(_MSC_VER) && _MSC_VER <= 1800
-        prop_list(prop_list&& src)
-            : list(std::move(src.list))
-        {
-        }
-
-        prop_list& operator=(prop_list&& src)
-        {
-            list = std::move(src.list);
-            return *this;
-        }
-#else
         prop_list(prop_list&& src) = default;
         prop_list& operator=(prop_list&& src) = default;
-#endif
 
         std::vector<std::unique_ptr<
             basic_prop>> list;

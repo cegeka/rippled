@@ -24,7 +24,7 @@
 #include <ripple/ledger/OpenView.h>
 #include <ripple/ledger/PaymentSandbox.h>
 #include <ripple/ledger/Sandbox.h>
-#include <beast/cxx14/type_traits.h> // <type_traits>
+#include <type_traits>
 
 namespace ripple {
 namespace test {
@@ -146,14 +146,16 @@ class View_test
     void
     testLedger()
     {
-        Config const config;
         using namespace jtx;
+        Env env(*this);
+        Config config;
         std::shared_ptr<Ledger const> const genesis =
             std::make_shared<Ledger>(
-                create_genesis, config);
+                create_genesis, config, env.app().family());
         auto const ledger =
             std::make_shared<Ledger>(
-                open_ledger, *genesis);
+                open_ledger, *genesis,
+                env.app().timeKeeper().closeTime());
         wipe(*ledger);
         ReadView& v = *ledger;
         succ(v, 0, boost::none);
@@ -181,8 +183,8 @@ class View_test
     {
         using namespace jtx;
         Env env(*this);
-        wipe(env.openLedger);
-        auto const open = env.open();
+        wipe(env.app().openLedger());
+        auto const open = env.current();
         ApplyViewImpl v(&*open, tapNONE);
         succ(v, 0, boost::none);
         v.insert(sle(1));
@@ -212,8 +214,8 @@ class View_test
     {
         using namespace jtx;
         Env env(*this);
-        wipe(env.openLedger);
-        auto const open = env.open();
+        wipe(env.app().openLedger());
+        auto const open = env.current();
         ApplyViewImpl v0(&*open, tapNONE);
         v0.insert(sle(1));
         v0.insert(sle(2));
@@ -276,8 +278,8 @@ class View_test
     {
         using namespace jtx;
         Env env(*this);
-        wipe(env.openLedger);
-        auto const open = env.open();
+        wipe(env.app().openLedger());
+        auto const open = env.current();
         ApplyViewImpl v0 (&*open, tapNONE);
         v0.rawInsert(sle(1, 1));
         v0.rawInsert(sle(2, 2));
@@ -340,14 +342,15 @@ class View_test
     testContext()
     {
         using namespace jtx;
+        using namespace std::chrono;
         {
             Env env(*this);
-            wipe(env.openLedger);
-            auto const open = env.open();
+            wipe(env.app().openLedger());
+            auto const open = env.current();
             OpenView v0(open.get());
             expect(v0.seq() != 98);
             expect(v0.seq() == open->seq());
-            expect(v0.parentCloseTime() != 99);
+            expect(v0.parentCloseTime() != NetClock::time_point{99s});
             expect(v0.parentCloseTime() ==
                 open->parentCloseTime());
             {
@@ -361,7 +364,7 @@ class View_test
                 expect(v2.parentCloseTime() ==
                     v1.parentCloseTime());
                 expect(v2.seq() == v1.seq());
-                expect(v2.flags() == tapNO_CHECK_SIGN); 
+                expect(v2.flags() == tapNO_CHECK_SIGN);
 
                 Sandbox v3(&v2);
                 expect(v3.seq() == v2.seq());
@@ -375,13 +378,148 @@ class View_test
                 expect(v2.seq() == v0.seq());
                 expect(v2.parentCloseTime() ==
                     v0.parentCloseTime());
-                expect(v2.flags() == tapNO_CHECK_SIGN); 
+                expect(v2.flags() == tapNO_CHECK_SIGN);
                 PaymentSandbox v3(&v2);
                 expect(v3.seq() == v2.seq());
                 expect(v3.parentCloseTime() ==
                     v2.parentCloseTime());
                 expect(v3.flags() == v2.flags());
             }
+        }
+    }
+
+    // Return a list of keys found via sles
+    static
+    std::vector<uint256>
+    sles (ReadView const& ledger)
+    {
+        std::vector<uint256> v;
+        v.reserve (32);
+        for(auto const& sle : ledger.sles)
+            v.push_back(sle->key());
+        return v;
+    }
+
+    template <class... Args>
+    static
+    std::vector<uint256>
+    list (Args... args)
+    {
+        return std::vector<uint256> ({uint256(args)...});
+    }
+
+    void
+    testSles()
+    {
+        using namespace jtx;
+        Env env(*this);
+        Config config;
+        std::shared_ptr<Ledger const> const genesis =
+            std::make_shared<Ledger> (
+                create_genesis, config, env.app().family());
+        auto const ledger = std::make_shared<Ledger>(
+            open_ledger, *genesis,
+            env.app().timeKeeper().closeTime());
+        auto setup123 = [&ledger, this]()
+        {
+            // erase middle element
+            wipe (*ledger);
+            ledger->rawInsert (sle (1));
+            ledger->rawInsert (sle (2));
+            ledger->rawInsert (sle (3));
+            expect (sles (*ledger) == list (1, 2, 3));
+        };
+        {
+            setup123 ();
+            OpenView view (ledger.get ());
+            view.rawErase (sle (1));
+            view.rawInsert (sle (4));
+            view.rawInsert (sle (5));
+            expect (sles (view) == list (2, 3, 4, 5));
+            auto b = view.sles.begin();
+            expect (view.sles.upper_bound(uint256(1)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(2)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(3)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(4)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(5)) == b);
+        }
+        {
+            setup123 ();
+            OpenView view (ledger.get ());
+            view.rawErase (sle (1));
+            view.rawErase (sle (2));
+            view.rawInsert (sle (4));
+            view.rawInsert (sle (5));
+            expect (sles (view) == list (3, 4, 5));
+            auto b = view.sles.begin();
+            expect (view.sles.upper_bound(uint256(1)) == b);
+            expect (view.sles.upper_bound(uint256(2)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(3)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(4)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(5)) == b);
+        }
+        {
+            setup123 ();
+            OpenView view (ledger.get ());
+            view.rawErase (sle (1));
+            view.rawErase (sle (2));
+            view.rawErase (sle (3));
+            view.rawInsert (sle (4));
+            view.rawInsert (sle (5));
+            expect (sles (view) == list (4, 5));
+            auto b = view.sles.begin();
+            expect (view.sles.upper_bound(uint256(1)) == b);
+            expect (view.sles.upper_bound(uint256(2)) == b);
+            expect (view.sles.upper_bound(uint256(3)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(4)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(5)) == b);
+        }
+        {
+            setup123 ();
+            OpenView view (ledger.get ());
+            view.rawErase (sle (3));
+            view.rawInsert (sle (4));
+            view.rawInsert (sle (5));
+            expect (sles (view) == list (1, 2, 4, 5));
+            auto b = view.sles.begin();
+            ++b;
+            expect (view.sles.upper_bound(uint256(1)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(2)) == b);
+            expect (view.sles.upper_bound(uint256(3)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(4)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(5)) == b);
+        }
+        {
+            setup123 ();
+            OpenView view (ledger.get ());
+            view.rawReplace (sle (1, 10));
+            view.rawReplace (sle (3, 30));
+            expect (sles (view) == list (1, 2, 3));
+            expect (seq (view.read(k (1))) == 10);
+            expect (seq (view.read(k (2))) == 1);
+            expect (seq (view.read(k (3))) == 30);
+
+            view.rawErase (sle (3));
+            expect (sles (view) == list (1, 2));
+            auto b = view.sles.begin();
+            ++b;
+            expect (view.sles.upper_bound(uint256(1)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(2)) == b);
+            expect (view.sles.upper_bound(uint256(3)) == b);
+            expect (view.sles.upper_bound(uint256(4)) == b);
+            expect (view.sles.upper_bound(uint256(5)) == b);
+
+            view.rawInsert (sle (5));
+            view.rawInsert (sle (4));
+            view.rawInsert (sle (3));
+            expect (sles (view) == list (1, 2, 3, 4, 5));
+            b = view.sles.begin();
+            ++b;
+            expect (view.sles.upper_bound(uint256(1)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(2)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(3)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(4)) == b); ++b;
+            expect (view.sles.upper_bound(uint256(5)) == b);
         }
     }
 
@@ -394,13 +532,15 @@ class View_test
         // ApplyView on that, then another ApplyView,
         // erase the item, apply.
         {
-            Config const config;
+            Env env(*this);
+            Config config;
             std::shared_ptr<Ledger const> const genesis =
                 std::make_shared<Ledger>(
-                    create_genesis, config);
+                    create_genesis, config, env.app().family());
             auto const ledger =
                 std::make_shared<Ledger>(
-                    open_ledger, *genesis);
+                    open_ledger, *genesis,
+                    env.app().timeKeeper().closeTime());
             wipe(*ledger);
             ledger->rawInsert(sle(1));
             ReadView& v0 = *ledger;
@@ -411,6 +551,14 @@ class View_test
                 v2.apply(v1);
             }
             expect(! v1.exists(k(1)));
+        }
+
+        // Make sure OpenLedger::empty works
+        {
+            Env env(*this);
+            expect(env.app().openLedger().empty());
+            env.fund(XRP(10000), Account("test"));
+            expect(! env.app().openLedger().empty());
         }
     }
 
@@ -424,7 +572,7 @@ class View_test
         testMetaSucc();
         testStacked();
         testContext();
-
+        testSles();
         testRegressions();
     }
 };

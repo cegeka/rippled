@@ -21,7 +21,7 @@
 #define RIPPLE_TEST_JTX_PROP_H_INCLUDED
 
 #include <ripple/test/jtx/Env.h>
-#include <beast/cxx14/memory.h> // <memory>
+#include <memory>
 
 namespace ripple {
 namespace test {
@@ -43,7 +43,7 @@ struct prop
     }
 
     void
-    operator()(Env const& env, JTx& jt) const
+    operator()(Env& env, JTx& jt) const
     {
         jt.set(p_->clone());
     }

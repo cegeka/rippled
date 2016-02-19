@@ -25,7 +25,7 @@
 #include <ripple/app/ledger/Ledger.h>
 #include <ripple/app/ledger/LedgerProposal.h>
 #include <ripple/net/InfoSub.h>
-#include <beast/cxx14/memory.h> // <memory>
+#include <memory>
 #include <beast/threads/Stoppable.h>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <deque>
@@ -40,6 +40,7 @@ namespace ripple {
 
 class Peer;
 class LedgerMaster;
+class Transaction;
 
 // This is the primary interface into the "client" portion of the program.
 // Code that wants to do normal operations on the network such as
@@ -101,12 +102,6 @@ public:
     // Network information
     //
 
-    // Our best estimate of wall time in seconds from 1/1/2000
-    virtual std::uint32_t getNetworkTimeNC () const = 0;
-    // Our best estimate of current ledger close time
-    virtual std::uint32_t getCloseTimeNC () const = 0;
-    virtual void closeTimeOffset (int) = 0;
-
     virtual OperatingMode getOperatingMode () const = 0;
     virtual std::string strOperatingMode () const = 0;
 
@@ -116,26 +111,26 @@ public:
     //
 
     // must complete immediately
-    virtual void submitTransaction (Job&, STTx::pointer) = 0;
+    virtual void submitTransaction (std::shared_ptr<STTx const> const&) = 0;
 
     /**
      * Process transactions as they arrive from the network or which are
      * submitted by clients. Process local transactions synchronously
      *
      * @param transaction Transaction object
-     * @param bAdmin Whether an administrative client connection submitted it.
+     * @param bUnlimited Whether a privileged client connection submitted it.
      * @param bLocal Client submission.
      * @param failType fail_hard setting from transaction submission.
      */
-    virtual void processTransaction (Transaction::pointer& transaction,
-        bool bAdmin, bool bLocal, FailHard failType) = 0;
+    virtual void processTransaction (std::shared_ptr<Transaction>& transaction,
+        bool bUnlimited, bool bLocal, FailHard failType) = 0;
 
     //--------------------------------------------------------------------------
     //
     // Owner functions
     //
 
-    virtual Json::Value getOwnerInfo (Ledger::pointer lpLedger,
+    virtual Json::Value getOwnerInfo (std::shared_ptr<ReadView const> lpLedger,
         AccountID const& account) = 0;
 
     //--------------------------------------------------------------------------
@@ -144,7 +139,7 @@ public:
     //
 
     virtual void getBookPage (
-        bool bAdmin,
+        bool bUnlimited,
         std::shared_ptr<ReadView const>& lpLedger,
         Book const& book,
         AccountID const& uTakerID,
@@ -167,6 +162,7 @@ public:
                               std::shared_ptr<SHAMap> const& map) = 0;
 
     // network state machine
+    virtual bool beginConsensus (uint256 const& netLCL) = 0;
     virtual void endConsensus (bool correctLCL) = 0;
     virtual void setStandAlone () = 0;
     virtual void setStateTimer () = 0;
@@ -181,7 +177,7 @@ public:
     virtual void consensusViewChange () = 0;
 
     // FIXME(NIKB): Remove the need for this function
-    virtual void setLastCloseTime (std::uint32_t t) = 0;
+    virtual void setLastCloseTime (NetClock::time_point t) = 0;
 
     virtual Json::Value getConsensusInfo () = 0;
     virtual Json::Value getServerInfo (bool human, bool admin) = 0;
@@ -194,7 +190,8 @@ public:
         performs a virtual consensus round, with all the transactions we are
         proposing being accepted.
     */
-    virtual std::uint32_t acceptLedger () = 0;
+    virtual std::uint32_t acceptLedger (
+        boost::optional<std::chrono::milliseconds> consensusDelay = boost::none) = 0;
 
     virtual uint256 getConsensusLCL () = 0;
 
@@ -204,44 +201,46 @@ public:
     virtual std::size_t getLocalTxCount () = 0;
 
     // client information retrieval functions
-    using AccountTx  = std::pair<Transaction::pointer, TxMeta::pointer>;
+    using AccountTx  = std::pair<std::shared_ptr<Transaction>, TxMeta::pointer>;
     using AccountTxs = std::vector<AccountTx>;
 
     virtual AccountTxs getAccountTxs (
         AccountID const& account,
         std::int32_t minLedger, std::int32_t maxLedger,  bool descending,
-        std::uint32_t offset, int limit, bool bAdmin) = 0;
+        std::uint32_t offset, int limit, bool bUnlimited) = 0;
 
     virtual AccountTxs getTxsAccount (
         AccountID const& account,
         std::int32_t minLedger, std::int32_t maxLedger, bool forward,
-        Json::Value& token, int limit, bool bAdmin) = 0;
+        Json::Value& token, int limit, bool bUnlimited) = 0;
 
     using txnMetaLedgerType = std::tuple<std::string, std::string, std::uint32_t>;
     using MetaTxsList       = std::vector<txnMetaLedgerType>;
 
     virtual MetaTxsList getAccountTxsB (AccountID const& account,
         std::int32_t minLedger, std::int32_t maxLedger,  bool descending,
-            std::uint32_t offset, int limit, bool bAdmin) = 0;
+            std::uint32_t offset, int limit, bool bUnlimited) = 0;
 
     virtual MetaTxsList getTxsAccountB (AccountID const& account,
         std::int32_t minLedger, std::int32_t maxLedger,  bool forward,
-        Json::Value& token, int limit, bool bAdmin) = 0;
+        Json::Value& token, int limit, bool bUnlimited) = 0;
 
     //--------------------------------------------------------------------------
     //
     // Monitoring: publisher side
     //
     virtual void pubLedger (Ledger::ref lpAccepted) = 0;
-    virtual void pubProposedTransaction (Ledger::ref lpCurrent,
-        STTx::ref stTxn, TER terResult) = 0;
+    virtual void pubProposedTransaction (
+        std::shared_ptr<ReadView const> const& lpCurrent,
+        std::shared_ptr<STTx const> const& stTxn, TER terResult) = 0;
 };
 
 //------------------------------------------------------------------------------
 
 std::unique_ptr<NetworkOPs>
-make_NetworkOPs (NetworkOPs::clock_type& clock, bool standalone,
-    std::size_t network_quorum, JobQueue& job_queue, LedgerMaster& ledgerMaster,
+make_NetworkOPs (Application& app, NetworkOPs::clock_type& clock, bool standalone,
+    std::size_t network_quorum, bool start_valid,
+    JobQueue& job_queue, LedgerMaster& ledgerMaster,
     beast::Stoppable& parent, beast::Journal journal);
 
 } // ripple

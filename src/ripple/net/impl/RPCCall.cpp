@@ -21,6 +21,7 @@
 #include <ripple/app/main/Application.h>
 #include <ripple/net/RPCCall.h>
 #include <ripple/net/RPCErr.h>
+#include <ripple/basics/contract.h>
 #include <ripple/basics/Log.h>
 #include <ripple/core/Config.h>
 #include <ripple/json/json_reader.h>
@@ -28,6 +29,7 @@
 #include <ripple/net/HTTPClient.h>
 #include <ripple/protocol/JsonFields.h>
 #include <ripple/protocol/ErrorCodes.h>
+#include <ripple/protocol/Feature.h>
 #include <ripple/protocol/SystemParameters.h>
 #include <ripple/protocol/types.h>
 #include <ripple/server/ServerHandler.h>
@@ -80,6 +82,8 @@ std::string createHTTPPost (
 class RPCParser
 {
 private:
+    beast::Journal j_;
+
     // TODO New routine for parsing ledger parameters, other routines should standardize on this.
     static bool jvParseLedger (Json::Value& jvRequest, std::string const& strLedger)
     {
@@ -182,7 +186,7 @@ private:
         if (! account)
             return rpcError (rpcACT_MALFORMED);
 
-        jvRequest[jss::account]= getApp().accountIDCache().toBase58(*account);
+        jvRequest[jss::account]= toBase58(*account);
 
         bool            bDone   = false;
 
@@ -252,7 +256,7 @@ private:
         if (! account)
             return rpcError (rpcACT_MALFORMED);
 
-        jvRequest[jss::account]    = getApp().accountIDCache().toBase58(*account);
+        jvRequest[jss::account]    = toBase58(*account);
 
         bool            bDone   = false;
 
@@ -426,23 +430,27 @@ private:
         return jvRequest;
     }
 
-    // sign_for
+    // sign_for <account> <secret> <json> offline
+    // sign_for <account> <secret> <json>
     Json::Value parseSignFor (Json::Value const& jvParams)
     {
-        Json::Value     txJSON;
-        Json::Reader    reader;
+        bool const bOffline = 4 == jvParams.size () && jvParams[3u].asString () == "offline";
 
-        if ((4 == jvParams.size ())
-            && reader.parse (jvParams[3u].asString (), txJSON))
+        if (3 == jvParams.size () || bOffline)
         {
-            if (txJSON.type () == Json::objectValue)
+            Json::Value txJSON;
+            Json::Reader reader;
+            if (reader.parse (jvParams[2u].asString (), txJSON))
             {
-                // Return SigningFor object for the submitted transaction.
+                // sign_for txJSON.
                 Json::Value jvRequest;
-                jvRequest["signing_for"] = jvParams[0u].asString ();
-                jvRequest["account"] = jvParams[1u].asString ();
-                jvRequest["secret"]  = jvParams[2u].asString ();
-                jvRequest["tx_json"] = txJSON;
+
+                jvRequest[jss::account] = jvParams[0u].asString ();
+                jvRequest[jss::secret]  = jvParams[1u].asString ();
+                jvRequest[jss::tx_json] = txJSON;
+
+                if (bOffline)
+                    jvRequest[jss::offline] = true;
 
                 return jvRequest;
             }
@@ -456,8 +464,8 @@ private:
         Json::Reader    reader;
         Json::Value     jvRequest;
 
-        WriteLog (lsTRACE, RPCParser) << "RPC method: " << jvParams[0u];
-        WriteLog (lsTRACE, RPCParser) << "RPC json: " << jvParams[1u];
+        JLOG (j_.trace) << "RPC method: " << jvParams[0u];
+        JLOG (j_.trace) << "RPC json: " << jvParams[1u];
 
         if (reader.parse (jvParams[1u].asString (), jvRequest))
         {
@@ -472,7 +480,7 @@ private:
         return rpcError (rpcINVALID_PARAMS);
     }
 
-    // ledger [id|index|current|closed|validated] [full]
+    // ledger [id|index|current|closed|validated] [full|tx]
     Json::Value parseLedger (Json::Value const& jvParams)
     {
         Json::Value     jvRequest (Json::objectValue);
@@ -484,9 +492,17 @@ private:
 
         jvParseLedger (jvRequest, jvParams[0u].asString ());
 
-        if (2 == jvParams.size () && jvParams[1u].asString () == "full")
+        if (2 == jvParams.size ())
         {
-            jvRequest[jss::full]   = bool (1);
+            if (jvParams[1u].asString () == "full")
+            {
+                jvRequest[jss::full]   = true;
+            }
+            else if (jvParams[1u].asString () == "tx")
+            {
+                jvRequest[jss::transactions] = true;
+                jvRequest[jss::expand] = true;
+            }
         }
 
         return jvRequest;
@@ -609,7 +625,7 @@ private:
         Json::Value     jvRequest;
         bool            bLedger     = 2 == jvParams.size ();
 
-        WriteLog (lsTRACE, RPCParser) << "RPC json: " << jvParams[0u];
+        JLOG (j_.trace) << "RPC json: " << jvParams[0u];
 
         if (reader.parse (jvParams[0u].asString (), jvRequest))
         {
@@ -668,18 +684,16 @@ private:
     // submit_multisigned <json>
     Json::Value parseSubmitMultiSigned (Json::Value const& jvParams)
     {
-        Json::Value     jvRequest;
-        Json::Reader    reader;
-        bool const      bOffline    = 2 == jvParams.size () && jvParams[1u].asString () == "offline";
-
-        if ((1 == jvParams.size () || bOffline)
-            && reader.parse (jvParams[0u].asString (), jvRequest))
+        if (1 == jvParams.size ())
         {
-            // Multisigned.
-            if (bOffline)
-                jvRequest["offline"]    = true;
-
-            return jvRequest;
+            Json::Value     txJSON;
+            Json::Reader    reader;
+            if (reader.parse (jvParams[0u].asString (), txJSON))
+            {
+                Json::Value jvRequest;
+                jvRequest[jss::tx_json] = txJSON;
+                return jvRequest;
+            }
         }
 
         return rpcError (rpcINVALID_PARAMS);
@@ -837,6 +851,10 @@ private:
 public:
     //--------------------------------------------------------------------------
 
+    explicit
+    RPCParser (beast::Journal j)
+            :j_ (j){}
+
     static std::string EncodeBase64 (std::string const& s)
     {
         // FIXME: This performs terribly
@@ -869,8 +887,8 @@ public:
     {
         if (ShouldLog (lsTRACE, RPCParser))
         {
-            WriteLog (lsTRACE, RPCParser) << "RPC method:" << strMethod;
-            WriteLog (lsTRACE, RPCParser) << "RPC params:" << jvParams;
+            JLOG (j_.trace) << "RPC method:" << strMethod;
+            JLOG (j_.trace) << "RPC params:" << jvParams;
         }
 
         struct Command
@@ -922,13 +940,9 @@ public:
             {   "random",               &RPCParser::parseAsIs,                  0,  0   },
             {   "ripple_path_find",     &RPCParser::parseRipplePathFind,        1,  2   },
             {   "sign",                 &RPCParser::parseSignSubmit,            2,  3   },
-#if RIPPLE_ENABLE_MULTI_SIGN
-            {   "sign_for",             &RPCParser::parseSignFor,               4,  4   },
-#endif // RIPPLE_ENABLE_MULTI_SIGN
+            {   "sign_for",             &RPCParser::parseSignFor,               3,  4   },
             {   "submit",               &RPCParser::parseSignSubmit,            1,  3   },
-#if RIPPLE_ENABLE_MULTI_SIGN
             {   "submit_multisigned",   &RPCParser::parseSubmitMultiSigned,     1,  1   },
-#endif // RIPPLE_ENABLE_MULTI_SIGN
             {   "server_info",          &RPCParser::parseAsIs,                  0,  0   },
             {   "server_state",         &RPCParser::parseAsIs,                  0,  0   },
             {   "stop",                 &RPCParser::parseAsIs,                  0,  0   },
@@ -965,7 +979,7 @@ public:
                 if ((command.minParams >= 0 && count < command.minParams) ||
                     (command.maxParams >= 0 && count > command.maxParams))
                 {
-                    WriteLog (lsDEBUG, RPCParser) <<
+                    JLOG (j_.debug) <<
                         "Wrong number of parameters for " << command.name <<
                         " minimum=" << command.minParams <<
                         " maximum=" << command.maxParams <<
@@ -1018,7 +1032,7 @@ struct RPCCallImp
     static bool onResponse (
         std::function<void (Json::Value const& jvInput)> callbackFuncP,
             const boost::system::error_code& ecResult, int iStatus,
-                std::string const& strData)
+                std::string const& strData, beast::Journal j)
     {
         if (callbackFuncP)
         {
@@ -1026,23 +1040,26 @@ struct RPCCallImp
 
             // Receive reply
             if (iStatus == 401)
-                throw std::runtime_error ("incorrect rpcuser or rpcpassword (authorization failed)");
+                Throw<std::runtime_error> (
+                    "incorrect rpcuser or rpcpassword (authorization failed)");
             else if ((iStatus >= 400) && (iStatus != 400) && (iStatus != 404) && (iStatus != 500)) // ?
-                throw std::runtime_error (std::string ("server returned HTTP error ") + std::to_string (iStatus));
+                Throw<std::runtime_error> (
+                    std::string ("server returned HTTP error ") +
+                        std::to_string (iStatus));
             else if (strData.empty ())
-                throw std::runtime_error ("no response from server");
+                Throw<std::runtime_error> ("no response from server");
 
             // Parse reply
-            WriteLog (lsDEBUG, RPCParser) << "RPC reply: " << strData << std::endl;
+            JLOG (j.debug) << "RPC reply: " << strData << std::endl;
 
             Json::Reader    reader;
             Json::Value     jvReply;
 
             if (!reader.parse (strData, jvReply))
-                throw std::runtime_error ("couldn't parse reply from server");
+                Throw<std::runtime_error> ("couldn't parse reply from server");
 
             if (!jvReply)
-                throw std::runtime_error ("expected reply to have result, error and id properties");
+                Throw<std::runtime_error> ("expected reply to have result, error and id properties");
 
             Json::Value     jvResult (Json::objectValue);
 
@@ -1057,9 +1074,9 @@ struct RPCCallImp
     // Build the request.
     static void onRequest (std::string const& strMethod, Json::Value const& jvParams,
         const std::map<std::string, std::string>& mHeaders, std::string const& strPath,
-            boost::asio::streambuf& sb, std::string const& strHost)
+            boost::asio::streambuf& sb, std::string const& strHost, beast::Journal j)
     {
-        WriteLog (lsDEBUG, RPCParser) << "requestRPC: strPath='" << strPath << "'";
+        JLOG (j.debug) << "requestRPC: strPath='" << strPath << "'";
 
         std::ostream    osRequest (&sb);
         osRequest <<
@@ -1072,19 +1089,25 @@ struct RPCCallImp
 };
 
 //------------------------------------------------------------------------------
+namespace RPCCall {
 
-int RPCCall::fromCommandLine (const std::vector<std::string>& vCmd)
+int fromCommandLine (
+    Config const& config,
+    const std::vector<std::string>& vCmd,
+    Logs& logs)
 {
+    if (vCmd.empty ())
+        return 1;      // 1 = print usage.
+
     Json::Value jvOutput;
     int         nRet = 0;
     Json::Value jvRequest (Json::objectValue);
 
+    auto rpcJ = logs.journal ("RPCParser");
     try
     {
-        RPCParser   rpParser;
+        RPCParser   rpParser (rpcJ);
         Json::Value jvRpcParams (Json::arrayValue);
-
-        if (vCmd.empty ()) return 1;                                            // 1 = print usage.
 
         for (int i = 1; i != vCmd.size (); i++)
             jvRpcParams.append (vCmd[i]);
@@ -1096,7 +1119,7 @@ int RPCCall::fromCommandLine (const std::vector<std::string>& vCmd)
 
         jvRequest   = rpParser.parseCommand (vCmd[0], jvRpcParams, true);
 
-        WriteLog (lsTRACE, RPCParser) << "RPC Request: " << jvRequest << std::endl;
+        JLOG (rpcJ.trace) << "RPC Request: " << jvRequest << std::endl;
 
         if (jvRequest.isMember (jss::error))
         {
@@ -1109,18 +1132,18 @@ int RPCCall::fromCommandLine (const std::vector<std::string>& vCmd)
             try
             {
                 std::stringstream ss;
-                setup = setup_ServerHandler(getConfig(), ss);
+                setup = setup_ServerHandler(config, ss);
             }
-            catch(...)
+            catch (std::exception const&)
             {
                 // ignore any exceptions, so the command
                 // line client works without a config file
             }
 
-            if (getConfig().rpc_ip)
-                setup.client.ip = getConfig().rpc_ip->to_string();
-            if (getConfig().rpc_port)
-                setup.client.port = *getConfig().rpc_port;
+            if (config.rpc_ip)
+                setup.client.ip = config.rpc_ip->to_string();
+            if (config.rpc_port)
+                setup.client.port = *config.rpc_port;
 
             Json::Value jvParams (Json::arrayValue);
 
@@ -1145,6 +1168,8 @@ int RPCCall::fromCommandLine (const std::vector<std::string>& vCmd)
                         ? jvRequest["method"].asString () : vCmd[0],
                     jvParams,                               // Parsed, execute.
                     setup.client.secure != 0,                // Use SSL
+                    config.QUIET,
+                    logs,
                     std::bind (RPCCallImp::callRPCHandler, &jvOutput,
                                std::placeholders::_1));
                 isService.run(); // This blocks until there is no more outstanding async calls.
@@ -1193,12 +1218,6 @@ int RPCCall::fromCommandLine (const std::vector<std::string>& vCmd)
         jvOutput["error_what"]  = e.what ();
         nRet                    = rpcINTERNAL;
     }
-    catch (...)
-    {
-        jvOutput                = rpcError (rpcINTERNAL);
-        jvOutput["error_what"]  = "exception";
-        nRet                    = rpcINTERNAL;
-    }
 
     std::cout << jvOutput.toStyledString ();
 
@@ -1207,16 +1226,17 @@ int RPCCall::fromCommandLine (const std::vector<std::string>& vCmd)
 
 //------------------------------------------------------------------------------
 
-void RPCCall::fromNetwork (
+void fromNetwork (
     boost::asio::io_service& io_service,
     std::string const& strIp, const int iPort,
     std::string const& strUsername, std::string const& strPassword,
     std::string const& strPath, std::string const& strMethod,
-    Json::Value const& jvParams, const bool bSSL,
+    Json::Value const& jvParams, const bool bSSL, const bool quiet,
+    Logs& logs,
     std::function<void (Json::Value const& jvInput)> callbackFuncP)
 {
     // Connect to localhost
-    if (!getConfig ().QUIET)
+    if (!quiet)
     {
         std::cerr << (bSSL ? "Securely connecting to " : "Connecting to ") <<
             strIp << ":" << iPort << std::endl;
@@ -1234,6 +1254,8 @@ void RPCCall::fromNetwork (
     const int RPC_REPLY_MAX_BYTES (256*1024*1024);
     const int RPC_NOTIFY_SECONDS (600);
 
+    auto j = logs.journal ("HTTPClient");
+
     HTTPClient::request (
         bSSL,
         io_service,
@@ -1244,12 +1266,15 @@ void RPCCall::fromNetwork (
             strMethod,
             jvParams,
             mapRequestHeaders,
-            strPath, std::placeholders::_1, std::placeholders::_2),
+            strPath, std::placeholders::_1, std::placeholders::_2, j),
         RPC_REPLY_MAX_BYTES,
         boost::posix_time::seconds (RPC_NOTIFY_SECONDS),
         std::bind (&RPCCallImp::onResponse, callbackFuncP,
                    std::placeholders::_1, std::placeholders::_2,
-                   std::placeholders::_3));
+                   std::placeholders::_3, j),
+        logs);
+}
+
 }
 
 } // ripple

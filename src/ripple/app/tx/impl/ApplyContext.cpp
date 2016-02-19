@@ -27,12 +27,14 @@
 
 namespace ripple {
 
-ApplyContext::ApplyContext(
-    OpenView& base, STTx const& tx_,
-        ApplyFlags flags, Config const& config_,
+ApplyContext::ApplyContext(Application& app_,
+    OpenView& base, STTx const& tx_, TER preclaimResult_,
+        std::uint64_t baseFee_, ApplyFlags flags,
             beast::Journal journal_)
-    : tx (tx_)
-    , config (config_)
+    : app(app_)
+    , tx(tx_)
+    , preclaimResult(preclaimResult_)
+    , baseFee(baseFee_)
     , journal(journal_)
     , base_ (base)
     , flags_(flags)
@@ -50,6 +52,21 @@ void
 ApplyContext::apply(TER ter)
 {
     view_->apply(base_, tx, ter, journal);
+}
+
+std::size_t
+ApplyContext::size()
+{
+    return view_->size();
+}
+
+void
+ApplyContext::visit (std::function <void (
+    uint256 const&, bool,
+    std::shared_ptr<SLE const> const&,
+    std::shared_ptr<SLE const> const&)> const& func)
+{
+    view_->visit(base_, func);
 }
 
 } // ripple

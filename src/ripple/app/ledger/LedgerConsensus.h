@@ -22,10 +22,10 @@
 
 #include <ripple/app/ledger/Ledger.h>
 #include <ripple/app/ledger/LedgerProposal.h>
+#include <ripple/app/ledger/InboundTransactions.h>
+#include <ripple/app/main/Application.h>
 #include <ripple/app/misc/CanonicalTXSet.h>
 #include <ripple/app/misc/FeeVote.h>
-#include <ripple/app/tx/InboundTransactions.h>
-#include <ripple/app/tx/LocalTxs.h>
 #include <ripple/json/json_value.h>
 #include <ripple/overlay/Peer.h>
 #include <ripple/protocol/RippleLedgerHash.h>
@@ -54,6 +54,13 @@ public:
 
     virtual bool peerPosition (LedgerProposal::ref) = 0;
 
+    virtual void startRound (
+        LedgerHash const& prevLCLHash,
+        Ledger::ref prevLedger,
+        NetClock::time_point closeTime,
+        int previousProposers,
+        std::chrono::milliseconds previousConvergeTime) = 0;
+
     /** Simulate the consensus process without any network traffic.
 
         The end result, is that consensus begins and completes as if everyone
@@ -63,7 +70,8 @@ public:
         server in standalone mode and SHOULD NOT be used during the normal
         consensus process.
     */
-    virtual void simulate () = 0;
+    virtual void simulate (
+        boost::optional<std::chrono::milliseconds> consensusDelay) = 0;
 };
 
 //------------------------------------------------------------------------------
@@ -79,11 +87,27 @@ public:
   @param openLgr               true if applyLedger is open, else false.
 */
 void applyTransactions (
+    Application& app,
     SHAMap const* set,
     OpenView& view,
     Ledger::ref checkLedger,
     CanonicalTXSet& retriableTransactions,
     ApplyFlags flags);
+
+/** Apply a single transaction to a ledger
+  @param view                   The open view to apply to
+  @param txn                    The transaction to apply
+  @param retryAssured           True if another pass is assured
+  @param flags                  Flags for transactor
+  @return                       resultSuccess, resultFail or resultRetry
+*/
+int applyTransaction (
+    Application& app,
+    OpenView& view,
+    std::shared_ptr<STTx const> const& txn,
+    bool retryAssured,
+    ApplyFlags flags,
+    beast::Journal j);
 
 } // ripple
 

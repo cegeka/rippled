@@ -18,16 +18,15 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/app/misc/NetworkOPs.h>
-#include <ripple/basics/StringUtilities.h>
-#include <ripple/basics/strHex.h>
+#include <ripple/app/ledger/LedgerMaster.h>
+#include <ripple/app/misc/HashRouter.h>
+#include <ripple/app/misc/Transaction.h>
+#include <ripple/app/tx/apply.h>
 #include <ripple/net/RPCErr.h>
 #include <ripple/protocol/ErrorCodes.h>
 #include <ripple/resource/Fees.h>
-#include <ripple/protocol/JsonFields.h>
 #include <ripple/rpc/Context.h>
 #include <ripple/rpc/impl/TransactionSign.h>
-#include <ripple/server/Role.h>
 
 namespace ripple {
 
@@ -51,7 +50,13 @@ Json::Value doSubmit (RPC::Context& context)
         auto const failType = getFailHard (context);
 
         return RPC::transactionSubmit (
-            context.params, failType, context.netOps, context.role);
+        context.params,
+        failType,
+        context.role,
+        context.ledgerMaster.getValidatedLedgerAge(),
+        context.app,
+        context.ledgerMaster.getCurrentLedger(),
+        RPC::getProcessTxnFn (context.netOps));
     }
 
     Json::Value jvResult;
@@ -63,11 +68,11 @@ Json::Value doSubmit (RPC::Context& context)
 
     SerialIter sitTrans (makeSlice(ret.first));
 
-    STTx::pointer stpTrans;
+    std::shared_ptr<STTx const> stpTrans;
 
     try
     {
-        stpTrans = std::make_shared<STTx> (std::ref (sitTrans));
+        stpTrans = std::make_shared<STTx const> (std::ref (sitTrans));
     }
     catch (std::exception& e)
     {
@@ -77,9 +82,22 @@ Json::Value doSubmit (RPC::Context& context)
         return jvResult;
     }
 
-    Transaction::pointer            tpTrans;
+    {
+        auto validity = checkValidity(context.app.getHashRouter(),
+            *stpTrans, context.ledgerMaster.getCurrentLedger()->rules(),
+                context.app.config());
+        if (validity.first != Validity::Valid)
+        {
+            jvResult[jss::error] = "invalidTransaction";
+            jvResult[jss::error_exception] = "fails local checks: " + validity.second;
+
+            return jvResult;
+        }
+    }
+
     std::string reason;
-    tpTrans = std::make_shared<Transaction> (stpTrans, Validate::YES, reason);
+    auto tpTrans = std::make_shared<Transaction> (
+        stpTrans, reason, context.app);
     if (tpTrans->getStatus() != NEW)
     {
         jvResult[jss::error]            = "invalidTransaction";
@@ -93,7 +111,7 @@ Json::Value doSubmit (RPC::Context& context)
         auto const failType = getFailHard (context);
 
         context.netOps.processTransaction (
-            tpTrans, context.role == Role::ADMIN, true, failType);
+            tpTrans, isUnlimited (context.role), true, failType);
     }
     catch (std::exception& e)
     {

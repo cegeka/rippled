@@ -1,4 +1,4 @@
-
+//------------------------------------------------------------------------------
 /*
     This file is part of rippled: https://github.com/ripple/rippled
     Copyright (c) 2012, 2013 Ripple Labs Inc.
@@ -20,62 +20,81 @@
 #include <BeastConfig.h>
 #include <ripple/app/tx/impl/CancelOffer.h>
 #include <ripple/basics/Log.h>
-#include <ripple/protocol/Indexes.h>
-#include <ripple/protocol/TxFlags.h>
+#include <ripple/protocol/st.h>
 #include <ripple/ledger/View.h>
 
 namespace ripple {
 
 TER
-CancelOffer::preCheck ()
+CancelOffer::preflight (PreflightContext const& ctx)
 {
-    std::uint32_t const uTxFlags (mTxn.getFlags ());
+    auto const ret = preflight1 (ctx);
+    if (!isTesSuccess (ret))
+        return ret;
+
+    auto const uTxFlags = ctx.tx.getFlags();
 
     if (uTxFlags & tfUniversalMask)
     {
-        j_.trace << "Malformed transaction: " <<
+        JLOG(ctx.j.trace) << "Malformed transaction: " <<
             "Invalid flags set.";
         return temINVALID_FLAG;
     }
 
-    std::uint32_t const uOfferSequence = mTxn.getFieldU32 (sfOfferSequence);
-
-    if (!uOfferSequence)
+    auto const seq = ctx.tx.getFieldU32 (sfOfferSequence);
+    if (! seq)
     {
-        j_.trace << "Malformed transaction: " <<
-            "No sequence specified.";
+        JLOG(ctx.j.trace) <<
+            "CancelOffer::preflight: missing sequence";
         return temBAD_SEQUENCE;
     }
 
-    return Transactor::preCheck ();
+    return preflight2(ctx);
 }
+
+//------------------------------------------------------------------------------
+
+TER
+CancelOffer::preclaim(PreclaimContext const& ctx)
+{
+    auto const id = ctx.tx[sfAccount];
+    auto const offerSequence = ctx.tx[sfOfferSequence];
+
+    auto const sle = ctx.view.read(
+        keylet::account(id));
+
+    if ((*sle)[sfSequence] <= offerSequence)
+    {
+        ctx.j.trace << "Malformed transaction: " <<
+            "Sequence " << offerSequence << " is invalid.";
+        return temBAD_SEQUENCE;
+    }
+
+    return tesSUCCESS;
+}
+
+//------------------------------------------------------------------------------
 
 TER
 CancelOffer::doApply ()
 {
-    std::uint32_t const uOfferSequence = mTxn.getFieldU32 (sfOfferSequence);
+    auto const offerSequence = ctx_.tx[sfOfferSequence];
 
     auto const sle = view().read(
         keylet::account(account_));
-    if (sle->getFieldU32 (sfSequence) - 1 <= uOfferSequence)
-    {
-        j_.trace << "Malformed transaction: " <<
-            "Sequence " << uOfferSequence << " is invalid.";
-        return temBAD_SEQUENCE;
-    }
 
-    uint256 const offerIndex (getOfferIndex (account_, uOfferSequence));
+    uint256 const offerIndex (getOfferIndex (account_, offerSequence));
 
     auto sleOffer = view().peek (
         keylet::offer(offerIndex));
 
     if (sleOffer)
     {
-        j_.debug << "Trying to cancel offer #" << uOfferSequence;
-        return offerDelete (view(), sleOffer);
+        JLOG(j_.debug) << "Trying to cancel offer #" << offerSequence;
+        return offerDelete (view(), sleOffer, ctx_.app.journal("View"));
     }
 
-    j_.debug << "Offer #" << uOfferSequence << " can't be found.";
+    JLOG(j_.debug) << "Offer #" << offerSequence << " can't be found.";
     return tesSUCCESS;
 }
 

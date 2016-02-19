@@ -25,8 +25,6 @@ namespace ripple {
 
 open_ledger_t const open_ledger {};
 
-//------------------------------------------------------------------------------
-
 class OpenView::txs_iter_impl
     : public txs_type::iter_base
 {
@@ -89,20 +87,25 @@ public:
 //------------------------------------------------------------------------------
 
 OpenView::OpenView (open_ledger_t,
-    ReadView const* base,
+    ReadView const* base, Rules const& rules,
         std::shared_ptr<void const> hold)
-    : info_ (base->info())
+    : rules_ (rules)
+    , info_ (base->info())
     , base_ (base)
     , hold_ (std::move(hold))
 {
     info_.open = true;
+    info_.validated = false;
+    info_.accepted = false;
     info_.seq = base_->info().seq + 1;
     info_.parentCloseTime = base_->info().closeTime;
+    info_.parentHash = base_->info().hash;
 }
 
 OpenView::OpenView (ReadView const* base,
         std::shared_ptr<void const> hold)
-    : info_ (base->info())
+    : rules_ (base->rules())
+    , info_ (base->info())
     , base_ (base)
     , hold_ (std::move(hold))
 {
@@ -138,6 +141,12 @@ OpenView::fees() const
     return base_->fees();
 }
 
+Rules const&
+OpenView::rules() const
+{
+    return rules_;
+}
+
 bool
 OpenView::exists (Keylet const& k) const
 {
@@ -146,7 +155,7 @@ OpenView::exists (Keylet const& k) const
 
 auto
 OpenView::succ (key_type const& key,
-    boost::optional<key_type> last) const ->
+    boost::optional<key_type> const& last) const ->
         boost::optional<key_type>
 {
     return items_.succ(*base_, key, last);
@@ -156,6 +165,27 @@ std::shared_ptr<SLE const>
 OpenView::read (Keylet const& k) const
 {
     return items_.read(*base_, k);
+}
+
+auto
+OpenView::slesBegin() const ->
+    std::unique_ptr<sles_type::iter_base>
+{
+    return items_.slesBegin(*base_);
+}
+
+auto
+OpenView::slesEnd() const ->
+    std::unique_ptr<sles_type::iter_base>
+{
+    return items_.slesEnd(*base_);
+}
+
+auto
+OpenView::slesUpperBound(uint256 const& key) const ->
+    std::unique_ptr<sles_type::iter_base>
+{
+    return items_.slesUpperBound(*base_, key);
 }
 
 auto
@@ -227,9 +257,9 @@ OpenView::rawReplace(
 
 void
 OpenView::rawDestroyXRP(
-    std::uint64_t feeDrops)
+    XRPAmount const& fee)
 {
-    items_.destroyXRP(feeDrops);
+    items_.destroyXRP(fee);
     // VFALCO Deduct from info_.totalDrops ?
     //        What about child views?
 }

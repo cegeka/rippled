@@ -54,7 +54,7 @@ public:
         uint256 const& prevLgr,
         std::uint32_t proposeSeq,
         uint256 const& propose,
-        std::uint32_t closeTime,
+        NetClock::time_point closeTime,
         RippleAddress const& publicKey,
         PublicKey const& pk,
         uint256 const& suppress);
@@ -65,10 +65,10 @@ public:
         RippleAddress const& publicKey,
         uint256 const& prevLedger,
         uint256 const& position,
-        std::uint32_t closeTime);
+        NetClock::time_point closeTime);
 
     uint256 getSigningHash () const;
-    bool checkSign (std::string const& signature) const;
+    bool checkSign () const;
 
     NodeID const& getPeerID () const
     {
@@ -82,6 +82,10 @@ public:
     {
         return mPreviousLedger;
     }
+    RippleAddress const& getPublicKey () const
+    {
+        return mPublicKey;
+    }
     uint256 const& getSuppressionID () const
     {
         return mSuppression;
@@ -90,12 +94,22 @@ public:
     {
         return mProposeSeq;
     }
-    std::uint32_t getCloseTime () const
+    NetClock::time_point getCloseTime () const
     {
         return mCloseTime;
     }
 
-    Blob sign (RippleAddress const& privateKey);
+    Blob const& sign (RippleAddress const& privateKey);
+
+    void setSignature (Blob sig)
+    {
+        signature_ = sig;
+    }
+
+    Blob const& getSignature () const
+    {
+        return signature_;
+    }
 
     bool isPrevLedger (uint256 const& pl) const
     {
@@ -115,7 +129,8 @@ public:
         return mTime <= cutoff;
     }
 
-    bool changePosition (uint256 const& newPosition, std::uint32_t newCloseTime);
+    bool changePosition (
+        uint256 const& newPosition, NetClock::time_point newCloseTime);
     void bowOut ();
     Json::Value getJson () const;
 
@@ -127,17 +142,19 @@ private:
         using beast::hash_append;
         hash_append(h, HashPrefix::proposal);
         hash_append(h, std::uint32_t(mProposeSeq));
-        hash_append(h, std::uint32_t(mCloseTime));
+        hash_append(h, mCloseTime);
         hash_append(h, mPreviousLedger);
         hash_append(h, mCurrentHash);
     }
 
     uint256 mPreviousLedger, mCurrentHash, mSuppression;
-    std::uint32_t mCloseTime, mProposeSeq;
+    NetClock::time_point mCloseTime;
+    std::uint32_t mProposeSeq;
 
     NodeID          mPeerID;
     RippleAddress   mPublicKey;
-    PublicKey publicKey_;
+    PublicKey       publicKey_;
+    Blob            signature_;
 
     std::chrono::steady_clock::time_point mTime;
 };
@@ -155,7 +172,7 @@ uint256 proposalUniqueId (
         uint256 const& proposeHash,
         uint256 const& previousLedger,
         std::uint32_t proposeSeq,
-        std::uint32_t closeTime,
+        NetClock::time_point closeTime,
         Blob const& pubKey,
         Blob const& signature);
 

@@ -43,18 +43,9 @@ public:
     ApplyViewImpl& operator= (ApplyViewImpl&&) = delete;
     ApplyViewImpl& operator= (ApplyViewImpl const&) = delete;
 
-#ifdef _MSC_VER
-    ApplyViewImpl (ApplyViewImpl&& other)
-        : ApplyViewBase (std::move(other))
-        , deliver_ (std::move(other.deliver_))
-    {
-    }
-#else
     ApplyViewImpl (ApplyViewImpl&&) = default;
-#endif
-
-    ApplyViewImpl (ReadView const* base,
-        ApplyFlags flags);
+    ApplyViewImpl(
+        ReadView const* base, ApplyFlags flags);
 
     /** Apply the transaction.
 
@@ -85,6 +76,16 @@ public:
     std::size_t
     size ();
 
+    /** Visit modified entries
+    */
+    void
+    visit (
+        OpenView& target,
+        std::function <void (
+            uint256 const& key,
+            bool isDelete,
+            std::shared_ptr <SLE const> const& before,
+            std::shared_ptr <SLE const> const& after)> const& func);
 private:
     boost::optional<STAmount> deliver_;
 };

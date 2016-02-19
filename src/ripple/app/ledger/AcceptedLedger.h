@@ -21,6 +21,7 @@
 #define RIPPLE_APP_LEDGER_ACCEPTEDLEDGER_H_INCLUDED
 
 #include <ripple/app/ledger/AcceptedLedgerTx.h>
+#include <ripple/protocol/AccountID.h>
 
 namespace ripple {
 
@@ -45,18 +46,13 @@ class AcceptedLedger
 public:
     using pointer        = std::shared_ptr<AcceptedLedger>;
     using ret            = const pointer&;
-    using map_t          = std::map<int, AcceptedLedgerTx::pointer>; // Must be an ordered map!
+    using map_t          = std::map<int, AcceptedLedgerTx::pointer>;
+    // mapt_t must be an ordered map!
     using value_type     = map_t::value_type;
     using const_iterator = map_t::const_iterator;
 
 public:
-    static pointer makeAcceptedLedger (Ledger::ref ledger);
-    static void sweep ()
-    {
-        s_cache.sweep ();
-    }
-
-    Ledger::ref getLedger () const
+    std::shared_ptr<ReadView const> const& getLedger () const
     {
         return mLedger;
     }
@@ -70,23 +66,17 @@ public:
         return mMap.size ();
     }
 
-    static float getCacheHitRate ()
-    {
-        return s_cache.getHitRate ();
-    }
-
     AcceptedLedgerTx::pointer getTxn (int) const;
 
-private:
-    explicit AcceptedLedger (Ledger::ref ledger);
+    AcceptedLedger (
+        std::shared_ptr<ReadView const> const& ledger,
+        AccountIDCache const& accountCache, Logs& logs);
 
+private:
     void insert (AcceptedLedgerTx::ref);
 
-private:
-    static TaggedCache <uint256, AcceptedLedger> s_cache;
-
-    Ledger::pointer     mLedger;
-    map_t               mMap;
+    std::shared_ptr<ReadView const> mLedger;
+    map_t mMap;
 };
 
 } // ripple

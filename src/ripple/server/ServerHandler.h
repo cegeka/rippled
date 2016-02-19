@@ -21,13 +21,13 @@
 #define RIPPLE_SERVER_SERVERHANDLER_H_INCLUDED
 
 #include <ripple/basics/BasicConfig.h>
+#include <ripple/core/Config.h>
 #include <ripple/server/Port.h>
 #include <ripple/overlay/Overlay.h>
-#include <ripple/rpc/Yield.h>
 #include <beast/utility/Journal.h>
 #include <beast/utility/PropertyStream.h>
-#include <beast/cxx14/memory.h> // <memory>
 #include <boost/asio/ip/address.hpp>
+#include <memory>
 #include <vector>
 
 namespace ripple {
@@ -67,7 +67,6 @@ public:
         };
 
         overlay_t overlay;
-        RPC::YieldStrategy yieldStrategy;
 
         void
         makeContexts();
@@ -98,7 +97,9 @@ public:
 //------------------------------------------------------------------------------
 
 ServerHandler::Setup
-setup_ServerHandler (BasicConfig const& c, std::ostream& log);
+setup_ServerHandler (
+    Config const& c,
+    std::ostream& log);
 
 } // ripple
 

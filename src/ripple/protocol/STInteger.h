@@ -32,7 +32,7 @@ public:
     using value_type = Integer;
 
     explicit
-    STInteger (Integer v) 
+    STInteger (Integer v)
         : value_ (v)
     { }
 
@@ -71,8 +71,13 @@ public:
         s.addInteger (value_);
     }
 
-    Integer
-    getValue () const
+    STInteger& operator= (value_type const& v)
+    {
+        value_ = v;
+        return *this;
+    }
+
+    value_type value() const noexcept
     {
         return value_;
     }

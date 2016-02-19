@@ -22,6 +22,7 @@
 
 #include <ripple/ledger/RawView.h>
 #include <ripple/ledger/ReadView.h>
+#include <ripple/basics/qalloc.h>
 #include <map>
 #include <utility>
 
@@ -36,18 +37,10 @@ public:
 
     RawStateTable() = default;
     RawStateTable (RawStateTable const&) = default;
+    RawStateTable (RawStateTable&&) = default;
+
     RawStateTable& operator= (RawStateTable&&) = delete;
     RawStateTable& operator= (RawStateTable const&) = delete;
-
-#ifdef _MSC_VER
-    RawStateTable (RawStateTable&& other)
-        : items_ (std::move(other.items_))
-        , dropsDestroyed_ (std::move(other.dropsDestroyed_))
-    {
-    }
-#else
-    RawStateTable (RawStateTable&&) = default;
-#endif
 
     void
     apply (RawView& to) const;
@@ -75,7 +68,16 @@ public:
         Keylet const& k) const;
 
     void
-    destroyXRP (std::uint64_t feeDrops);
+    destroyXRP (XRPAmount const& fee);
+
+    std::unique_ptr<ReadView::sles_type::iter_base>
+    slesBegin (ReadView const& base) const;
+
+    std::unique_ptr<ReadView::sles_type::iter_base>
+    slesEnd (ReadView const& base) const;
+
+    std::unique_ptr<ReadView::sles_type::iter_base>
+    slesUpperBound (ReadView const& base, uint256 const& key) const;
 
 private:
     enum class Action
@@ -84,12 +86,16 @@ private:
         insert,
         replace,
     };
-    
+
+    class sles_iter_impl;
+
     using items_t = std::map<key_type,
-        std::pair<Action, std::shared_ptr<SLE>>>;
+        std::pair<Action, std::shared_ptr<SLE>>,
+        std::less<key_type>, qalloc_type<std::pair<key_type const,
+        std::pair<Action, std::shared_ptr<SLE>>>, false>>;
 
     items_t items_;
-    std::uint64_t dropsDestroyed_ = 0;
+    XRPAmount dropsDestroyed_ = 0;
 };
 
 } // detail

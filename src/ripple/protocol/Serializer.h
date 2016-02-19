@@ -22,14 +22,14 @@
 
 #include <ripple/protocol/SField.h>
 #include <ripple/basics/base_uint.h>
+#include <ripple/basics/contract.h>
 #include <ripple/basics/Buffer.h>
 #include <ripple/basics/Slice.h>
-#include <beast/utility/noexcept.h>
 #include <cassert>
 #include <cstdint>
 #include <iomanip>
 #include <sstream>
-#include <beast/cxx14/type_traits.h> // <type_traits>
+#include <type_traits>
 
 namespace ripple {
 
@@ -343,7 +343,7 @@ public:
     {
         return getBitString<160>();
     }
-    
+
     uint256
     get256()
     {
@@ -370,6 +370,9 @@ public:
     Blob
     getVL();
 
+    void
+    skip (int num);
+
     Buffer
     getVLBuffer();
 
@@ -384,7 +387,7 @@ SerialIter::getBitString()
     base_uint<Bits, Tag> u;
     auto const n = Bits/8;
     if (remain_ < n)
-        throw std::runtime_error(
+        Throw<std::runtime_error> (
             "invalid SerialIter getBitString");
     std::memcpy (u.begin(), p_, n);
     p_ += n;

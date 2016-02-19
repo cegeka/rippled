@@ -18,18 +18,12 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/basics/Log.h>
-#include <ripple/json/json_reader.h>
-#include <ripple/json/to_string.h>
-#include <ripple/protocol/HashPrefix.h>
+#include <ripple/protocol/STObject.h>
 #include <ripple/protocol/InnerObjectFormats.h>
-#include <ripple/protocol/STBase.h>
 #include <ripple/protocol/STAccount.h>
 #include <ripple/protocol/STArray.h>
-#include <ripple/protocol/STObject.h>
-#include <ripple/protocol/STParsedJSON.h>
-#include <beast/module/core/text/LexicalCast.h>
-#include <beast/cxx14/memory.h> // <memory>
+#include <ripple/protocol/STBlob.h>
+#include <ripple/basics/Log.h>
 
 namespace ripple {
 
@@ -37,8 +31,8 @@ STObject::~STObject()
 {
 #if 0
     // Turn this on to get a histogram on exit
-    static beast::static_initializer<Log> log;
-    (*log)(v_.size());
+    static Log log;
+    log(v_.size());
 #endif
 }
 
@@ -216,7 +210,7 @@ bool STObject::set (SerialIter& sit, int depth)
         {
             WriteLog (lsWARNING, STObject) <<
                 "Encountered object with end of array marker";
-            throw std::runtime_error ("Illegal terminator in object");
+            Throw<std::runtime_error> ("Illegal terminator in object");
         }
 
         if (!reachedEndOfObject)
@@ -230,7 +224,7 @@ bool STObject::set (SerialIter& sit, int depth)
                 WriteLog (lsWARNING, STObject) <<
                     "Unknown field: field_type=" << type <<
                     ", field_name=" << field;
-                throw std::runtime_error ("Unknown field");
+                Throw<std::runtime_error> ("Unknown field");
             }
 
             // Unflatten the field
@@ -240,7 +234,7 @@ bool STObject::set (SerialIter& sit, int depth)
             STObject* const obj = dynamic_cast <STObject*> (&(v_.back().get()));
             if (obj && (obj->setTypeFromSField (fn) == typeSetFail))
             {
-                throw std::runtime_error ("field deserialization error");
+                Throw<std::runtime_error> ("field deserialization error");
             }
         }
     }
@@ -338,36 +332,6 @@ uint256 STObject::getSigningHash (std::uint32_t prefix) const
     return s.getSHA512Half ();
 }
 
-Serializer
-STObject::startMultiSigningData () const
-{
-    Serializer s;
-    s.add32 (HashPrefix::txMultiSign);
-    add (s, false);
-    return s;
-}
-
-// VFALCO This should not be a member,
-//        and the function shouldn't even exist
-void
-STObject::finishMultiSigningData (
-    AccountID const& signingForID,
-    AccountID const& signingID,
-    Serializer& s) const
-{
-    s.add160 (signingForID);
-    s.add160 (signingID);
-}
-
-Serializer
-STObject::getMultiSigningData (
-    AccountID const& signingForID, AccountID const& signingID) const
-{
-    Serializer s (startMultiSigningData ());
-    finishMultiSigningData (signingForID, signingID, s);
-    return s;
-}
-
 int STObject::getFieldIndex (SField const& field) const
 {
     if (mType != nullptr)
@@ -388,7 +352,7 @@ const STBase& STObject::peekAtField (SField const& field) const
     int index = getFieldIndex (field);
 
     if (index == -1)
-        throw std::runtime_error ("Field not found");
+        Throw<std::runtime_error> ("Field not found");
 
     return peekAtIndex (index);
 }
@@ -398,7 +362,7 @@ STBase& STObject::getField (SField const& field)
     int index = getFieldIndex (field);
 
     if (index == -1)
-        throw std::runtime_error ("Field not found");
+        Throw<std::runtime_error> ("Field not found");
 
     return getIndex (index);
 }
@@ -461,7 +425,7 @@ bool STObject::setFlag (std::uint32_t f)
     if (!t)
         return false;
 
-    t->setValue (t->getValue () | f);
+    t->setValue (t->value () | f);
     return true;
 }
 
@@ -472,7 +436,7 @@ bool STObject::clearFlag (std::uint32_t f)
     if (!t)
         return false;
 
-    t->setValue (t->getValue () & ~f);
+    t->setValue (t->value () & ~f);
     return true;
 }
 
@@ -488,7 +452,7 @@ std::uint32_t STObject::getFlags (void) const
     if (!t)
         return 0;
 
-    return t->getValue ();
+    return t->value ();
 }
 
 STBase* STObject::makeFieldPresent (SField const& field)
@@ -498,7 +462,7 @@ STBase* STObject::makeFieldPresent (SField const& field)
     if (index == -1)
     {
         if (!isFree ())
-            throw std::runtime_error ("Field not found");
+            Throw<std::runtime_error> ("Field not found");
 
         return getPIndex (emplace_back(detail::nonPresentObject, field));
     }
@@ -518,7 +482,7 @@ void STObject::makeFieldAbsent (SField const& field)
     int index = getFieldIndex (field);
 
     if (index == -1)
-        throw std::runtime_error ("Field not found");
+        Throw<std::runtime_error> ("Field not found");
 
     const STBase& f = peekAtIndex (index);
 
@@ -548,7 +512,7 @@ std::string STObject::getFieldString (SField const& field) const
 {
     const STBase* rf = peekAtPField (field);
 
-    if (!rf) throw std::runtime_error ("Field not found");
+    if (! rf) Throw<std::runtime_error> ("Field not found");
 
     return rf->getText ();
 }
@@ -590,22 +554,7 @@ uint256 STObject::getFieldH256 (SField const& field) const
 
 AccountID STObject::getAccountID (SField const& field) const
 {
-    auto rf = peekAtPField (field);
-    if (!rf)
-        throw std::runtime_error ("Field not found");
-
-    AccountID account;
-    if (rf->getSType () != STI_NOTPRESENT)
-    {
-        const STAccount* cf = dynamic_cast<const STAccount*> (rf);
-
-        if (!cf)
-            throw std::runtime_error ("Wrong field type");
-
-        cf->getValueH160 (account);
-    }
-
-    return account;
+    return getFieldByValue <STAccount> (field);
 }
 
 Blob STObject::getFieldVL (SField const& field) const
@@ -657,7 +606,7 @@ STObject::set (std::unique_ptr<STBase> v)
     else
     {
         if (! isFree())
-            throw std::runtime_error(
+            Throw<std::runtime_error> (
                 "missing field in templated STObject");
         v_.emplace_back(std::move(*v));
     }
@@ -700,26 +649,12 @@ void STObject::setFieldV256 (SField const& field, STVector256 const& v)
 
 void STObject::setAccountID (SField const& field, AccountID const& v)
 {
-    STBase* rf = getPField (field, true);
-
-    if (!rf)
-        throw std::runtime_error ("Field not found");
-
-    if (rf->getSType () == STI_NOTPRESENT)
-        rf = makeFieldPresent (field);
-
-    STAccount* cf = dynamic_cast<STAccount*> (rf);
-
-    if (!cf)
-        throw std::runtime_error ("Wrong field type");
-
-    cf->setValueH160 (v);
+    setFieldUsingSetValue <STAccount> (field, v);
 }
 
 void STObject::setFieldVL (SField const& field, Blob const& v)
 {
-    setFieldUsingSetValue <STBlob>
-            (field, Buffer(v.data (), v.size ()));
+    setFieldUsingSetValue <STBlob> (field, Buffer(v.data (), v.size ()));
 }
 
 void STObject::setFieldAmount (SField const& field, STAmount const& v)

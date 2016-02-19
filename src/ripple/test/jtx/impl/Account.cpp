@@ -26,30 +26,16 @@ namespace ripple {
 namespace test {
 namespace jtx {
 
-#ifdef _MSC_VER
-Account::Account (Account&& other)
-    : name_(std::move(other.name_))
-    , pk_(std::move(other.pk_))
-    , sk_(std::move(other.sk_))
-    , id_(std::move(other.id_))
-    , human_(std::move(other.human_))
-{
-}
+std::unordered_map<
+    std::pair<std::string, KeyType>,
+        Account, beast::uhash<>> Account::cache_;
 
-Account&
-Account::operator= (Account&& rhs)
-{
-    name_ = std::move(rhs.name_);
-    pk_ = std::move(rhs.pk_);
-    sk_ = std::move(rhs.sk_);
-    id_ = std::move(rhs.id_);
-    human_ = std::move(rhs.human_);
-    return *this;
-}
-#endif
+Account const Account::master("master",
+    generateKeyPair(KeyType::secp256k1,
+        generateSeed("masterpassphrase")), Account::privateCtorTag{});
 
 Account::Account(std::string name,
-        std::pair<PublicKey, SecretKey> const& keys)
+        std::pair<PublicKey, SecretKey> const& keys, Account::privateCtorTag)
     : name_(std::move(name))
     , pk_ (keys.first)
     , sk_ (keys.second)
@@ -58,15 +44,22 @@ Account::Account(std::string name,
 {
 }
 
-Account::Account (std::string name,
-        KeyType type)
-#ifndef _MSC_VER
-    : Account(name,
-#else
-    // Fails on Clang and possibly gcc
-    : Account(std::move(name),
-#endif
-        generateKeyPair(type, generateSeed(name)))
+Account Account::fromCache(std::string name, KeyType type)
+{
+    auto const p = std::make_pair (name, type);
+    auto const iter = cache_.find (p);
+    if (iter != cache_.end ())
+        return iter->second;
+
+    auto const keys = generateKeyPair (type, generateSeed (name));
+    auto r = cache_.emplace (std::piecewise_construct,
+        std::forward_as_tuple (std::move (p)),
+        std::forward_as_tuple (std::move (name), keys, privateCtorTag{}));
+    return r.first->second;
+}
+
+Account::Account (std::string name, KeyType type)
+    : Account (fromCache (std::move (name), type))
 {
 }
 

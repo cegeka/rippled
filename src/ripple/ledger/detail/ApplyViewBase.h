@@ -24,6 +24,7 @@
 #include <ripple/ledger/OpenView.h>
 #include <ripple/ledger/ReadView.h>
 #include <ripple/ledger/detail/ApplyStateTable.h>
+#include <ripple/protocol/XRPAmount.h>
 
 namespace ripple {
 namespace detail {
@@ -38,22 +39,11 @@ public:
     ApplyViewBase& operator= (ApplyViewBase&&) = delete;
     ApplyViewBase& operator= (ApplyViewBase const&) = delete;
 
-#ifdef _MSC_VER
-    ApplyViewBase (ApplyViewBase&& other)
-        : ApplyView (std::move(other))
-        , RawView (std::move(other))
-        , flags_ (std::move(other.flags_))
-        , base_ (std::move(other.base_))
-        , items_ (std::move(other.items_))
-        , dropsDestroyed_ (std::move(other.dropsDestroyed_))
-    {
-    }
-#else
-    ApplyViewBase (ApplyViewBase&&) = default;
-#endif
 
-    ApplyViewBase (ReadView const* base,
-        ApplyFlags flags);
+    ApplyViewBase (ApplyViewBase&&) = default;
+
+    ApplyViewBase(
+        ReadView const* base, ApplyFlags flags);
 
     // ReadView
 
@@ -63,15 +53,27 @@ public:
     Fees const&
     fees() const override;
 
+    Rules const&
+    rules() const override;
+
     bool
     exists (Keylet const& k) const override;
 
     boost::optional<key_type>
     succ (key_type const& key, boost::optional<
-        key_type> last = boost::none) const override;
+        key_type> const& last = boost::none) const override;
 
     std::shared_ptr<SLE const>
     read (Keylet const& k) const override;
+
+    std::unique_ptr<sles_type::iter_base>
+    slesBegin() const override;
+
+    std::unique_ptr<sles_type::iter_base>
+    slesEnd() const override;
+
+    std::unique_ptr<sles_type::iter_base>
+    slesUpperBound(uint256 const& key) const override;
 
     std::unique_ptr<txs_type::iter_base>
     txsBegin() const override;
@@ -121,16 +123,13 @@ public:
 
     void
     rawDestroyXRP (
-        std::uint64_t feeDrops) override;
-
-    std::size_t
-    size () override;
+        XRPAmount const& feeDrops) override;
 
 protected:
     ApplyFlags flags_;
     ReadView const* base_;
     detail::ApplyStateTable items_;
-    std::uint64_t dropsDestroyed_ = 0;
+    XRPAmount dropsDestroyed_ = 0;
 };
 
 } // detail

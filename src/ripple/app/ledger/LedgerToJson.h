@@ -25,7 +25,6 @@
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/protocol/JsonFields.h>
 #include <ripple/protocol/STTx.h>
-#include <ripple/rpc/Yield.h>
 #include <ripple/json/Object.h>
 #include <boost/date_time/posix_time/posix_time.hpp>
 
@@ -33,24 +32,18 @@ namespace ripple {
 
 struct LedgerFill
 {
-    LedgerFill (ReadView const& l,
-                int o = 0,
-                RPC::Callback const& y = {},
-                RPC::YieldStrategy const& ys = {})
-            : ledger (l),
-              options (o),
-              yield (y),
-              yieldStrategy (ys)
+    LedgerFill (ReadView const& l, int o = 0)
+        : ledger (l)
+        , options (o)
     {
     }
 
     enum Options {
-        dumpTxrp = 1, dumpState = 2, expand = 4, full = 8, binary = 16};
+        dumpTxrp = 1, dumpState = 2, expand = 4, full = 8, binary = 16,
+        ownerFunds = 32};
 
     ReadView const& ledger;
     int options;
-    RPC::Callback yield;
-    RPC::YieldStrategy yieldStrategy;
 };
 
 /** Given a Ledger and options, fill a Json::Object or Json::Value with a

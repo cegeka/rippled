@@ -83,6 +83,7 @@ enum TER
     temDISABLED,
     temBAD_SIGNER,
     temBAD_QUORUM,
+    temBAD_WEIGHT,
 
     // An intermediate result used internally, should never be returned.
     temUNCERTAIN,
@@ -143,6 +144,7 @@ enum TER
                          // burden network.
     terLAST,             // Process after all other transactions
     terNO_RIPPLE,        // Rippling not allowed
+    terQUEUED,           // Transaction is being held in TxQ until fee drops
 
     // 0: S Success (success)
     // Causes:
@@ -184,7 +186,7 @@ enum TER
     tecNO_LINE_REDUNDANT        = 127,
     tecPATH_DRY                 = 128,
     tecUNFUNDED                 = 129,  // Deprecated, old ambiguous unfunded.
-    tecMASTER_DISABLED          = 130,
+    tecNO_ALTERNATIVE_KEY       = 130,
     tecNO_REGULAR_KEY           = 131,
     tecOWNERS                   = 132,
     tecNO_ISSUER                = 133,

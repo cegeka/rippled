@@ -25,13 +25,15 @@
 
 namespace ripple {
 
-int getNextLedgerTimeResolution (
-    int previousResolution,
+NetClock::duration
+getNextLedgerTimeResolution (
+    NetClock::duration previousResolution,
     bool previousAgree,
     std::uint32_t ledgerSeq)
 {
     assert (ledgerSeq);
 
+    using namespace std::chrono;
     // Find the current resolution:
     auto iter = std::find (std::begin (ledgerPossibleTimeResolutions),
         std::end (ledgerPossibleTimeResolutions), previousResolution);
@@ -43,7 +45,7 @@ int getNextLedgerTimeResolution (
 
     // If we did not previously agree, we try to decrease the resolution to
     // improve the chance that we will agree now.
-    if (!previousAgree && ((ledgerSeq % decreaseLedgerTimeResolutionEvery) == 0))
+    if (!previousAgree && ledgerSeq % decreaseLedgerTimeResolutionEvery == 0)
     {
         if (++iter != std::end (ledgerPossibleTimeResolutions))
             return *iter;
@@ -51,7 +53,7 @@ int getNextLedgerTimeResolution (
 
     // If we previously agreed, we try to increase the resolution to determine
     // if we can continue to agree.
-    if (previousAgree && ((ledgerSeq % increaseLedgerTimeResolutionEvery) == 0))
+    if (previousAgree && ledgerSeq % increaseLedgerTimeResolutionEvery == 0)
     {
         if (iter-- != std::begin (ledgerPossibleTimeResolutions))
             return *iter;
@@ -60,14 +62,15 @@ int getNextLedgerTimeResolution (
     return previousResolution;
 }
 
-std::uint32_t roundCloseTime (
-    std::uint32_t closeTime,
-    std::uint32_t closeResolution)
+NetClock::time_point
+roundCloseTime (
+    NetClock::time_point closeTime,
+    NetClock::duration closeResolution)
 {
-    if (closeTime == 0)
-        return 0;
+    if (closeTime == NetClock::time_point{})
+        return closeTime;
 
     closeTime += (closeResolution / 2);
-    return closeTime - (closeTime % closeResolution);
+    return closeTime - (closeTime.time_since_epoch() % closeResolution);
 }
 } // ripple

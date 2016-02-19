@@ -21,12 +21,11 @@
 #define RIPPLE_APP_BOOK_OFFERSTREAM_H_INCLUDED
 
 #include <ripple/app/tx/impl/BookTip.h>
-#include <ripple/app/tx/impl/Offer.h>   
+#include <ripple/app/tx/impl/Offer.h>
+#include <ripple/basics/chrono.h>
 #include <ripple/ledger/View.h>
 #include <ripple/protocol/Quality.h>
 #include <beast/utility/Journal.h>
-#include <beast/utility/noexcept.h>
-#include <functional>
 
 namespace ripple {
 
@@ -49,42 +48,52 @@ namespace ripple {
 */
 class OfferStream
 {
+public:
+    class StepCounter
+    {
+    private:
+        std::uint32_t const limit_;
+        std::uint32_t count_;
+        beast::Journal j_;
+
+    public:
+        StepCounter (std::uint32_t limit, beast::Journal j)
+            : limit_ (limit)
+            , count_ (0)
+            , j_ (j)
+        {
+        }
+
+        bool
+        step ()
+        {
+            if (count_ >= limit_)
+            {
+                j_.debug << "Exceeded " << limit_ << " step limit.";
+                return false;
+            }
+            count_++;
+            return true;
+        }
+    };
+
 private:
     beast::Journal j_;
-    std::reference_wrapper <ApplyView> m_view;
-    std::reference_wrapper <ApplyView> m_view_cancel;
-    Book m_book;
-    Clock::time_point m_when;
-    BookTip m_tip;
-    Offer m_offer;
-    Config const& config_;
+    ApplyView& view_;
+    ApplyView& cancelView_;
+    Book book_;
+    NetClock::time_point const expire_;
+    BookTip tip_;
+    Offer offer_;
+    StepCounter& counter_;
 
     void
     erase (ApplyView& view);
 
 public:
-    OfferStream (ApplyView& view, ApplyView& view_cancel,
-        BookRef book, Clock::time_point when,
-            Config const& config,
-                beast::Journal journal);
-
-    ApplyView&
-    view () noexcept
-    {
-        return m_view;
-    }
-
-    ApplyView&
-    view_cancel () noexcept
-    {
-        return m_view_cancel;
-    }
-
-    Book const&
-    book () const noexcept
-    {
-        return m_book;
-    }
+    OfferStream (ApplyView& view, ApplyView& cancelView,
+        Book const& book, NetClock::time_point when,
+            StepCounter& counter, beast::Journal journal);
 
     /** Returns the offer at the tip of the order book.
         Offers are always presented in decreasing quality.
@@ -93,7 +102,7 @@ public:
     Offer const&
     tip () const
     {
-        return m_offer;
+        return offer_;
     }
 
     /** Advance to the next valid offer.
@@ -104,7 +113,7 @@ public:
         @return `true` if there is a valid offer.
     */
     bool
-    step ();
+    step (Logs& l);
 };
 
 }

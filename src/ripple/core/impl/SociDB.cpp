@@ -19,11 +19,12 @@
 
 #include <BeastConfig.h>
 
+#include <ripple/basics/contract.h>
 #include <ripple/core/ConfigSections.h>
 #include <ripple/core/SociDB.h>
 #include <ripple/core/Config.h>
-#include <beast/cxx14/memory.h>  // <memory>
-#include <backends/sqlite3/soci-sqlite3.h>
+#include <memory>
+#include <soci/sqlite3/soci-sqlite3.h>
 #include <boost/filesystem.hpp>
 
 namespace ripple {
@@ -37,11 +38,11 @@ getSociSqliteInit (std::string const& name,
                    std::string const& dir,
                    std::string const& ext)
 {
-    if (dir.empty () || name.empty ())
+    if (name.empty ())
     {
-        throw std::runtime_error (
+        Throw<std::runtime_error> (
             "Sqlite databases must specify a dir and a name. Name: " +
-            name + " Dir: " + dir);
+                name + " Dir: " + dir);
     }
     boost::filesystem::path file (dir);
     if (is_directory (file))
@@ -57,7 +58,7 @@ getSociInit (BasicConfig const& config,
     auto const backendName = get(section, "backend", "sqlite");
 
     if (backendName != "sqlite")
-        throw std::runtime_error ("Unsupported soci backend: " + backendName);
+        Throw<std::runtime_error> ("Unsupported soci backend: " + backendName);
 
     auto const path = config.legacy ("database_path");
     auto const ext = dbName == "validators" || dbName == "peerfinder"
@@ -103,7 +104,7 @@ void open (soci::session& s,
     if (beName == "sqlite")
         s.open(soci::sqlite3, connectionString);
     else
-        throw std::runtime_error ("Unsupported soci backend: " + beName);
+        Throw<std::runtime_error> ("Unsupported soci backend: " + beName);
 }
 
 static
@@ -115,7 +116,7 @@ sqlite_api::sqlite3* getConnection (soci::session& s)
         result = b->conn_;
 
     if (! result)
-        throw std::logic_error ("Didn't get a database connection.");
+        Throw<std::logic_error> ("Didn't get a database connection.");
 
     return result;
 }
@@ -123,7 +124,7 @@ sqlite_api::sqlite3* getConnection (soci::session& s)
 size_t getKBUsedAll (soci::session& s)
 {
     if (! getConnection (s))
-        throw std::logic_error ("No connection found.");
+        Throw<std::logic_error> ("No connection found.");
     return static_cast <size_t> (sqlite_api::sqlite3_memory_used () / 1024);
 }
 
@@ -137,7 +138,8 @@ size_t getKBUsedDB (soci::session& s)
             conn, SQLITE_DBSTATUS_CACHE_USED, &cur, &hiw, 0);
         return cur / 1024;
     }
-    throw std::logic_error ("");
+    Throw<std::logic_error> ("");
+    return 0; // Silence compiler warning.
 }
 
 void convert (soci::blob& from, std::vector<std::uint8_t>& to)
@@ -185,8 +187,8 @@ namespace {
 class WALCheckpointer : public Checkpointer
 {
 public:
-    WALCheckpointer (sqlite_api::sqlite3& conn, JobQueue& q)
-            : conn_ (conn), jobQueue_ (q)
+    WALCheckpointer (sqlite_api::sqlite3& conn, JobQueue& q, Logs& logs)
+            : conn_ (conn), jobQueue_ (q), j_ (logs.journal ("WALCheckpointer"))
     {
         sqlite_api::sqlite3_wal_hook (&conn_, &sqliteWALHook, this);
     }
@@ -199,6 +201,7 @@ private:
     JobQueue& jobQueue_;
 
     bool running_ = false;
+    beast::Journal j_;
 
     static
     int sqliteWALHook (
@@ -209,7 +212,7 @@ private:
             if (auto checkpointer = reinterpret_cast <WALCheckpointer*> (cp))
                 checkpointer->scheduleCheckpoint();
             else
-                throw std::logic_error ("Didn't get a WALCheckpointer");
+                Throw<std::logic_error> ("Didn't get a WALCheckpointer");
         }
         return SQLITE_OK;
     }
@@ -223,8 +226,7 @@ private:
             running_ = true;
         }
 
-        jobQueue_.addJob (
-            jtWAL, "WAL", std::bind (&WALCheckpointer::checkpoint, this));
+        jobQueue_.addJob (jtWAL, "WAL", [this] (Job&) { checkpoint(); });
     }
 
     void checkpoint ()
@@ -236,13 +238,13 @@ private:
         auto fname = sqlite3_db_filename (&conn_, "main");
         if (ret != SQLITE_OK)
         {
-            WriteLog ((ret == SQLITE_LOCKED) ? lsTRACE : lsWARNING,
-                      WALCheckpointer)
+            auto& jm = (ret == SQLITE_LOCKED) ? j_.trace : j_.warning;
+            JLOG (jm)
                 << "WAL(" << fname << "): error " << ret;
         }
         else
         {
-            WriteLog (lsTRACE, WALCheckpointer)
+            JLOG (j_.trace)
                 << "WAL(" << fname << "): frames="
                 << log << ", written=" << ckpt;
         }
@@ -255,10 +257,10 @@ private:
 } // namespace
 
 std::unique_ptr <Checkpointer> makeCheckpointer (
-    soci::session& session, JobQueue& queue)
+    soci::session& session, JobQueue& queue, Logs& logs)
 {
     if (auto conn = getConnection (session))
-        return std::make_unique <WALCheckpointer> (*conn, queue);
+        return std::make_unique <WALCheckpointer> (*conn, queue, logs);
     return {};
 }
 

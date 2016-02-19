@@ -36,7 +36,7 @@ LedgerHandler::LedgerHandler (Context& context) : context_ (context)
 {
 }
 
-Status LedgerHandler::check ()
+Status LedgerHandler::check()
 {
     auto const& params = context_.params;
     bool needsLedger = params.isMember (jss::ledger) ||
@@ -53,22 +53,24 @@ Status LedgerHandler::check ()
     bool bAccounts = params[jss::accounts].asBool();
     bool bExpand = params[jss::expand].asBool();
     bool bBinary = params[jss::binary].asBool();
+    bool const owner_funds = params[jss::owner_funds].asBool();
 
     options_ = (bFull ? LedgerFill::full : 0)
             | (bExpand ? LedgerFill::expand : 0)
             | (bTransactions ? LedgerFill::dumpTxrp : 0)
             | (bAccounts ? LedgerFill::dumpState : 0)
-            | (bBinary ? LedgerFill::binary : 0);
+            | (bBinary ? LedgerFill::binary : 0)
+            | (owner_funds ? LedgerFill::ownerFunds : 0);
 
     if (bFull || bAccounts)
     {
         // Until some sane way to get full ledgers has been implemented,
         // disallow retrieving all state nodes.
-        if (context_.role != Role::ADMIN)
+        if (! isUnlimited (context_.role))
             return rpcNO_PERMISSION;
 
-        if (getApp().getFeeTrack().isLoadedLocal() &&
-            context_.role != Role::ADMIN)
+        if (context_.app.getFeeTrack().isLoadedLocal() &&
+            !isUnlimited (context_.role))
         {
             return rpcTOO_BUSY;
         }

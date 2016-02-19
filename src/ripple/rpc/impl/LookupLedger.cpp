@@ -33,9 +33,9 @@ namespace RPC {
 
 namespace {
 
-bool isValidatedOld (LedgerMaster& ledgerMaster)
+bool isValidatedOld (LedgerMaster& ledgerMaster, bool standalone)
 {
-    if (getConfig ().RUN_STANDALONE)
+    if (standalone)
         return false;
 
     return ledgerMaster.getValidatedLedgerAge () >
@@ -81,11 +81,19 @@ Status ledgerFromRequest (T& ledger, Context& context)
     else if (indexValue.isNumeric())
     {
         ledger = ledgerMaster.getLedgerBySeq (indexValue.asInt ());
+
+        if (ledger == nullptr)
+        {
+            auto cur = ledgerMaster.getCurrentLedger();
+            if (cur->info().seq == indexValue.asInt())
+                ledger = cur;
+        }
+
         if (ledger == nullptr)
             return {rpcLGR_NOT_FOUND, "ledgerNotFound"};
 
         if (ledger->info().seq > ledgerMaster.getValidLedgerIndex() &&
-            isValidatedOld(ledgerMaster))
+            isValidatedOld(ledgerMaster, context.app.config().RUN_STANDALONE))
         {
             ledger.reset();
             return {rpcNO_NETWORK, "InsufficientNetworkMode"};
@@ -93,7 +101,7 @@ Status ledgerFromRequest (T& ledger, Context& context)
     }
     else
     {
-        if (isValidatedOld (ledgerMaster))
+        if (isValidatedOld (ledgerMaster, context.app.config().RUN_STANDALONE))
             return {rpcNO_NETWORK, "InsufficientNetworkMode"};
 
         auto const index = indexValue.asString ();
@@ -137,13 +145,14 @@ Status ledgerFromRequest (T& ledger, Context& context)
     return Status::OK;
 }
 
-bool isValidated (LedgerMaster& ledgerMaster, ReadView const& ledger)
+bool isValidated (LedgerMaster& ledgerMaster, ReadView const& ledger,
+    Application& app)
 {
-    if (ledger.info().validated)
-        return true;
-
     if (ledger.info().open)
         return false;
+
+    if (ledger.info().validated)
+        return true;
 
     auto seq = ledger.info().seq;
     try
@@ -152,12 +161,25 @@ bool isValidated (LedgerMaster& ledgerMaster, ReadView const& ledger)
         // comes before the last validated ledger (and thus has been
         // validated).
         auto hash = ledgerMaster.walkHashBySeq (seq);
+
         if (ledger.info().hash != hash)
+        {
+            // This ledger's hash is not the hash of the validated ledger
+            if (hash.isNonZero ())
+            {
+                uint256 valHash = getHashByIndex (seq, app);
+                if (valHash == ledger.info().hash)
+                {
+                    // SQL database doesn't match ledger chain
+                    ledgerMaster.clearLedger (seq);
+                }
+            }
             return false;
+        }
     }
     catch (SHAMapMissingNode const&)
     {
-        WriteLog (lsWARNING, RPCHandler)
+        JLOG (app.journal ("RPCHandler").warning)
                 << "Missing SHANode " << std::to_string (seq);
         return false;
     }
@@ -188,28 +210,6 @@ bool isValidated (LedgerMaster& ledgerMaster, ReadView const& ledger)
 // return value.  Otherwise, the object contains the field "validated" and
 // optionally the fields "ledger_hash", "ledger_index" and
 // "ledger_current_index", if they are defined.
-Status lookupLedgerDeprecated (
-    Ledger::pointer& ledger, Context& context, Json::Value& result)
-{
-    if (auto status = ledgerFromRequest (ledger, context))
-        return status;
-
-    auto& info = ledger->info();
-
-    if (!info.open)
-    {
-        result[jss::ledger_hash] = to_string (info.hash);
-        result[jss::ledger_index] = info.seq;
-    }
-    else
-    {
-        result[jss::ledger_current_index] = info.seq;
-    }
-
-    result[jss::validated] = getApp().getLedgerMaster().isValidLedger(info);
-    return Status::OK;
-}
-
 Status lookupLedger (
     std::shared_ptr<ReadView const>& ledger, Context& context,
     Json::Value& result)
@@ -229,17 +229,8 @@ Status lookupLedger (
         result[jss::ledger_current_index] = info.seq;
     }
 
-    result[jss::validated] = isValidated (context.ledgerMaster, *ledger);
+    result[jss::validated] = isValidated (context.ledgerMaster, *ledger, context.app);
     return Status::OK;
-}
-
-Json::Value lookupLedgerDeprecated (Ledger::pointer& ledger, Context& context)
-{
-    Json::Value result;
-    if (auto status = lookupLedgerDeprecated (ledger, context, result))
-        status.inject (result);
-
-    return result;
 }
 
 Json::Value lookupLedger (

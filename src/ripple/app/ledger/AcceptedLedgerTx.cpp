@@ -20,46 +20,52 @@
 #include <BeastConfig.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/ledger/AcceptedLedgerTx.h>
+#include <ripple/basics/Log.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/protocol/JsonFields.h>
 #include <ripple/protocol/types.h>
 
 namespace ripple {
 
-AcceptedLedgerTx::AcceptedLedgerTx (Ledger::ref ledger, SerialIter& sit)
-    : mLedger (ledger)
-{
-    // VFALCO This is making a needless copy
-    auto const vl = sit.getVL();
-    SerialIter txnIt (makeSlice(vl));
-
-    mTxn =      std::make_shared<STTx> (std::ref (txnIt));
-    mRawMeta =  sit.getVL ();
-    mMeta =     std::make_shared<TxMeta> (mTxn->getTransactionID (),
-        ledger->info().seq, mRawMeta);
-    mAffected = mMeta->getAffectedAccounts ();
-    mResult =   mMeta->getResultTER ();
-    buildJson ();
-}
-
-AcceptedLedgerTx::AcceptedLedgerTx (Ledger::ref ledger,
-    STTx::ref txn, TxMeta::ref met)
+AcceptedLedgerTx::AcceptedLedgerTx (
+    std::shared_ptr<ReadView const> const& ledger,
+    std::shared_ptr<STTx const> const& txn,
+    std::shared_ptr<STObject const> const& met,
+    AccountIDCache const& accountCache,
+    Logs& logs)
     : mLedger (ledger)
     , mTxn (txn)
-    , mMeta (met)
-    , mAffected (met->getAffectedAccounts ())
+    , mMeta (std::make_shared<TxMeta> (
+        txn->getTransactionID(), ledger->seq(), *met, logs.journal ("View")))
+    , mAffected (mMeta->getAffectedAccounts ())
+    , accountCache_ (accountCache)
+    , logs_ (logs)
 {
+    assert (! ledger->info().open);
+
     mResult = mMeta->getResultTER ();
+
+    Serializer s;
+    met->add(s);
+    mRawMeta = std::move (s.modData());
+
     buildJson ();
 }
 
-AcceptedLedgerTx::AcceptedLedgerTx (Ledger::ref ledger,
-    STTx::ref txn, TER result)
+AcceptedLedgerTx::AcceptedLedgerTx (
+    std::shared_ptr<ReadView const> const& ledger,
+    std::shared_ptr<STTx const> const& txn,
+    TER result,
+    AccountIDCache const& accountCache,
+    Logs& logs)
     : mLedger (ledger)
     , mTxn (txn)
     , mResult (result)
     , mAffected (txn->getMentionedAccounts ())
+    , accountCache_ (accountCache)
+    , logs_ (logs)
 {
+    assert (ledger->info().open);
     buildJson ();
 }
 
@@ -86,7 +92,7 @@ void AcceptedLedgerTx::buildJson ()
     {
         Json::Value& affected = (mJson[jss::affected] = Json::arrayValue);
         for (auto const& account: mAffected)
-            affected.append (getApp().accountIDCache().toBase58(account));
+            affected.append (accountCache_.toBase58(account));
     }
 
     if (mTxn->getTxnType () == ttOFFER_CREATE)
@@ -98,7 +104,7 @@ void AcceptedLedgerTx::buildJson ()
         if (account != amount.issue ().account)
         {
             auto const ownerFunds = accountFunds(*mLedger,
-                account, amount, fhIGNORE_FREEZE, getConfig());
+                account, amount, fhIGNORE_FREEZE, logs_.journal ("View"));
             mJson[jss::transaction][jss::owner_funds] = ownerFunds.getText ();
         }
     }

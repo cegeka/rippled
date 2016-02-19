@@ -18,12 +18,14 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/app/misc/IHashRouter.h>
+#include <ripple/app/misc/HashRouter.h>
 #include <ripple/core/DatabaseCon.h>
+#include <ripple/basics/contract.h>
 #include <ripple/basics/Log.h>
 #include <ripple/basics/make_SSLContext.h>
 #include <ripple/protocol/JsonFields.h>
 #include <ripple/server/JsonWriter.h>
+#include <ripple/overlay/Cluster.h>
 #include <ripple/overlay/impl/ConnectAttempt.h>
 #include <ripple/overlay/impl/OverlayImpl.h>
 #include <ripple/overlay/impl/PeerImp.h>
@@ -32,9 +34,12 @@
 #include <ripple/protocol/STExchange.h>
 #include <beast/ByteOrder.h>
 #include <beast/crypto/base64.h>
+#include <beast/module/core/text/LexicalCast.h>
 #include <beast/http/rfc2616.h>
 #include <beast/utility/ci_char_traits.h>
 #include <beast/utility/WrappedSink.h>
+
+#include <boost/utility/in_place_factory.hpp>
 
 namespace ripple {
 
@@ -123,6 +128,7 @@ OverlayImpl::Timer::on_timer (error_code ec)
 //------------------------------------------------------------------------------
 
 OverlayImpl::OverlayImpl (
+    Application& app,
     Setup const& setup,
     Stoppable& parent,
     ServerHandler& serverHandler,
@@ -131,15 +137,16 @@ OverlayImpl::OverlayImpl (
     boost::asio::io_service& io_service,
     BasicConfig const& config)
     : Overlay (parent)
+    , app_ (app)
     , io_service_ (io_service)
     , work_ (boost::in_place(std::ref(io_service_)))
     , strand_ (io_service_)
     , setup_(setup)
-    , journal_ (deprecatedLogs().journal("Overlay"))
+    , journal_ (app_.journal("Overlay"))
     , serverHandler_(serverHandler)
     , m_resourceManager (resourceManager)
     , m_peerFinder (PeerFinder::make_Manager (*this, io_service,
-        stopwatch(), deprecatedLogs().journal("PeerFinder"), config))
+        stopwatch(), app_.journal("PeerFinder"), config))
     , m_resolver (resolver)
     , next_id_(1)
     , timer_count_(0)
@@ -166,7 +173,7 @@ OverlayImpl::onHandoff (std::unique_ptr <beast::asio::ssl_bundle>&& ssl_bundle,
         endpoint_type remote_endpoint)
 {
     auto const id = next_id_++;
-    beast::WrappedSink sink (deprecatedLogs()["Peer"], makePrefix(id));
+    beast::WrappedSink sink (app_.logs()["Peer"], makePrefix(id));
     beast::Journal journal (sink);
 
     Handoff handoff;
@@ -240,18 +247,19 @@ OverlayImpl::onHandoff (std::unique_ptr <beast::asio::ssl_bundle>&& ssl_bundle,
 
     RippleAddress publicKey;
     std::tie(publicKey, success) = verifyHello (hello,
-        sharedValue, journal, getApp());
+        sharedValue,
+        setup_.public_ip,
+        beast::IPAddressConversion::from_asio(
+            remote_endpoint), journal, app_);
     if(! success)
         return handoff;
 
-    std::string name;
-    bool const cluster = getApp().getUNL().nodeInCluster(
-        publicKey, name);
-
     auto const result = m_peerFinder->activate (slot,
-        publicKey.toPublicKey(), cluster);
+        publicKey.toPublicKey(),
+        static_cast<bool>(app_.cluster().member(publicKey)));
     if (result != PeerFinder::Result::success)
     {
+        m_peerFinder->on_closed(slot);
         if (journal.debug) journal.debug <<
             "Peer " << remote_endpoint << " redirected, slots full";
         handoff.moved = false;
@@ -261,7 +269,7 @@ OverlayImpl::onHandoff (std::unique_ptr <beast::asio::ssl_bundle>&& ssl_bundle,
         return handoff;
     }
 
-    auto const peer = std::make_shared<PeerImp>(id,
+    auto const peer = std::make_shared<PeerImp>(app_, id,
         remote_endpoint, slot, std::move(request), hello, publicKey,
             consumer, std::move(ssl_bundle), *this);
     {
@@ -349,10 +357,10 @@ OverlayImpl::connect (beast::IP::Endpoint const& remote_endpoint)
         return;
     }
 
-    auto const p = std::make_shared<ConnectAttempt>(
+    auto const p = std::make_shared<ConnectAttempt>(app_,
         io_service_, beast::IPAddressConversion::to_asio_endpoint(remote_endpoint),
             usage, setup_.context, next_id_++, slot,
-                deprecatedLogs().journal("Peer"), *this);
+                app_.journal("Peer"), *this);
 
     std::lock_guard<decltype(mutex_)> lock(mutex_);
     list_.emplace(p.get(), p);
@@ -455,11 +463,11 @@ OverlayImpl::setupValidatorKeyManifests (BasicConfig const& config,
         s = beast::base64_decode(s);
         if (auto mo = make_Manifest (std::move (s)))
         {
-            manifestCache_.configManifest (std::move (*mo), journal_);
+            manifestCache_.configManifest (std::move (*mo), app_.getUNL (), journal_);
         }
         else
         {
-            throw std::runtime_error("Malformed manifest in config");
+            Throw<std::runtime_error> ("Malformed manifest in config");
         }
     }
     else
@@ -468,7 +476,7 @@ OverlayImpl::setupValidatorKeyManifests (BasicConfig const& config,
             journal_.warning << "No [validation_manifest] section in config";
     }
 
-    manifestCache_.load (db, journal_);
+    manifestCache_.load (db, app_.getUNL(), journal_);
 }
 
 void
@@ -482,33 +490,36 @@ OverlayImpl::onPrepare()
 {
     PeerFinder::Config config;
 
-    if (getConfig ().PEERS_MAX != 0)
-        config.maxPeers = getConfig ().PEERS_MAX;
+    if (app_.config().PEERS_MAX != 0)
+        config.maxPeers = app_.config().PEERS_MAX;
 
     config.outPeers = config.calcOutPeers();
 
     auto const port = serverHandler_.setup().overlay.port;
 
-    config.peerPrivate = getConfig().PEER_PRIVATE;
+    config.peerPrivate = app_.config().PEER_PRIVATE;
     config.wantIncoming =
         (! config.peerPrivate) && (port != 0);
     // if it's a private peer or we are running as standalone
     // automatic connections would defeat the purpose.
     config.autoConnect =
-        !getConfig().RUN_STANDALONE &&
-        !getConfig().PEER_PRIVATE;
+        !app_.config().RUN_STANDALONE &&
+        !app_.config().PEER_PRIVATE;
     config.listeningPort = port;
     config.features = "";
+    config.ipLimit = setup_.ipLimit;
 
     // Enforce business rules
     config.applyTuning();
 
     m_peerFinder->setConfig (config);
 
-    auto bootstrapIps (getConfig ().IPS);
-
-    // If no IPs are specified, use the Ripple Labs round robin
-    // pool to get some servers to insert into the boot cache.
+    // Populate our boot cache: if there are no entries in [ips] then we use
+    // the entries in [ips_fixed]. If both are empty, we resort to a round-robin
+    // pool.
+    auto bootstrapIps = app_.config().IPS.empty()
+        ? app_.config().IPS_FIXED
+        : app_.config().IPS;
     if (bootstrapIps.empty ())
         bootstrapIps.push_back ("r.ripple.com 51235");
 
@@ -522,7 +533,7 @@ OverlayImpl::onPrepare()
             {
                 if (addr.port () == 0)
                 {
-                    throw std::runtime_error ("Port not specified for "
+                    Throw<std::runtime_error> ("Port not specified for "
                         "address:" + addr.to_string ());
                 }
 
@@ -535,9 +546,9 @@ OverlayImpl::onPrepare()
         });
 
     // Add the ips_fixed from the rippled.cfg file
-    if (! getConfig ().RUN_STANDALONE && !getConfig ().IPS_FIXED.empty ())
+    if (! app_.config().RUN_STANDALONE && !app_.config().IPS_FIXED.empty ())
     {
-        m_resolver.resolve (getConfig ().IPS_FIXED,
+        m_resolver.resolve (app_.config().IPS_FIXED,
             [this](
                 std::string const& name,
                 std::vector <beast::IP::Endpoint> const& addresses)
@@ -580,6 +591,28 @@ OverlayImpl::onChildrenStopped ()
 void
 OverlayImpl::onWrite (beast::PropertyStream::Map& stream)
 {
+    beast::PropertyStream::Set set ("traffic", stream);
+    auto stats = m_traffic.getCounts();
+    for (auto& i : stats)
+    {
+        if (! i.second.messagesIn && ! i.second.messagesOut)
+            continue;
+
+        beast::PropertyStream::Map item (set);
+        item["category"] = i.first;
+        item["bytes_in"] =
+            beast::lexicalCast<std::string>
+                (i.second.bytesIn.load());
+        item["messages_in"] =
+            beast::lexicalCast<std::string>
+                (i.second.messagesIn.load());
+        item["bytes_out"] =
+            beast::lexicalCast<std::string>
+                (i.second.bytesOut.load());
+        item["messages_out"] =
+            beast::lexicalCast<std::string>
+                (i.second.messagesOut.load());
+    }
 }
 
 //------------------------------------------------------------------------------
@@ -629,11 +662,11 @@ OverlayImpl::onPeerDeactivate (Peer::id_t id,
 }
 
 void
-OverlayImpl::onManifests (Job&,
+OverlayImpl::onManifests (
     std::shared_ptr<protocol::TMManifests> const& m,
         std::shared_ptr<PeerImp> const& from)
 {
-    auto& hashRouter = getApp().getHashRouter();
+    auto& hashRouter = app_.getHashRouter();
     auto const n = m->list_size();
     auto const& journal = from->pjournal();
 
@@ -653,11 +686,11 @@ OverlayImpl::onManifests (Job&,
 
             auto const serialized = mo->serialized;
             auto const result =
-                manifestCache_.applyManifest (std::move(*mo), journal);
+                manifestCache_.applyManifest (std::move(*mo), app_.getUNL(), journal);
 
             if (result == ManifestDisposition::accepted)
             {
-                auto db = getApp ().getWalletDB ().checkoutDb ();
+                auto db = app_.getWalletDB ().checkoutDb ();
 
                 soci::transaction tr(*db);
                 static const char* const sql =
@@ -701,6 +734,15 @@ OverlayImpl::onManifests (Job&,
             continue;
         }
     }
+}
+
+void
+OverlayImpl::reportTraffic (
+    TrafficCount::category cat,
+    bool isInbound,
+    int number)
+{
+    m_traffic.addCount (cat, isInbound, number);
 }
 
 std::size_t
@@ -891,7 +933,7 @@ OverlayImpl::relay (protocol::TMProposeSet& m,
     if (m.has_hops() && m.hops() >= maxTTL)
         return;
     std::set<Peer::id_t> skip;
-    if (! getApp().getHashRouter().swapSet (
+    if (! app_.getHashRouter().swapSet (
             uid, skip, SF_RELAYED))
         return;
     auto const sm = std::make_shared<Message>(
@@ -912,7 +954,7 @@ OverlayImpl::relay (protocol::TMValidation& m,
     if (m.has_hops() && m.hops() >= maxTTL)
         return;
     std::set<Peer::id_t> skip;
-    if (! getApp().getHashRouter().swapSet (
+    if (! app_.getHashRouter().swapSet (
             uid, skip, SF_RELAYED))
         return;
     auto const sm = std::make_shared<Message>(
@@ -1013,22 +1055,30 @@ setup_Overlay (BasicConfig const& config)
 {
     Overlay::Setup setup;
     auto const& section = config.section("overlay");
-    set (setup.auto_connect, "auto_connect", section);
-    std::string promote;
-    set (promote, "become_superpeer", section);
-    if (promote == "never")
-        setup.promote = Overlay::Promote::never;
-    else if (promote == "always")
-        setup.promote = Overlay::Promote::always;
-    else
-        setup.promote = Overlay::Promote::automatic;
     setup.context = make_SSLContext();
     setup.expire = get<bool>(section, "expire", false);
+
+    set (setup.ipLimit, "ip_limit", section);
+    if (setup.ipLimit < 0)
+        throw std::runtime_error ("Configured IP limit is invalid");
+
+    std::string ip;
+    set (ip, "public_ip", section);
+    if (! ip.empty ())
+    {
+        bool valid;
+        std::tie (setup.public_ip, valid) =
+            beast::IP::Address::from_string (ip);
+        if (! valid || ! setup.public_ip.is_v4() ||
+                is_private (setup.public_ip))
+            Throw<std::runtime_error> ("Configured public IP is invalid");
+    }
     return setup;
 }
 
 std::unique_ptr <Overlay>
 make_Overlay (
+    Application& app,
     Overlay::Setup const& setup,
     beast::Stoppable& parent,
     ServerHandler& serverHandler,
@@ -1037,7 +1087,7 @@ make_Overlay (
     boost::asio::io_service& io_service,
     BasicConfig const& config)
 {
-    return std::make_unique <OverlayImpl> (setup, parent, serverHandler,
+    return std::make_unique<OverlayImpl>(app, setup, parent, serverHandler,
         resourceManager, resolver, io_service, config);
 }
 

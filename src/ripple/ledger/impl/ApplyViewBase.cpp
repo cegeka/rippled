@@ -25,8 +25,7 @@ namespace ripple {
 namespace detail {
 
 ApplyViewBase::ApplyViewBase(
-    ReadView const* base,
-        ApplyFlags flags)
+    ReadView const* base, ApplyFlags flags)
     : flags_ (flags)
     , base_ (base)
 {
@@ -46,6 +45,12 @@ ApplyViewBase::fees() const
     return base_->fees();
 }
 
+Rules const&
+ApplyViewBase::rules() const
+{
+    return base_->rules();
+}
+
 bool
 ApplyViewBase::exists (Keylet const& k) const
 {
@@ -54,7 +59,7 @@ ApplyViewBase::exists (Keylet const& k) const
 
 auto
 ApplyViewBase::succ (key_type const& key,
-    boost::optional<key_type> last) const ->
+    boost::optional<key_type> const& last) const ->
         boost::optional<key_type>
 {
     return items_.succ(*base_, key, last);
@@ -64,6 +69,27 @@ std::shared_ptr<SLE const>
 ApplyViewBase::read (Keylet const& k) const
 {
     return items_.read(*base_, k);
+}
+
+auto
+ApplyViewBase::slesBegin() const ->
+    std::unique_ptr<sles_type::iter_base>
+{
+    return base_->slesBegin();
+}
+
+auto
+ApplyViewBase::slesEnd() const ->
+    std::unique_ptr<sles_type::iter_base>
+{
+    return base_->slesEnd();
+}
+
+auto
+ApplyViewBase::slesUpperBound(uint256 const& key) const ->
+    std::unique_ptr<sles_type::iter_base>
+{
+    return base_->slesUpperBound(key);
 }
 
 auto
@@ -129,13 +155,6 @@ ApplyViewBase::update(
     items_.update(*base_, sle);
 }
 
-std::size_t
-ApplyViewBase::size ()
-{
-    return items_.size ();
-}
-
-
 //---
 
 void
@@ -161,9 +180,9 @@ ApplyViewBase::rawReplace(
 
 void
 ApplyViewBase::rawDestroyXRP(
-    std::uint64_t feeDrops)
+    XRPAmount const& fee)
 {
-    items_.destroyXRP(feeDrops);
+    items_.destroyXRP(fee);
 }
 
 } // detail

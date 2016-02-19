@@ -369,7 +369,7 @@ public:
 
         if (divide (STAmount (noIssue(), 60), STAmount (3), noIssue()).getText () != "20")
         {
-            WriteLog (lsFATAL, STAmount) << "60/3 = " <<
+            log << "60/3 = " <<
                 divide (STAmount (noIssue(), 60),
                     STAmount (3), noIssue()).getText ();
             fail ("STAmount divide fail");
@@ -414,7 +414,7 @@ public:
 
             if (b.getuint64 () != r)
             {
-                WriteLog (lsFATAL, STAmount) << r << " != " << b.getuint64 () << " " << b.ToString (16);
+                log << r << " != " << b.getuint64 () << " " << b.ToString (16);
                 fail ("setull64/getull64 failure");
             }
             else
@@ -535,36 +535,100 @@ public:
         STAmount oneThird1 = divRound (one, three, noIssue(), false);
         STAmount oneThird2 = divide (one, three, noIssue());
         STAmount oneThird3 = divRound (one, three, noIssue(), true);
-        WriteLog (lsINFO, STAmount) << oneThird1;
-        WriteLog (lsINFO, STAmount) << oneThird2;
-        WriteLog (lsINFO, STAmount) << oneThird3;
+        log << oneThird1;
+        log << oneThird2;
+        log << oneThird3;
 
         STAmount twoThird1 = divRound (two, three, noIssue(), false);
         STAmount twoThird2 = divide (two, three, noIssue());
         STAmount twoThird3 = divRound (two, three, noIssue(), true);
-        WriteLog (lsINFO, STAmount) << twoThird1;
-        WriteLog (lsINFO, STAmount) << twoThird2;
-        WriteLog (lsINFO, STAmount) << twoThird3;
+        log << twoThird1;
+        log << twoThird2;
+        log << twoThird3;
 
         STAmount oneA = mulRound (oneThird1, three, noIssue(), false);
         STAmount oneB = multiply (oneThird2, three, noIssue());
         STAmount oneC = mulRound (oneThird3, three, noIssue(), true);
-        WriteLog (lsINFO, STAmount) << oneA;
-        WriteLog (lsINFO, STAmount) << oneB;
-        WriteLog (lsINFO, STAmount) << oneC;
+        log << oneA;
+        log << oneB;
+        log << oneC;
 
         STAmount fourThirdsB = twoThird2 + twoThird2;
-        WriteLog (lsINFO, STAmount) << fourThirdsA;
-        WriteLog (lsINFO, STAmount) << fourThirdsB;
-        WriteLog (lsINFO, STAmount) << fourThirdsC;
+        log << fourThirdsA;
+        log << fourThirdsB;
+        log << fourThirdsC;
 
         STAmount dripTest1 = mulRound (twoThird2, two, xrpIssue (), false);
         STAmount dripTest2 = multiply (twoThird2, two, xrpIssue ());
         STAmount dripTest3 = mulRound (twoThird2, two, xrpIssue (), true);
-        WriteLog (lsINFO, STAmount) << dripTest1;
-        WriteLog (lsINFO, STAmount) << dripTest2;
-        WriteLog (lsINFO, STAmount) << dripTest3;
+        log << dripTest1;
+        log << dripTest2;
+        log << dripTest3;
 #endif
+    }
+
+    void
+    testConvertXRP ()
+    {
+        testcase ("STAmount to XRPAmount conversions");
+
+        Issue const usd { Currency (0x5553440000000000), AccountID (0x4985601) };
+        Issue const xrp { xrpIssue () };
+
+        for (std::uint64_t drops = 100000000000000000; drops != 1; drops = drops / 10)
+        {
+            auto const t = amountFromString (xrp, std::to_string (drops));
+            auto const s = t.xrp ();
+            expect (s.drops() == drops);
+            expect (t == STAmount (XRPAmount (drops)));
+            expect (s == XRPAmount (drops));
+        }
+
+        try
+        {
+            auto const t = amountFromString (usd, "136500");
+            fail (to_string (t.xrp ()));
+        }
+        catch (std::logic_error const&)
+        {
+            pass ();
+        }
+        catch (std::exception const&)
+        {
+            fail ("wrong exception");
+        }
+    }
+
+    void
+    testConvertIOU ()
+    {
+        testcase ("STAmount to IOUAmount conversions");
+
+        Issue const usd { Currency (0x5553440000000000), AccountID (0x4985601) };
+        Issue const xrp { xrpIssue () };
+
+        for (std::uint64_t dollars = 10000000000; dollars != 1; dollars = dollars / 10)
+        {
+            auto const t = amountFromString (usd, std::to_string (dollars));
+            auto const s = t.iou ();
+            expect (t == STAmount (s, usd));
+            expect (s.mantissa () == t.mantissa ());
+            expect (s.exponent () == t.exponent ());
+        }
+
+        try
+        {
+            auto const t = amountFromString (xrp, "136500");
+            fail (to_string (t.iou ()));
+        }
+        catch (std::logic_error const&)
+        {
+            pass ();
+        }
+        catch (std::exception const&)
+        {
+            fail ("wrong exception");
+        }
     }
 
     //--------------------------------------------------------------------------
@@ -577,6 +641,8 @@ public:
         testArithmetic ();
         testUnderflow ();
         testRounding ();
+        testConvertXRP ();
+        testConvertIOU ();
     }
 };
 

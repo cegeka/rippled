@@ -28,10 +28,13 @@
 #include <ripple/test/jtx/seq.h>
 #include <ripple/test/jtx/sig.h>
 #include <ripple/test/jtx/utility.h>
-#include <ripple/app/tx/apply.h>
+#include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/ledger/LedgerTiming.h>
-#include <ripple/app/paths/FindPaths.h>
+#include <ripple/app/misc/NetworkOPs.h>
+#include <ripple/app/misc/TxQ.h>
+#include <ripple/basics/contract.h>
 #include <ripple/basics/Slice.h>
+#include <ripple/core/ConfigSections.h>
 #include <ripple/json/to_string.h>
 #include <ripple/protocol/ErrorCodes.h>
 #include <ripple/protocol/HashPrefix.h>
@@ -43,84 +46,82 @@
 #include <ripple/protocol/TER.h>
 #include <ripple/protocol/TxFlags.h>
 #include <ripple/protocol/types.h>
+#include <ripple/protocol/Feature.h>
 #include <memory>
 
 namespace ripple {
 namespace test {
 
+void
+setupConfigForUnitTests (Config& config)
+{
+    config.overwrite (ConfigSection::nodeDatabase (), "type", "memory");
+    config.overwrite (ConfigSection::nodeDatabase (), "path", "main");
+
+    config.deprecatedClearSection (ConfigSection::importNodeDatabase ());
+    config.legacy("database_path", "");
+
+    config.RUN_STANDALONE = true;
+    config["server"].append("port_peer");
+    config["port_peer"].set("ip", "127.0.0.1");
+    config["port_peer"].set("port", "8080");
+    config["port_peer"].set("protocol", "peer");
+    config["server"].append("port_admin");
+    config["port_admin"].set("ip", "127.0.0.1");
+    config["port_admin"].set("port", "8081");
+    config["port_admin"].set("protocol", "http");
+    config["port_admin"].set("admin", "127.0.0.1");
+}
+
+//------------------------------------------------------------------------------
+
 namespace jtx {
 
-// VFALCO Could wrap the log in a Journal here
-Env::Env (beast::unit_test::suite& test_)
-    : test(test_)
-    , master("master", generateKeyPair(
-        KeyType::secp256k1,
-            generateSeed("masterpassphrase")))
-    , closed_ (std::make_shared<Ledger>(
-        create_genesis, config))
-    , cachedSLEs_ (std::chrono::seconds(5), stopwatch_)
-    , openLedger (closed_, config, cachedSLEs_, journal)
+Env::AppBundle::AppBundle(Application* app_)
+    : app (app_)
 {
-    memoize(master);
-    initializePathfinding();
 }
 
-std::shared_ptr<ReadView const>
-Env::open() const
+Env::AppBundle::AppBundle(std::unique_ptr<Config> config)
 {
-    return openLedger.current();
+    auto logs = std::make_unique<Logs>();
+    auto timeKeeper_ =
+        std::make_unique<ManualTimeKeeper>();
+    timeKeeper = timeKeeper_.get();
+    owned = make_Application(std::move(config),
+        std::move(logs), std::move(timeKeeper_));
+    app = owned.get();
+    app->setup();
+    timeKeeper->set(
+        app->getLedgerMaster().getClosedLedger()->info().closeTime);
+    thread = std::thread(
+        [&](){ app->run(); });
 }
 
-std::shared_ptr<ReadView const>
-Env::closed() const
+Env::AppBundle::~AppBundle()
 {
-    return closed_;
+    app->signalStop();
+    thread.join();
+}
+
+//------------------------------------------------------------------------------
+
+std::shared_ptr<ReadView const>
+Env::closed()
+{
+    return app().getLedgerMaster().getClosedLedger();
 }
 
 void
-Env::close(NetClock::time_point const& closeTime)
+Env::close(NetClock::time_point closeTime,
+    boost::optional<std::chrono::milliseconds> consensusDelay)
 {
-    clock.set(closeTime);
-    // VFALCO TODO Fix the Ledger constructor
-    auto next = std::make_shared<Ledger>(
-        open_ledger, *closed_);
-    next->setClosed();
-#if 0
-    // Build a SHAMap, put all the transactions
-    // in it, and calculate the hash of the SHAMap
-    // to construct the OrderedTxs
-    SHAMap sm;
-    OrderedTxs txs(sm.getRootHash());
-    ...
-#else
-    std::vector<std::shared_ptr<
-        STTx const>> txs;
-#endif
-    auto cur = openLedger.current();
-    for (auto iter = cur->txs.begin();
-            iter != cur->txs.end(); ++iter)
-        txs.push_back(iter->first);
-    std::unique_ptr<IHashRouter> router(
-        IHashRouter::New(60));
-    OrderedTxs retries(uint256{});
-    {
-        OpenView accum(&*next);
-        OpenLedger::apply(accum, *closed_,
-            txs, retries, applyFlags(), *router,
-                config, journal);
-        accum.apply(*next);
-    }
-    // To ensure that the close time is exact and not rounded, we don't
-    // claim to have reached consensus on what it should be.
-    next->setAccepted (
-        std::chrono::duration_cast<std::chrono::seconds> (
-            closeTime.time_since_epoch ()).count (),
-        ledgerPossibleTimeResolutions[0], false);
-    OrderedTxs locals({});
-    openLedger.accept(next, locals,
-        false, retries, applyFlags(), *router);
-    closed_ = next;
-    cachedSLEs_.expire();
+    // Round up to next distinguishable value
+    closeTime += closed()->info().closeTimeResolution - 1s;
+    bundle_.timeKeeper->set(closeTime);
+    app().getOPs().acceptLedger(consensusDelay);
+    bundle_.timeKeeper->set(
+        closed()->info().closeTime);
 }
 
 void
@@ -134,7 +135,7 @@ Env::lookup (AccountID const& id) const
 {
     auto const iter = map_.find(id);
     if (iter == map_.end())
-        throw std::runtime_error(
+        Throw<std::runtime_error> (
             "Env::lookup:: unknown account ID");
     return iter->second;
 }
@@ -145,7 +146,7 @@ Env::lookup (std::string const& base58ID) const
     auto const account =
         parseBase58<AccountID>(base58ID);
     if (! account)
-        throw std::runtime_error(
+        Throw<std::runtime_error>(
             "Env::lookup: invalid account ID");
     return lookup(*account);
 }
@@ -185,7 +186,7 @@ Env::seq (Account const& account) const
 {
     auto const sle = le(account);
     if (! sle)
-        throw std::runtime_error(
+        Throw<std::runtime_error> (
             "missing account root");
     return sle->getFieldU32(sfSequence);
 }
@@ -199,7 +200,7 @@ Env::le (Account const& account) const
 std::shared_ptr<SLE const>
 Env::le (Keylet const& k) const
 {
-    return open()->read(k);
+    return current()->read(k);
 }
 
 void
@@ -212,7 +213,7 @@ Env::fund (bool setDefaultRipple,
     {
         // VFALCO NOTE Is the fee formula correct?
         apply(pay(master, account, amount +
-            drops(open()->fees().base)),
+            drops(current()->fees().base)),
                 jtx::seq(jtx::autofill),
                     fee(jtx::autofill),
                         sig(jtx::autofill));
@@ -243,7 +244,7 @@ Env::trust (STAmount const& amount,
             fee(jtx::autofill),
                 sig(jtx::autofill));
     apply(pay(master, account,
-        drops(open()->fees().base)),
+        drops(current()->fees().base)),
             jtx::seq(jtx::autofill),
                 fee(jtx::autofill),
                     sig(jtx::autofill));
@@ -253,28 +254,33 @@ Env::trust (STAmount const& amount,
 void
 Env::submit (JTx const& jt)
 {
-    auto stx = st(jt);
-    TER ter;
     bool didApply;
-    if (stx)
+    if (jt.stx)
     {
-        openLedger.modify(
+        txid_ = jt.stx->getTransactionID();
+        app().openLedger().modify(
             [&](OpenView& view, beast::Journal j)
             {
-                std::tie(ter, didApply) = ripple::apply(
-                    view, *stx, applyFlags(), config,
+                std::tie(ter_, didApply) = app().getTxQ().apply(
+                    app(), view, jt.stx, applyFlags(),
                         beast::Journal{});
                 return didApply;
             });
     }
     else
     {
-        // Convert the exception into a TER so that
-        // callers can expect it using ter(temMALFORMED)
-        ter = temMALFORMED;
+        // Parsing failed or the JTx is
+        // otherwise missing the stx field.
+        ter_ = temMALFORMED;
         didApply = false;
     }
-    if (! test.expect(ter == jt.ter,
+    return postconditions(jt, ter_, didApply);
+}
+
+void
+Env::postconditions(JTx const& jt, TER ter, bool didApply)
+{
+    if (jt.ter && ! test.expect(ter == *jt.ter,
         "apply: " + transToken(ter) +
             " (" + transHuman(ter) + ")"))
     {
@@ -291,9 +297,14 @@ Env::submit (JTx const& jt)
     }
     for (auto const& f : jt.requires)
         f(*this);
-    //if (isTerRetry(ter))
-    //if (! isTesSuccess(ter))
-    //    held.insert(stx);
+}
+
+std::shared_ptr<STObject const>
+Env::meta()
+{
+    close();
+    auto const item = closed()->txRead(txid_);
+    return item.second;
 }
 
 void
@@ -301,18 +312,25 @@ Env::autofill_sig (JTx& jt)
 {
     auto& jv = jt.jv;
     if (jt.signer)
-        jt.signer(*this, jt);
-    else if(jt.fill_sig)
+        return jt.signer(*this, jt);
+    if (! jt.fill_sig)
+        return;
+    auto const account =
+        lookup(jv[jss::Account].asString());
+    if (nosig_)
     {
-        auto const account =
-            lookup(jv[jss::Account].asString());
-        auto const ar = le(account);
-        if (ar && ar->isFieldPresent(sfRegularKey))
-            jtx::sign(jv, lookup(
-                ar->getAccountID(sfRegularKey)));
-        else
-            jtx::sign(jv, account);
+        jv[jss::SigningPubKey] =
+            strHex(account.pk().slice());
+        // dummy sig otherwise STTx is invalid
+        jv[jss::TxnSignature] = "00";
+        return;
     }
+    auto const ar = le(account);
+    if (ar && ar->isFieldPresent(sfRegularKey))
+        jtx::sign(jv, lookup(
+            ar->getAccountID(sfRegularKey)));
+    else
+        jtx::sign(jv, account);
 }
 
 void
@@ -320,9 +338,9 @@ Env::autofill (JTx& jt)
 {
     auto& jv = jt.jv;
     if(jt.fill_fee)
-        jtx::fill_fee(jv, *open());
+        jtx::fill_fee(jv, *current());
     if(jt.fill_seq)
-        jtx::fill_seq(jv, *open());
+        jtx::fill_seq(jv, *current());
     // Must come last
     try
     {
@@ -333,11 +351,11 @@ Env::autofill (JTx& jt)
         test.log <<
             "parse failed:\n" <<
             pretty(jv);
-        throw;
+        Throw();
     }
 }
 
-std::shared_ptr<STTx>
+std::shared_ptr<STTx const>
 Env::st (JTx const& jt)
 {
     // The parse must succeed, since we
@@ -352,15 +370,14 @@ Env::st (JTx const& jt)
         test.log <<
             "Exception: parse_error\n" <<
             pretty(jt.jv);
-        throw;
+        Throw();
     }
 
     try
     {
-        return std::make_shared<STTx>(
-            std::move(*obj));
+        return sterilize(STTx{std::move(*obj)});
     }
-    catch(...)
+    catch(std::exception const&)
     {
     }
     return nullptr;
@@ -369,7 +386,12 @@ Env::st (JTx const& jt)
 ApplyFlags
 Env::applyFlags() const
 {
-    return tapENABLE_TESTING;
+    ApplyFlags flags = tapNONE;
+    if (testing_)
+        flags = flags | tapENABLE_TESTING;
+    if (nosig_)
+        flags = flags | tapNO_CHECK_SIGN;
+    return flags;
 }
 
 } // jtx

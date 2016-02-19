@@ -32,7 +32,7 @@
 #include <ripple/core/JobQueue.h>
 #include <beast/threads/Thread.h>
 #define SOCI_USE_BOOST
-#include <core/soci.h>
+#include <soci/soci.h>
 #include <string>
 #include <cstdint>
 #include <vector>
@@ -128,7 +128,7 @@ class Checkpointer
     The Checkpointer contains references to the session and job queue
     and so must outlive them both.
  */
-std::unique_ptr <Checkpointer> makeCheckpointer (soci::session&, JobQueue&);
+std::unique_ptr <Checkpointer> makeCheckpointer (soci::session&, JobQueue&, Logs&);
 
 } // ripple
 

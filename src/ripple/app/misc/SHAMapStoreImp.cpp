@@ -21,12 +21,14 @@
 
 #include <ripple/app/misc/SHAMapStoreImp.h>
 #include <ripple/app/ledger/LedgerMaster.h>
+#include <ripple/app/ledger/TransactionMaster.h>
 #include <ripple/app/main/Application.h>
+#include <ripple/basics/contract.h>
 #include <ripple/core/ConfigSections.h>
 #include <boost/format.hpp>
-#include <beast/cxx14/memory.h> // <memory>
 #include <boost/format.hpp>
 #include <boost/optional.hpp>
+#include <memory>
 
 namespace ripple {
 void SHAMapStoreImp::SavedStateDB::init (BasicConfig const& config,
@@ -61,7 +63,7 @@ void SHAMapStoreImp::SavedStateDB::init (BasicConfig const& config,
                 "SELECT COUNT(Key) FROM DbState WHERE Key = 1;"
                 , soci::into (countO);
         if (!countO)
-            throw std::runtime_error("Failed to fetch Key Count from DbState.");
+            Throw<std::runtime_error> ("Failed to fetch Key Count from DbState.");
         count = *countO;
     }
 
@@ -78,7 +80,7 @@ void SHAMapStoreImp::SavedStateDB::init (BasicConfig const& config,
                 "SELECT COUNT(Key) FROM CanDelete WHERE Key = 1;"
                 , soci::into (countO);
         if (!countO)
-            throw std::runtime_error("Failed to fetch Key Count from CanDelete.");
+            Throw<std::runtime_error> ("Failed to fetch Key Count from CanDelete.");
         count = *countO;
     }
 
@@ -160,7 +162,11 @@ SHAMapStoreImp::SavedStateDB::setLastRotated (LedgerIndex seq)
             ;
 }
 
-SHAMapStoreImp::SHAMapStoreImp (Setup const& setup,
+//------------------------------------------------------------------------------
+
+SHAMapStoreImp::SHAMapStoreImp (
+        Application& app,
+        Setup const& setup,
         Stoppable& parent,
         NodeStore::Scheduler& scheduler,
         beast::Journal journal,
@@ -168,6 +174,7 @@ SHAMapStoreImp::SHAMapStoreImp (Setup const& setup,
         TransactionMaster& transactionMaster,
         BasicConfig const& config)
     : SHAMapStore (parent)
+    , app_ (app)
     , setup_ (setup)
     , scheduler_ (scheduler)
     , journal_ (journal)
@@ -179,13 +186,13 @@ SHAMapStoreImp::SHAMapStoreImp (Setup const& setup,
     {
         if (setup_.deleteInterval < minimumDeletionInterval_)
         {
-            throw std::runtime_error ("online_delete must be at least " +
+            Throw<std::runtime_error> ("online_delete must be at least " +
                 std::to_string (minimumDeletionInterval_));
         }
 
         if (setup_.ledgerHistory > setup_.deleteInterval)
         {
-            throw std::runtime_error (
+            Throw<std::runtime_error> (
                 "online_delete must be less than ledger_history (currently " +
                 std::to_string (setup_.ledgerHistory) + ")");
         }
@@ -248,7 +255,7 @@ SHAMapStoreImp::copyNode (std::uint64_t& nodeCount,
         SHAMapAbstractNode const& node)
 {
     // Copy a single record from node to database_
-    database_->fetchNode (node.getNodeHash());
+    database_->fetchNode (node.getNodeHash().as_uint256());
     if (! (++nodeCount % checkHealthInterval_))
     {
         if (health())
@@ -262,12 +269,12 @@ void
 SHAMapStoreImp::run()
 {
     LedgerIndex lastRotated = state_db_.getState().lastRotated;
-    netOPs_ = &getApp().getOPs();
-    ledgerMaster_ = &getApp().getLedgerMaster();
-    fullBelowCache_ = &getApp().family().fullbelow();
-    treeNodeCache_ = &getApp().family().treecache();
-    transactionDb_ = &getApp().getTxnDB();
-    ledgerDb_ = &getApp().getLedgerDB();
+    netOPs_ = &app_.getOPs();
+    ledgerMaster_ = &app_.getLedgerMaster();
+    fullBelowCache_ = &app_.family().fullbelow();
+    treeNodeCache_ = &app_.family().treecache();
+    transactionDb_ = &app_.getTxnDB();
+    ledgerDb_ = &app_.getLedgerDB();
 
     if (setup_.advisoryDelete)
         canDelete_ = state_db_.getCanDelete ();
@@ -413,7 +420,7 @@ SHAMapStoreImp::dbPaths()
         {
             std::cerr << "node db path must be a directory. "
                     << dbPath.string();
-            throw std::runtime_error (
+            Throw<std::runtime_error> (
                     "node db path must be a directory.");
         }
     }
@@ -459,7 +466,7 @@ SHAMapStoreImp::dbPaths()
                 << get<std::string>(setup_.nodeDatabase, "path")
                 << std::endl;
 
-        throw std::runtime_error ("state db error");
+        Throw<std::runtime_error> ("state db error");
     }
 }
 
@@ -612,11 +619,12 @@ SHAMapStoreImp::health()
 
     NetworkOPs::OperatingMode mode = netOPs_->getOperatingMode();
 
-    std::int32_t age = ledgerMaster_->getValidatedLedgerAge();
-    if (mode != NetworkOPs::omFULL || age >= setup_.ageThreshold)
+    auto age = ledgerMaster_->getValidatedLedgerAge();
+    if (mode != NetworkOPs::omFULL || age.count() >= setup_.ageThreshold)
     {
-        journal_.warning << "Not deleting. state: " << mode << " age " << age
-                << " age threshold " << setup_.ageThreshold;
+        journal_.warning << "Not deleting. state: " << mode
+                         << " age " << age.count()
+                         << " age threshold " << setup_.ageThreshold;
         healthy_ = false;
     }
 
@@ -666,25 +674,35 @@ setup_SHAMapStore (Config const& c)
 {
     SHAMapStore::Setup setup;
 
-    auto const& sec = c.section (ConfigSection::nodeDatabase ());
-    get_if_exists (sec, "online_delete", setup.deleteInterval);
+    // Get existing settings and add some default values if not specified:
+    setup.nodeDatabase = c.section (ConfigSection::nodeDatabase ());
+
+    // These two parameters apply only to RocksDB. We want to give them sensible
+    // defaults if no values are specified.
+    if (!setup.nodeDatabase.exists ("cache_mb"))
+        setup.nodeDatabase.set ("cache_mb", std::to_string (c.getSize (siHashNodeDBCache)));
+
+    if (!setup.nodeDatabase.exists ("filter_bits") && (c.NODE_SIZE >= 2))
+        setup.nodeDatabase.set ("filter_bits", "10");
+
+    get_if_exists (setup.nodeDatabase, "online_delete", setup.deleteInterval);
 
     if (setup.deleteInterval)
-        get_if_exists (sec, "advisory_delete", setup.advisoryDelete);
+        get_if_exists (setup.nodeDatabase, "advisory_delete", setup.advisoryDelete);
 
     setup.ledgerHistory = c.LEDGER_HISTORY;
-    setup.nodeDatabase = c[ConfigSection::nodeDatabase ()];
     setup.databasePath = c.legacy("database_path");
 
-    get_if_exists (sec, "delete_batch", setup.deleteBatch);
-    get_if_exists (sec, "backOff", setup.backOff);
-    get_if_exists (sec, "age_threshold", setup.ageThreshold);
+    get_if_exists (setup.nodeDatabase, "delete_batch", setup.deleteBatch);
+    get_if_exists (setup.nodeDatabase, "backOff", setup.backOff);
+    get_if_exists (setup.nodeDatabase, "age_threshold", setup.ageThreshold);
 
     return setup;
 }
 
 std::unique_ptr<SHAMapStore>
-make_SHAMapStore (SHAMapStore::Setup const& s,
+make_SHAMapStore (Application& app,
+        SHAMapStore::Setup const& s,
         beast::Stoppable& parent,
         NodeStore::Scheduler& scheduler,
         beast::Journal journal,
@@ -692,7 +710,7 @@ make_SHAMapStore (SHAMapStore::Setup const& s,
         TransactionMaster& transactionMaster,
         BasicConfig const& config)
 {
-    return std::make_unique<SHAMapStoreImp>(s, parent, scheduler,
+    return std::make_unique<SHAMapStoreImp>(app, s, parent, scheduler,
             journal, nodeStoreJournal, transactionMaster,
             config);
 }

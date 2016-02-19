@@ -23,13 +23,18 @@
 #include <ripple/ledger/detail/ReadViewFwdRange.h>
 #include <ripple/basics/chrono.h>
 #include <ripple/protocol/Indexes.h>
+#include <ripple/protocol/IOUAmount.h>
 #include <ripple/protocol/Protocol.h>
 #include <ripple/protocol/STLedgerEntry.h>
 #include <ripple/protocol/STTx.h>
+#include <ripple/protocol/XRPAmount.h>
+#include <beast/hash/uhash.h>
+#include <beast/utility/Journal.h>
 #include <boost/optional.hpp>
 #include <cassert>
 #include <cstdint>
 #include <memory>
+#include <unordered_set>
 
 namespace ripple {
 
@@ -54,10 +59,10 @@ struct Fees
         The reserve is calculated as the reserve base plus
         the reserve increment times the number of increments.
     */
-    std::uint64_t
+    XRPAmount
     accountReserve (std::size_t ownerCount) const
     {
-        return reserve + ownerCount * increment;
+        return { reserve + ownerCount * increment };
     }
 };
 
@@ -66,52 +71,100 @@ struct Fees
 /** Information about the notional ledger backing the view. */
 struct LedgerInfo
 {
-    // Fields for all ledgers
+    //
+    // For all ledgers
+    //
+
     bool open = true;
     LedgerIndex seq = 0;
-    std::uint32_t parentCloseTime = 0;
+    NetClock::time_point parentCloseTime = {};
 
-    // Fields for closed ledgers
+    //
+    // For closed ledgers
+    //
+
     // Closed means "tx set already determined"
     uint256 hash = zero;
     uint256 txHash = zero;
     uint256 accountHash = zero;
     uint256 parentHash = zero;
 
-    //uint256 stateHash;
-    std::uint64_t drops = 0;
+    XRPAmount drops = zero;
 
     // If validated is false, it means "not yet validated."
     // Once validated is true, it will never be set false at a later time.
-    mutable
-    bool validated = false;
+    // VFALCO TODO Make this not mutable
+    bool mutable validated = false;
     bool accepted = false;
 
     // flags indicating how this ledger close took place
     int closeFlags = 0;
 
     // the resolution for this ledger close time (2-120 seconds)
-    int closeTimeResolution = 0;
+    NetClock::duration closeTimeResolution = {};
 
     // For closed ledgers, the time the ledger
     // closed. For open ledgers, the time the ledger
     // will close if there's no transactions.
     //
-    std::uint32_t closeTime = 0;
+    NetClock::time_point closeTime = {};
 };
 
-// ledger close flags
-static
-std::uint32_t const sLCF_NoConsensusTime = 1;
+//------------------------------------------------------------------------------
 
+class DigestAwareReadView;
 
-inline
-bool getCloseAgree (LedgerInfo const& info)
+/** Rules controlling protocol behavior. */
+class Rules
 {
-    return (info.closeFlags & sLCF_NoConsensusTime) == 0;
-}
+private:
+    class Impl;
 
-void addRaw (LedgerInfo const&, Serializer&);
+    std::shared_ptr<Impl const> impl_;
+
+public:
+    Rules (Rules const&) = default;
+    Rules& operator= (Rules const&) = default;
+
+    /** Construct an empty rule set.
+
+        These are the rules reflected by
+        the genesis ledger.
+    */
+    Rules() = default;
+
+    /** Construct rules from a ledger.
+
+        The ledger contents are analyzed for rules
+        and amendments and extracted to the object.
+    */
+    explicit
+    Rules (DigestAwareReadView const& ledger);
+
+    /** Returns `true` if a feature is enabled. */
+    bool
+    enabled (uint256 const& id,
+        std::unordered_set<uint256,
+            beast::uhash<>> const& presets) const;
+
+    /** Returns `true` if these rules don't match the ledger. */
+    bool
+    changed (DigestAwareReadView const& ledger) const;
+
+    /** Returns `true` if two rule sets are identical.
+
+        @note This is for diagnostics. To determine if new
+        rules should be constructed, call changed() first instead.
+    */
+    bool
+    operator== (Rules const&) const;
+
+    bool
+    operator!= (Rules const& other) const
+    {
+        return ! (*this == other);
+    }
+};
 
 //------------------------------------------------------------------------------
 
@@ -133,29 +186,44 @@ public:
     using mapped_type =
         std::shared_ptr<SLE const>;
 
-    using sles_type = detail::ReadViewFwdRange<
-        std::shared_ptr<SLE const>>;
+    struct sles_type : detail::ReadViewFwdRange<
+        std::shared_ptr<SLE const>>
+    {
+        explicit sles_type (ReadView const& view);
+        iterator begin() const;
+        iterator const& end() const;
+        iterator upper_bound(key_type const& key) const;
+    };
 
-    using txs_type =
-        detail::ReadViewFwdRange<tx_type>;
+    struct txs_type
+        : detail::ReadViewFwdRange<tx_type>
+    {
+        explicit txs_type (ReadView const& view);
+        bool empty() const;
+        iterator begin() const;
+        iterator const& end() const;
+    };
 
     virtual ~ReadView() = default;
 
     ReadView& operator= (ReadView&& other) = delete;
     ReadView& operator= (ReadView const& other) = delete;
 
-    ReadView()
-        : txs(*this)
+    ReadView ()
+        : sles(*this)
+        , txs(*this)
     {
     }
 
-    ReadView (ReadView const&)
-        : txs(*this)
+    ReadView (ReadView const& other)
+        : sles(*this)
+        , txs(*this)
     {
     }
 
     ReadView (ReadView&& other)
-        : txs(*this)
+        : sles(*this)
+        , txs(*this)
     {
     }
 
@@ -179,7 +247,7 @@ public:
     }
 
     /** Returns the close time of the previous ledger. */
-    std::uint32_t
+    NetClock::time_point
     parentCloseTime() const
     {
         return info().parentCloseTime;
@@ -196,6 +264,11 @@ public:
     virtual
     Fees const&
     fees() const = 0;
+
+    /** Returns the tx processing rules. */
+    virtual
+    Rules const&
+    rules() const = 0;
 
     /** Determine if a state item exists.
 
@@ -221,7 +294,7 @@ public:
     virtual
     boost::optional<key_type>
     succ (key_type const& key, boost::optional<
-        key_type> last = boost::none) const = 0;
+        key_type> const& last = boost::none) const = 0;
 
     /** Return the state item associated with a key.
 
@@ -250,6 +323,21 @@ public:
     {
         return amount;
     }
+
+    // used by the implementation
+    virtual
+    std::unique_ptr<sles_type::iter_base>
+    slesBegin() const = 0;
+
+    // used by the implementation
+    virtual
+    std::unique_ptr<sles_type::iter_base>
+    slesEnd() const = 0;
+
+    // used by the implementation
+    virtual
+    std::unique_ptr<sles_type::iter_base>
+    slesUpperBound(key_type const& key) const = 0;
 
     // used by the implementation
     virtual
@@ -286,8 +374,12 @@ public:
     // Memberspaces
     //
 
-    // The range of ledger entries
-    //sles_type sles;
+    /** Iterable range of ledger state items.
+
+        @note Visiting each state entry in the ledger can
+              become quite expensive as the ledger grows.
+    */
+    sles_type sles;
 
     // The range of transactions
     txs_type txs;
@@ -302,6 +394,9 @@ class DigestAwareReadView
 public:
     using digest_type = uint256;
 
+    DigestAwareReadView () = default;
+    DigestAwareReadView (const DigestAwareReadView&) = default;
+
     /** Return the digest associated with the key.
 
         @return boost::none if the item does not exist.
@@ -310,6 +405,20 @@ public:
     boost::optional<digest_type>
     digest (key_type const& key) const = 0;
 };
+
+//------------------------------------------------------------------------------
+
+// ledger close flags
+static
+std::uint32_t const sLCF_NoConsensusTime = 1;
+
+inline
+bool getCloseAgree (LedgerInfo const& info)
+{
+    return (info.closeFlags & sLCF_NoConsensusTime) == 0;
+}
+
+void addRaw (LedgerInfo const&, Serializer&);
 
 } // ripple
 

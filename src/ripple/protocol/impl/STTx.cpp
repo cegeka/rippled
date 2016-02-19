@@ -22,92 +22,86 @@
 #include <ripple/protocol/HashPrefix.h>
 #include <ripple/protocol/JsonFields.h>
 #include <ripple/protocol/Protocol.h>
+#include <ripple/protocol/Sign.h>
 #include <ripple/protocol/STAccount.h>
 #include <ripple/protocol/STArray.h>
 #include <ripple/protocol/TxFlags.h>
 #include <ripple/protocol/types.h>
+#include <ripple/basics/contract.h>
 #include <ripple/basics/Log.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/json/to_string.h>
 #include <beast/unit_test/suite.h>
-#include <beast/cxx14/memory.h> // <memory>
 #include <boost/format.hpp>
 #include <array>
+#include <memory>
+#include <type_traits>
+#include <utility>
 
 namespace ripple {
 
-STTx::STTx (TxType type)
-    : STObject (sfTransaction)
-    , tx_type_ (type)
-    , sig_state_ (boost::indeterminate)
+static
+auto getTxFormat (TxType type)
 {
     auto format = TxFormats::getInstance().findByType (type);
 
     if (format == nullptr)
     {
-        WriteLog (lsWARNING, STTx) <<
-            "Transaction type: " << type;
-        throw std::runtime_error ("invalid transaction type");
+        Throw<std::runtime_error> (
+            "Invalid transaction type " +
+            std::to_string (
+                static_cast<std::underlying_type_t<TxType>>(type)));
     }
 
-    set (format->elements);
-    setFieldU16 (sfTransactionType, format->getType ());
+    return format;
 }
 
 STTx::STTx (STObject&& object)
     : STObject (std::move (object))
-    , sig_state_ (boost::indeterminate)
 {
     tx_type_ = static_cast <TxType> (getFieldU16 (sfTransactionType));
 
-    auto format = TxFormats::getInstance().findByType (tx_type_);
+    if (!setType (getTxFormat (tx_type_)->elements))
+        Throw<std::runtime_error> ("transaction not valid");
 
-    if (!format)
-    {
-        WriteLog (lsWARNING, STTx) <<
-            "Transaction type: " << tx_type_;
-        throw std::runtime_error ("invalid transaction type");
-    }
-
-    if (!setType (format->elements))
-    {
-        WriteLog (lsWARNING, STTx) <<
-            "Transaction not legal for format";
-        throw std::runtime_error ("transaction not valid");
-    }
+    tid_ = getHash(HashPrefix::transactionID);
 }
 
 STTx::STTx (SerialIter& sit)
     : STObject (sfTransaction)
-    , sig_state_ (boost::indeterminate)
 {
     int length = sit.getBytesLeft ();
 
     if ((length < Protocol::txMinSizeBytes) || (length > Protocol::txMaxSizeBytes))
-    {
-        WriteLog (lsERROR, STTx) <<
-            "Transaction has invalid length: " << length;
-        throw std::runtime_error ("Transaction length invalid");
-    }
+        Throw<std::runtime_error> ("Transaction length invalid");
 
     set (sit);
     tx_type_ = static_cast<TxType> (getFieldU16 (sfTransactionType));
 
-    auto format = TxFormats::getInstance().findByType (tx_type_);
+    if (!setType (getTxFormat (tx_type_)->elements))
+        Throw<std::runtime_error> ("transaction not valid");
 
-    if (!format)
-    {
-        WriteLog (lsWARNING, STTx) <<
-            "Invalid transaction type: " << tx_type_;
-        throw std::runtime_error ("invalid transaction type");
-    }
+    tid_ = getHash(HashPrefix::transactionID);
+}
 
-    if (!setType (format->elements))
-    {
-        WriteLog (lsWARNING, STTx) <<
-            "Transaction not legal for format";
-        throw std::runtime_error ("transaction not valid");
-    }
+STTx::STTx (
+        TxType type,
+        std::function<void(STObject&)> assembler)
+    : STObject (sfTransaction)
+{
+    auto format = getTxFormat (type);
+
+    set (format->elements);
+    setFieldU16 (sfTransactionType, format->getType ());
+
+    assembler (*this);
+
+    tx_type_ = static_cast<TxType>(getFieldU16 (sfTransactionType));
+
+    if (tx_type_ != type)
+        LogicError ("Transaction type was mutated during assembly");
+
+    tid_ = getHash(HashPrefix::transactionID);
 }
 
 std::string
@@ -130,10 +124,9 @@ STTx::getMentionedAccounts () const
     {
         if (auto sa = dynamic_cast<STAccount const*> (&it))
         {
-            AccountID id;
-            assert(sa->isValueH160());
-            if (sa->getValueH160(id))
-                list.insert(id);
+            assert(! sa->isDefault());
+            if (! sa->isDefault())
+                list.insert(sa->value());
         }
         else if (auto sa = dynamic_cast<STAmount const*> (&it))
         {
@@ -160,19 +153,13 @@ STTx::getSigningHash () const
     return STObject::getSigningHash (HashPrefix::txSign);
 }
 
-uint256
-STTx::getTransactionID () const
-{
-    return getHash (HashPrefix::transactionID);
-}
-
 Blob STTx::getSignature () const
 {
     try
     {
         return getFieldVL (sfTxnSignature);
     }
-    catch (...)
+    catch (std::exception const&)
     {
         return Blob ();
     }
@@ -182,42 +169,32 @@ void STTx::sign (RippleAddress const& private_key)
 {
     Blob const signature = private_key.accountPrivateSign (getSigningData (*this));
     setFieldVL (sfTxnSignature, signature);
+    tid_ = getHash(HashPrefix::transactionID);
 }
 
 bool STTx::checkSign(bool allowMultiSign) const
 {
-    if (boost::indeterminate (sig_state_))
+    bool sigGood = false;
+    try
     {
-        try
+        if (allowMultiSign)
         {
-            if (allowMultiSign)
-            {
-                // Determine whether we're single- or multi-signing by looking
-                // at the SigningPubKey.  It it's empty we must be multi-signing.
-                // Otherwise we're single-signing.
-                Blob const& signingPubKey = getFieldVL (sfSigningPubKey);
-                sig_state_ = signingPubKey.empty () ?
-                    checkMultiSign () : checkSingleSign ();
-            }
-            else
-            {
-                sig_state_ = checkSingleSign ();
-            }
+            // Determine whether we're single- or multi-signing by looking
+            // at the SigningPubKey.  It it's empty we must be
+            // multi-signing.  Otherwise we're single-signing.
+            Blob const& signingPubKey = getFieldVL (sfSigningPubKey);
+            sigGood = signingPubKey.empty () ?
+                checkMultiSign () : checkSingleSign ();
         }
-        catch (...)
+        else
         {
-            sig_state_ = false;
+            sigGood = checkSingleSign ();
         }
     }
-
-    assert (!boost::indeterminate (sig_state_));
-
-    return static_cast<bool> (sig_state_);
-}
-
-void STTx::setSigningPubKey (RippleAddress const& naSignPubKey)
-{
-    setFieldVL (sfSigningPubKey, naSignPubKey.getAccountPublic ());
+    catch (std::exception const&)
+    {
+    }
+    return sigGood;
 }
 
 Json::Value STTx::getJson (int) const
@@ -278,10 +255,10 @@ STTx::getMetaSQL (Serializer rawTxn,
 bool
 STTx::checkSingleSign () const
 {
-    // We don't allow both a non-empty sfSigningPubKey and an sfMultiSigners.
+    // We don't allow both a non-empty sfSigningPubKey and an sfSigners.
     // That would allow the transaction to be signed two ways.  So if both
     // fields are present the signature is invalid.
-    if (isFieldPresent (sfMultiSigners))
+    if (isFieldPresent (sfSigners))
         return false;
 
     bool ret = false;
@@ -297,7 +274,7 @@ STTx::checkSingleSign () const
         ret = n.accountPublicVerify (getSigningData (*this),
             getFieldVL (sfTxnSignature), fullyCanonical);
     }
-    catch (...)
+    catch (std::exception const&)
     {
         // Assume it was a signature failure.
         ret = false;
@@ -310,22 +287,24 @@ STTx::checkMultiSign () const
 {
     // Make sure the MultiSigners are present.  Otherwise they are not
     // attempting multi-signing and we just have a bad SigningPubKey.
-    if (!isFieldPresent (sfMultiSigners))
+    if (!isFieldPresent (sfSigners))
         return false;
 
-    STArray const& multiSigners (getFieldArray (sfMultiSigners));
+    // We don't allow both an sfSigners and an sfTxnSignature.  Both fields
+    // being present would indicate that the transaction is signed both ways.
+    if (isFieldPresent (sfTxnSignature))
+        return false;
+
+    STArray const& signers {getFieldArray (sfSigners)};
 
     // There are well known bounds that the number of signers must be within.
-    {
-        std::size_t const multiSignerCount = multiSigners.size ();
-        if ((multiSignerCount < 1) || (multiSignerCount > maxMultiSigners))
-            return false;
-    }
+    if (signers.size() < minMultiSigners || signers.size() > maxMultiSigners)
+        return false;
 
     // We can ease the computational load inside the loop a bit by
     // pre-constructing part of the data that we hash.  Fill a Serializer
     // with the stuff that stays constant from signature to signature.
-    Serializer const dataStart (startMultiSigningData ());
+    Serializer const dataStart {startMultiSigningData (*this)};
 
     // We also use the sfAccount field inside the loop.  Get it once.
     auto const txnAccountID = getAccountID (sfAccount);
@@ -335,151 +314,47 @@ STTx::checkMultiSign () const
         ? ECDSA::strict
         : ECDSA::not_strict;
 
-    /*
-        We need to detect (and reject) if a multi-signer is both signing
-        directly and using a SigningFor.  Here's an example:
-        
-        {
-            ...
-            "MultiSigners": [
-                {
-                    "SigningFor": {
-                        "Account": "<alice>",
-                        "SigningAccounts": [
-                            {
-                                "SigningAccount": {
-                                    // * becky says that becky signs for alice. *
-                                    "Account": "<becky>",
-            ...
-                    "SigningFor": {
-                        "Account": "<becky>",
-                        "SigningAccounts": [
-                            {
-                                "SigningAccount": {
-                                    // * cheri says that becky signs for alice. *
-                                    "Account": "<cheri>",
-            ...
-            "tx_json": {
-                "Account": "<alice>",
-                ...
-            }
-        }
-        
-        Why is this way of signing a problem?  Alice has a signer list, and
-        Becky can show up in that list only once.  By design.  So if Becky
-        signs twice -- once directly and once indirectly -- we have three
-        options:
-        
-         1. We can add Becky's weight toward Alice's quorum twice, once for
-            each signature.  This seems both unexpected and counter to Alice's
-            intention.
-        
-         2. We could allow both signatures, but only add Becky's weight
-            toward Alice's quorum once.  This seems a bit better.  But it allows
-            our clients to ask rippled to do more work than necessary.  We
-            should also let the client know that only one of the signatures
-            was necessary.
-        
-         3. The only way to tell the client that they have done more work
-            than necessary (and that one of the signatures will be ignored) is
-            to declare the transaction malformed.  This behavior also aligns
-            well with rippled's behavior if Becky had signed directly twice:
-            the transaction would be marked as malformed.
-    */
+    // Signers must be in sorted order by AccountID.
+    AccountID lastAccountID (beast::zero);
 
-    // We use this std::set to detect this form of double-signing.
-    std::set<AccountID> firstLevelSigners;
-
-    // SigningFors must be in sorted order by AccountID.
-    AccountID lastSigningForID = zero;
-
-    // Every signature must verify or we reject the transaction.
-    for (auto const& signingFor : multiSigners)
+    for (auto const& signer : signers)
     {
-        auto const signingForID =
-            signingFor.getAccountID (sfAccount);
+        auto const accountID = signer.getAccountID (sfAccount);
 
-        // SigningFors must be in order by account ID.  No duplicates allowed.
-        if (lastSigningForID >= signingForID)
+        // The account owner may not multisign for themselves.
+        if (accountID == txnAccountID)
             return false;
 
-        // The next SigningFor must be greater than this one.
-        lastSigningForID = signingForID;
+        // Accounts must be in order by account ID.  No duplicates allowed.
+        if (lastAccountID >= accountID)
+            return false;
 
-        // If signingForID is *not* txnAccountID, then look for duplicates.
-        bool const directSigning = (signingForID == txnAccountID);
-        if (! directSigning)
+        // The next signature must be greater than this one.
+        lastAccountID = accountID;
+
+        // Verify the signature.
+        bool validSig = false;
+        try
         {
-            if (! firstLevelSigners.insert (signingForID).second)
-                // This is a duplicate signer.  Fail.
-                return false;
+            Serializer s = dataStart;
+            finishMultiSigningData (accountID, s);
+
+            RippleAddress const pubKey =
+                RippleAddress::createAccountPublic (
+                    signer.getFieldVL (sfSigningPubKey));
+
+            Blob const signature = signer.getFieldVL (sfTxnSignature);
+
+            validSig = pubKey.accountPublicVerify (
+                s.getData(), signature, fullyCanonical);
         }
-
-        STArray const& signingAccounts (
-            signingFor.getFieldArray (sfSigningAccounts));
-
-        // There are bounds that the number of signers must be within.
+        catch (std::exception const&)
         {
-            std::size_t const signingAccountsCount = signingAccounts.size ();
-            if ((signingAccountsCount < 1) ||
-                (signingAccountsCount > maxMultiSigners))
-            {
-                return false;
-            }
+            // We assume any problem lies with the signature.
+            validSig = false;
         }
-
-        // SingingAccounts must be in sorted order by AccountID.
-        AccountID lastSigningAcctID = zero;
-
-        for (auto const& signingAcct : signingAccounts)
-        {
-            auto const signingAcctID =
-                signingAcct.getAccountID (sfAccount);
-
-            // None of the multi-signers may sign for themselves.
-            if (signingForID == signingAcctID)
-                return false;
-
-            // Accounts must be in order by account ID.  No duplicates allowed.
-            if (lastSigningAcctID >= signingAcctID)
-                return false;
-
-            // The next signature must be greater than this one.
-            lastSigningAcctID = signingAcctID;
-
-            // If signingForID *is* txnAccountID, then look for duplicates.
-            if (directSigning)
-            {
-                if (! firstLevelSigners.insert (signingAcctID).second)
-                    // This is a duplicate signer.  Fail.
-                    return false;
-            }
-
-            // Verify the signature.
-            bool validSig = false;
-            try
-            {
-                Serializer s = dataStart;
-                finishMultiSigningData (signingForID, signingAcctID, s);
-
-                RippleAddress const pubKey =
-                    RippleAddress::createAccountPublic (
-                        signingAcct.getFieldVL (sfSigningPubKey));
-
-                Blob const signature =
-                    signingAcct.getFieldVL (sfMultiSignature);
-
-                validSig = pubKey.accountPublicVerify (
-                    s.getData(), signature, fullyCanonical);
-            }
-            catch (...)
-            {
-                // We assume any problem lies with the signature.
-                validSig = false;
-            }
-            if (!validSig)
-                return false;
-        }
+        if (!validSig)
+            return false;
     }
 
     // All signatures verified.
@@ -588,7 +463,7 @@ isAccountFieldOkay (STObject const& st)
     for (int i = 0; i < st.getCount(); ++i)
     {
         auto t = dynamic_cast<STAccount const*>(st.peekAtPIndex (i));
-        if (t && !t->isValueH160 ())
+        if (t && t->isDefault ())
             return false;
     }
 
@@ -607,6 +482,15 @@ bool passesLocalChecks (STObject const& st, std::string& reason)
     }
 
     return true;
+}
+
+std::shared_ptr<STTx const>
+sterilize (STTx const& stx)
+{
+    Serializer s;
+    stx.add(s);
+    SerialIter sit(s.slice());
+    return std::make_shared<STTx const>(std::ref(sit));
 }
 
 } // ripple

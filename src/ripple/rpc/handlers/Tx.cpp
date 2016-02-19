@@ -19,9 +19,10 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/ledger/LedgerMaster.h>
+#include <ripple/app/ledger/TransactionMaster.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/NetworkOPs.h>
-#include <ripple/app/tx/TransactionMaster.h>
+#include <ripple/app/misc/Transaction.h>
 #include <ripple/net/RPCErr.h>
 #include <ripple/protocol/ErrorCodes.h>
 #include <ripple/protocol/JsonFields.h>
@@ -96,7 +97,7 @@ Json::Value doTx (RPC::Context& context)
     if (!isHexTxID (txid))
         return rpcError (rpcNOT_IMPL);
 
-    auto txn = getApp().getMasterTransaction ().fetch (
+    auto txn = context.app.getMasterTransaction ().fetch (
         from_hex_text<uint256>(txid), true);
 
     if (!txn)
@@ -123,10 +124,11 @@ Json::Value doTx (RPC::Context& context)
         }
         else
         {
-            TxMeta::pointer txMeta;
-
-            if (getTransactionMeta (*lgr, txn->getID (), txMeta))
+            auto rawMeta = lgr->txRead (txn->getID()).second;
+            if (rawMeta)
             {
+                auto txMeta = std::make_shared<TxMeta> (txn->getID (),
+                    lgr->seq (), *rawMeta, context.app.journal ("TxMeta"));
                 okay = true;
                 auto meta = txMeta->getJson (0);
                 addPaymentDeliveredAmount (meta, context, txn, txMeta);

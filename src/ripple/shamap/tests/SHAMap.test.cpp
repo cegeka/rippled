@@ -26,7 +26,6 @@
 #include <beast/utility/Journal.h>
 
 namespace ripple {
-namespace shamap {
 namespace tests {
 
 inline bool operator== (SHAMapItem const& a, SHAMapItem const& b) { return a.key() == b.key(); }
@@ -52,7 +51,6 @@ public:
         testcase ("add/traverse");
 
         beast::Journal const j;                            // debug journal
-        
         tests::TestFamily f(j);
 
         // h3 and h4 differ only in the leaf, same terminal node (level 19)
@@ -63,36 +61,37 @@ public:
         h4.SetHex ("b92891fe4ef6cee585fdc6fda2e09eb4d386363158ec3321b8123e5a772c6ca8");
         h5.SetHex ("a92891fe4ef6cee585fdc6fda0e09eb4d386363158ec3321b8123e5a772c6ca7");
 
-        SHAMap sMap (SHAMapType::FREE, f, beast::Journal());
+        SHAMap sMap (SHAMapType::FREE, f);
         SHAMapItem i1 (h1, IntToVUC (1)), i2 (h2, IntToVUC (2)), i3 (h3, IntToVUC (3)), i4 (h4, IntToVUC (4)), i5 (h5, IntToVUC (5));
         unexpected (!sMap.addItem (i2, true, false), "no add");
         unexpected (!sMap.addItem (i1, true, false), "no add");
 
-        std::shared_ptr<SHAMapItem const> i;
-        i = sMap.peekFirstItem ();
-        unexpected (!i || (*i != i1), "bad traverse");
-        i = sMap.peekNextItem (i->key());
-        unexpected (!i || (*i != i2), "bad traverse");
-        i = sMap.peekNextItem (i->key());
-        unexpected (i, "bad traverse");
+        auto i = sMap.begin();
+        auto e = sMap.end();
+        unexpected (i == e || (*i != i1), "bad traverse");
+        ++i;
+        unexpected (i == e || (*i != i2), "bad traverse");
+        ++i;
+        unexpected (i != e, "bad traverse");
         sMap.addItem (i4, true, false);
         sMap.delItem (i2.key());
         sMap.addItem (i3, true, false);
-        i = sMap.peekFirstItem ();
-        unexpected (!i || (*i != i1), "bad traverse");
-        i = sMap.peekNextItem (i->key());
-        unexpected (!i || (*i != i3), "bad traverse");
-        i = sMap.peekNextItem (i->key());
-        unexpected (!i || (*i != i4), "bad traverse");
-        i = sMap.peekNextItem (i->key());
-        unexpected (i, "bad traverse");
+        i = sMap.begin();
+        e = sMap.end();
+        unexpected (i == e || (*i != i1), "bad traverse");
+        ++i;
+        unexpected (i == e || (*i != i3), "bad traverse");
+        ++i;
+        unexpected (i == e || (*i != i4), "bad traverse");
+        ++i;
+        unexpected (i != e, "bad traverse");
 
         testcase ("snapshot");
-        uint256 mapHash = sMap.getHash ();
+        SHAMapHash mapHash = sMap.getHash ();
         std::shared_ptr<SHAMap> map2 = sMap.snapShot (false);
         unexpected (sMap.getHash () != mapHash, "bad snapshot");
         unexpected (map2->getHash () != mapHash, "bad snapshot");
-        unexpected (!sMap.delItem (sMap.peekFirstItem ()->key()), "bad mod");
+        unexpected (!sMap.delItem (sMap.begin()->key()), "bad mod");
         unexpected (sMap.getHash () == mapHash, "bad snapshot");
         unexpected (map2->getHash () != mapHash, "bad snapshot");
 
@@ -118,21 +117,46 @@ public:
             hashes[6].SetHex ("76DCC77C4027309B5A91AD164083264D70B77B5E43E08AEDA5EBF94361143615");
             hashes[7].SetHex ("DF4220E93ADC6F5569063A01B4DC79F8DB9553B6A3222ADE23DEA02BBE7230E5");
 
-            SHAMap map (SHAMapType::FREE, f, beast::Journal());
+            SHAMap map (SHAMapType::FREE, f);
 
-            expect (map.getHash() == uint256(), "bad initial empty map hash");
+            expect (map.getHash() == zero, "bad initial empty map hash");
             for (int i = 0; i < keys.size(); ++i)
             {
                 SHAMapItem item (keys[i], IntToVUC (i));
                 map.addItem (item, true, false);
-                expect (map.getHash() == hashes[i], "bad buildup map hash");
+                expect (map.getHash().as_uint256() == hashes[i], "bad buildup map hash");
             }
             for (int i = keys.size() - 1; i >= 0; --i)
             {
-                expect (map.getHash() == hashes[i], "bad teardown hash");
+                expect (map.getHash().as_uint256() == hashes[i], "bad teardown hash");
                 map.delItem (keys[i]);
             }
-            expect (map.getHash() == uint256(), "bad final empty map hash");
+            expect (map.getHash() == zero, "bad final empty map hash");
+        }
+
+        testcase ("iterate");
+        {
+            std::vector<uint256> keys(8);
+            keys[0].SetHex ("f22891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8");
+            keys[1].SetHex ("b99891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8");
+            keys[2].SetHex ("b92891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8");
+            keys[3].SetHex ("b92881fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8");
+            keys[4].SetHex ("b92791fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8");
+            keys[5].SetHex ("b92691fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8");
+            keys[6].SetHex ("b91891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8");
+            keys[7].SetHex ("292891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8");
+
+            tests::TestFamily f{beast::Journal{}};
+            SHAMap map{SHAMapType::FREE, f};
+            for (auto const& k : keys)
+                map.addItem(SHAMapItem{k, IntToVUC(0)}, true, false);
+
+            int i = 7;
+            for (auto const& k : map)
+            {
+                expect(k.key() == keys[i]);
+                --i;
+            }
         }
     }
 };
@@ -140,5 +164,4 @@ public:
 BEAST_DEFINE_TESTSUITE(SHAMap,ripple_app,ripple);
 
 } // tests
-} // shamap
 } // ripple

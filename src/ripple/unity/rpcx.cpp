@@ -26,10 +26,8 @@
 
 #include <ripple/rpc/RPCHandler.h>
 
-#include <ripple/rpc/impl/Coroutine.cpp>
 #include <ripple/rpc/impl/RPCHandler.cpp>
 #include <ripple/rpc/impl/Status.cpp>
-#include <ripple/rpc/impl/Yield.cpp>
 #include <ripple/rpc/impl/Utilities.cpp>
 
 #include <ripple/rpc/handlers/Handlers.h>
@@ -46,7 +44,8 @@
 #include <ripple/rpc/handlers/CanDelete.cpp>
 #include <ripple/rpc/handlers/Connect.cpp>
 #include <ripple/rpc/handlers/ConsensusInfo.cpp>
-#include <ripple/rpc/handlers/Feature.cpp>
+#include <ripple/rpc/handlers/Feature1.cpp>
+#include <ripple/rpc/handlers/Fee1.cpp>
 #include <ripple/rpc/handlers/FetchInfo.cpp>
 #include <ripple/rpc/handlers/GatewayBalances.cpp>
 #include <ripple/rpc/handlers/GetCounts.cpp>
@@ -72,8 +71,8 @@
 #include <ripple/rpc/handlers/RipplePathFind.cpp>
 #include <ripple/rpc/handlers/ServerInfo.cpp>
 #include <ripple/rpc/handlers/ServerState.cpp>
-#include <ripple/rpc/handlers/SignHandler.cpp>
 #include <ripple/rpc/handlers/SignFor.cpp>
+#include <ripple/rpc/handlers/SignHandler.cpp>
 #include <ripple/rpc/handlers/Stop.cpp>
 #include <ripple/rpc/handlers/Submit.cpp>
 #include <ripple/rpc/handlers/SubmitMultiSigned.cpp>
@@ -105,8 +104,6 @@
 #include <ripple/rpc/impl/TransactionSign.cpp>
 #include <ripple/rpc/impl/RPCVersion.cpp>
 
-#include <ripple/rpc/tests/Coroutine.test.cpp>
 #include <ripple/rpc/tests/JSONRPC.test.cpp>
 #include <ripple/rpc/tests/KeyGeneration.test.cpp>
 #include <ripple/rpc/tests/Status.test.cpp>
-#include <ripple/rpc/tests/Yield.test.cpp>

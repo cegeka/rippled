@@ -20,12 +20,14 @@
 #ifndef RIPPLE_APP_PEERS_PEERSET_H_INCLUDED
 #define RIPPLE_APP_PEERS_PEERSET_H_INCLUDED
 
+#include <ripple/app/main/Application.h>
 #include <ripple/basics/Log.h>
 #include <ripple/core/Job.h>
 #include <ripple/overlay/Peer.h>
 #include <beast/chrono/abstract_clock.h>
 #include <beast/utility/Journal.h>
 #include <boost/asio/deadline_timer.hpp>
+#include <mutex>
 
 namespace ripple {
 
@@ -79,7 +81,6 @@ public:
     void progress ()
     {
         mProgress = true;
-        mAggressive = false;
     }
 
     void touch ()
@@ -97,25 +98,31 @@ public:
         @return `true` If the peer was added
     */
     bool insert (Peer::ptr const&);
-    
+
     virtual bool isDone () const
     {
         return mComplete || mFailed;
     }
 
+    Application&
+    app()
+    {
+        return app_;
+    }
+
 private:
-    static void TimerEntry (std::weak_ptr<PeerSet>, const boost::system::error_code& result);
-    static void TimerJobEntry (Job&, std::shared_ptr<PeerSet>);
+    static void timerEntry (
+        std::weak_ptr<PeerSet>, const boost::system::error_code& result,
+        beast::Journal j);
+    static void timerJobEntry (std::shared_ptr<PeerSet>);
 
 protected:
-    // VFALCO TODO try to make some of these private
-    using LockType = RippleRecursiveMutex;
-    using ScopedLockType = std::unique_lock <LockType>;
+    using ScopedLockType = std::unique_lock <std::recursive_mutex>;
 
-    PeerSet (uint256 const& hash, int interval, bool txnData,
+    PeerSet (Application& app, uint256 const& hash, int interval, bool txnData,
         clock_type& clock, beast::Journal journal);
 
-    virtual ~PeerSet () = 0;
+    virtual ~PeerSet() = 0;
 
     virtual void newPeer (Peer::ptr const&) = 0;
 
@@ -148,17 +155,17 @@ protected:
     std::size_t getPeerCount () const;
 
 protected:
+    Application& app_;
     beast::Journal m_journal;
     clock_type& m_clock;
 
-    LockType mLock;
+    std::recursive_mutex mLock;
 
     uint256 mHash;
     int mTimerInterval;
     int mTimeouts;
     bool mComplete;
     bool mFailed;
-    bool mAggressive;
     bool mTxnData;
     clock_type::time_point mLastAction;
     bool mProgress;

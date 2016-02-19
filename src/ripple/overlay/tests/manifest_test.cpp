@@ -18,6 +18,7 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/basics/contract.h>
 #include <ripple/basics/TestSuite.h>
 #include <ripple/overlay/impl/Manifest.h>
 #include <ripple/core/DatabaseCon.h>
@@ -25,6 +26,7 @@
 #include <ripple/protocol/SecretKey.h>
 #include <ripple/protocol/Sign.h>
 #include <ripple/protocol/STExchange.h>
+#include <ripple/test/jtx.h>
 #include <boost/filesystem.hpp>
 #include <boost/algorithm/string.hpp>
 
@@ -54,7 +56,7 @@ private:
         if (!is_directory (dbPath))
         {
             // someone created a file where we want to put our directory
-            throw std::runtime_error ("Cannot create directory: " +
+            Throw<std::runtime_error> ("Cannot create directory: " +
                                       dbPath.string ());
         }
     }
@@ -69,7 +71,7 @@ public:
         {
             setupDatabaseDir (getDatabasePath ());
         }
-        catch (...)
+        catch (std::exception const&)
         {
         }
     }
@@ -79,7 +81,7 @@ public:
         {
             cleanupDatabaseDir (getDatabasePath ());
         }
-        catch (...)
+        catch (std::exception const&)
         {
         }
     }
@@ -109,10 +111,9 @@ public:
 
         std::string const m (static_cast<char const*> (s.data()), s.size());
         if (auto r = ripple::make_Manifest (std::move (m)))
-        {
             return std::move (*r);
-        }
-        throw std::runtime_error("Could not create a manifest");
+        Throw<std::runtime_error> ("Could not create a manifest");
+        return *ripple::make_Manifest(std::move(m)); // Silence compiler warning.
     }
 
     Manifest
@@ -121,12 +122,12 @@ public:
         return Manifest (m.serialized, m.masterKey, m.signingKey, m.sequence);
     }
 
-    void testLoadStore (ManifestCache const& m)
+    void testLoadStore (ManifestCache const& m, UniqueNodeList& unl)
     {
         testcase ("load/store");
 
         std::string const dbName("ManifestCacheTestDB");
-        { 
+        {
             // create a database, save the manifest to the db and reload and
             // check that the manifest caches are the same
             DatabaseCon::Setup setup;
@@ -137,7 +138,7 @@ public:
 
             ManifestCache loaded;
             beast::Journal journal;
-            loaded.load (dbCon, journal);
+            loaded.load (dbCon, unl, journal);
 
             auto getPopulatedManifests =
                     [](ManifestCache const& cache) -> std::vector<Manifest const*>
@@ -183,6 +184,8 @@ public:
     run() override
     {
         ManifestCache cache;
+        test::jtx::Env env(*this);
+        auto& unl = env.app().getUNL();
         {
             testcase ("apply");
             auto const accepted = ManifestDisposition::accepted;
@@ -207,26 +210,26 @@ public:
                 make_Manifest (KeyType::ed25519, sk_b, kp_b.first, 2, true);  // broken
             auto const fake = s_b1.serialized + '\0';
 
-            expect (cache.applyManifest (clone (s_a0), journal) == untrusted,
+            expect (cache.applyManifest (clone (s_a0), unl, journal) == untrusted,
                     "have to install a trusted key first");
 
             cache.addTrustedKey (pk_a, "a");
             cache.addTrustedKey (pk_b, "b");
 
-            expect (cache.applyManifest (clone (s_a0), journal) == accepted);
-            expect (cache.applyManifest (clone (s_a0), journal) == stale);
+            expect (cache.applyManifest (clone (s_a0), unl, journal) == accepted);
+            expect (cache.applyManifest (clone (s_a0), unl, journal) == stale);
 
-            expect (cache.applyManifest (clone (s_a1), journal) == accepted);
-            expect (cache.applyManifest (clone (s_a1), journal) == stale);
-            expect (cache.applyManifest (clone (s_a0), journal) == stale);
+            expect (cache.applyManifest (clone (s_a1), unl, journal) == accepted);
+            expect (cache.applyManifest (clone (s_a1), unl, journal) == stale);
+            expect (cache.applyManifest (clone (s_a0), unl, journal) == stale);
 
-            expect (cache.applyManifest (clone (s_b0), journal) == accepted);
-            expect (cache.applyManifest (clone (s_b0), journal) == stale);
+            expect (cache.applyManifest (clone (s_b0), unl, journal) == accepted);
+            expect (cache.applyManifest (clone (s_b0), unl, journal) == stale);
 
             expect (!ripple::make_Manifest(fake));
-            expect (cache.applyManifest (clone (s_b2), journal) == invalid);
+            expect (cache.applyManifest (clone (s_b2), unl, journal) == invalid);
         }
-        testLoadStore (cache);
+        testLoadStore (cache, unl);
     }
 };
 

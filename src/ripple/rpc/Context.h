@@ -21,13 +21,15 @@
 #define RIPPLE_RPC_CONTEXT_H_INCLUDED
 
 #include <ripple/core/Config.h>
+#include <ripple/core/JobCoro.h>
 #include <ripple/net/InfoSub.h>
-#include <ripple/rpc/Yield.h>
 #include <ripple/server/Role.h>
-#include <ripple/nodestore/ScopedMetrics.h>
+
+#include <beast/utility/Journal.h>
 
 namespace ripple {
 
+class Application;
 class NetworkOPs;
 class LedgerMaster;
 
@@ -36,29 +38,28 @@ namespace RPC {
 /** The context of information needed to call an RPC. */
 struct Context
 {
+    /**
+     * Data passed in from HTTP headers.
+     */
+    struct Headers
+    {
+        std::string user;
+        std::string forwardedFor;
+    };
+
+    beast::Journal j;
     Json::Value params;
+    Application& app;
     Resource::Charge& loadType;
     NetworkOPs& netOps;
     LedgerMaster& ledgerMaster;
     Role role;
+    std::shared_ptr<JobCoro> jobCoro;
     InfoSub::pointer infoSub;
-    Suspend suspend;
-    Callback yield;
-    NodeStore::ScopedMetrics metrics;
+    Headers headers;
 };
-
-inline
-void suspend(Context const& context, Continuation const& continuation)
-{
-    if (context.suspend)
-        context.suspend(continuation);
-    else
-        continuation(doNothingCallback);
-}
 
 } // RPC
 } // ripple
-
-
 
 #endif

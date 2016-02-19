@@ -37,7 +37,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
-#include <beast/cxx14/type_traits.h> // <type_traits>
+#include <type_traits>
 #include <utility>
 
 #ifndef NODESTORE_TIMING_DO_VERIFY
@@ -112,7 +112,7 @@ public:
     {
         gen_.seed(n+1);
         uint256 key;
-        auto const data = 
+        auto const data =
             static_cast<std::uint8_t*>(&*key.begin());
         *data = prefix_;
         rngcpy (data + 1, key.size() - 1, gen_);
@@ -312,12 +312,12 @@ public:
             parallel_for<Body>(params.items,
                 params.threads, std::ref(*this), std::ref(*backend));
         }
-        catch(...)
+        catch (std::exception const&)
         {
         #if NODESTORE_TIMING_DO_VERIFY
             backend->verify();
         #endif
-            throw;
+            Throw();
         }
         backend->close();
     }
@@ -373,12 +373,12 @@ public:
             parallel_for_id<Body>(params.items, params.threads,
                 std::ref(*this), std::ref(params), std::ref(*backend));
         }
-        catch(...)
+        catch (std::exception const&)
         {
         #if NODESTORE_TIMING_DO_VERIFY
             backend->verify();
         #endif
-            throw;
+            Throw();
         }
         backend->close();
     }
@@ -436,12 +436,12 @@ public:
             parallel_for_id<Body>(params.items, params.threads,
                 std::ref(*this), std::ref(params), std::ref(*backend));
         }
-        catch(...)
+        catch (std::exception const&)
         {
         #if NODESTORE_TIMING_DO_VERIFY
             backend->verify();
         #endif
-            throw;
+            Throw();
         }
         backend->close();
     }
@@ -508,18 +508,18 @@ public:
                 }
             }
         };
-        
+
         try
         {
             parallel_for_id<Body>(params.items, params.threads,
                 std::ref(*this), std::ref(params), std::ref(*backend));
         }
-        catch(...)
+        catch (std::exception const&)
         {
         #if NODESTORE_TIMING_DO_VERIFY
             backend->verify();
         #endif
-            throw;
+            Throw();
         }
         backend->close();
     }
@@ -626,12 +626,12 @@ public:
             parallel_for_id<Body>(params.items, params.threads,
                 std::ref(*this), std::ref(params), std::ref(*backend));
         }
-        catch(...)
+        catch (std::exception const&)
         {
         #if NODESTORE_TIMING_DO_VERIFY
             backend->verify();
         #endif
-            throw;
+            Throw();
         }
         backend->close();
     }

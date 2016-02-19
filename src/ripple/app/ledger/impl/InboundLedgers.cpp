@@ -26,9 +26,10 @@
 #include <ripple/basics/Log.h>
 #include <ripple/core/JobQueue.h>
 #include <ripple/protocol/JsonFields.h>
-#include <beast/cxx14/memory.h> // <memory>
 #include <beast/module/core/text/LexicalCast.h>
 #include <beast/container/aged_map.h>
+#include <memory>
+#include <mutex>
 
 namespace ripple {
 
@@ -37,26 +38,31 @@ class InboundLedgersImp
     , public beast::Stoppable
 {
 private:
+    Application& app_;
     std::mutex fetchRateMutex_;
     // measures ledgers per second, constants are important
     DecayWindow<30, clock_type> fetchRate_;
+    beast::Journal j_;
 
 public:
     using u256_acq_pair = std::pair<uint256, InboundLedger::pointer>;
     // How long before we try again to acquire the same ledger
     static const std::chrono::minutes kReacquireInterval;
 
-    InboundLedgersImp (clock_type& clock, Stoppable& parent,
+    InboundLedgersImp (Application& app, clock_type& clock, Stoppable& parent,
                        beast::insight::Collector::ptr const& collector)
         : Stoppable ("InboundLedgers", parent)
+        , app_ (app)
         , fetchRate_(clock.now())
+        , j_ (app.journal ("InboundLedger"))
         , m_clock (clock)
         , mRecentFailures (clock)
         , mCounter(collector->make_counter("ledger_fetches"))
     {
     }
 
-    Ledger::pointer acquire (uint256 const& hash, std::uint32_t seq, InboundLedger::fcReason reason)
+    Ledger::pointer acquire (
+        uint256 const& hash, std::uint32_t seq, InboundLedger::fcReason reason)
     {
         assert (hash.isNonZero ());
         bool isNew = true;
@@ -74,7 +80,7 @@ public:
                 }
                 else
                 {
-                    inbound = std::make_shared <InboundLedger> (
+                    inbound = std::make_shared <InboundLedger> (app_,
                         hash, seq, reason, std::ref (m_clock));
                     mLedgers.emplace (hash, inbound);
                     inbound->init (sl);
@@ -99,7 +105,8 @@ public:
         {
             ScopedLockType sl (mLock);
 
-            hash_map<uint256, InboundLedger::pointer>::iterator it = mLedgers.find (hash);
+            auto it = mLedgers.
+            find (hash);
             if (it != mLedgers.end ())
             {
                 ret = it->second;
@@ -137,7 +144,6 @@ public:
     */
     // means "We got some data from an inbound ledger"
 
-    // VFALCO TODO Why is hash passed by value?
     // VFALCO TODO Remove the dependency on the Peer object.
     /** We received a TMLedgerData from a peer.
     */
@@ -147,19 +153,24 @@ public:
     {
         protocol::TMLedgerData& packet = *packet_ptr;
 
-        WriteLog (lsTRACE, InboundLedger) << "Got data (" << packet.nodes ().size () << ") for acquiring ledger: " << hash;
+        JLOG (j_.trace)
+            << "Got data (" << packet.nodes ().size ()
+            << ") for acquiring ledger: " << hash;
 
         InboundLedger::pointer ledger = find (hash);
 
         if (!ledger)
         {
-            WriteLog (lsTRACE, InboundLedger) << "Got data for ledger we're no longer acquiring";
+            JLOG (j_.trace)
+                << "Got data for ledger we're no longer acquiring";
 
-            // If it's state node data, stash it because it still might be useful
+            // If it's state node data, stash it because it still might be
+            // useful.
             if (packet.type () == protocol::liAS_NODE)
             {
-                getApp().getJobQueue().addJob(jtLEDGER_DATA, "gotStaleData",
-                    std::bind(&InboundLedgers::gotStaleData, this, packet_ptr));
+                app_.getJobQueue().addJob(
+                    jtLEDGER_DATA, "gotStaleData",
+                    [this, packet_ptr] (Job&) { gotStaleData(packet_ptr); });
             }
 
             return false;
@@ -167,9 +178,9 @@ public:
 
         // Stash the data for later processing and see if we need to dispatch
         if (ledger->gotData(std::weak_ptr<Peer>(peer), packet_ptr))
-            getApp().getJobQueue().addJob (jtLEDGER_DATA, "processLedgerData",
-                std::bind (&InboundLedgers::doLedgerData, this,
-                           std::placeholders::_1, hash));
+            app_.getJobQueue().addJob (
+                jtLEDGER_DATA, "processLedgerData",
+                [this, hash] (Job&) { doLedgerData(hash); });
 
         return true;
     }
@@ -217,7 +228,7 @@ public:
         return mRecentFailures.find (h) != mRecentFailures.end();
     }
 
-    void doLedgerData (Job&, LedgerHash hash)
+    void doLedgerData (LedgerHash hash)
     {
         InboundLedger::pointer ledger = find (hash);
 
@@ -225,9 +236,11 @@ public:
             ledger->runData ();
     }
 
-    /** We got some data for a ledger we are no longer acquiring
-        Since we paid the price to receive it, we might as well stash it in case we need it.
-        Nodes are received in wire format and must be stashed/hashed in prefix format
+    /** We got some data for a ledger we are no longer acquiring Since we paid
+        the price to receive it, we might as well stash it in case we need it.
+
+        Nodes are received in wire format and must be stashed/hashed in prefix
+        format
     */
     void gotStaleData (std::shared_ptr<protocol::TMLedgerData> packet_ptr)
     {
@@ -244,7 +257,7 @@ public:
 
                 auto newNode = SHAMapAbstractNode::make(
                     Blob (node.nodedata().begin(), node.nodedata().end()),
-                    0, snfWIRE, uZero, false);
+                    0, snfWIRE, SHAMapHash{uZero}, false, app_.journal ("SHAMapNodeID"));
 
                 if (!newNode)
                     return;
@@ -254,10 +267,11 @@ public:
 
                 auto blob = std::make_shared<Blob> (s.begin(), s.end());
 
-                getApp().getLedgerMaster().addFetchPack (newNode->getNodeHash(), blob);
+                app_.getLedgerMaster().addFetchPack(
+                    newNode->getNodeHash().as_uint256(), blob);
             }
         }
-        catch (...)
+        catch (std::exception const&)
         {
         }
     }
@@ -317,15 +331,15 @@ public:
             // getJson is expensive, so call without the lock
             std::uint32_t seq = it.second->getSeq();
             if (seq > 1)
-                ret[beast::lexicalCastThrow <std::string>(seq)] = it.second->getJson(0);
+                ret[std::to_string(seq)] = it.second->getJson(0);
             else
                 ret[to_string (it.first)] = it.second->getJson(0);
         }
 
-    return ret;
+        return ret;
     }
 
-    void gotFetchPack (Job&)
+    void gotFetchPack ()
     {
         std::vector<InboundLedger::pointer> acquires;
         {
@@ -365,7 +379,8 @@ public:
                     it->second->touch ();
                     ++it;
                 }
-                else if ((it->second->getLastAction () + std::chrono::minutes (1)) < now)
+                else if ((it->second->getLastAction () +
+                          std::chrono::minutes (1)) < now)
                 {
                     stuffToSweep.push_back (it->second);
                     // shouldn't cause the actual final delete
@@ -382,7 +397,7 @@ public:
 
         }
 
-        WriteLog (lsDEBUG, InboundLedger) <<
+        JLOG (j_.debug) <<
             "Swept " << stuffToSweep.size () <<
             " out of " << total << " inbound ledgers.";
     }
@@ -400,13 +415,12 @@ public:
 private:
     clock_type& m_clock;
 
+    using ScopedLockType = std::unique_lock <std::recursive_mutex>;
+    std::recursive_mutex mLock;
+
     using MapType = hash_map <uint256, InboundLedger::pointer>;
-
-    using LockType = RippleRecursiveMutex;
-    using ScopedLockType = std::unique_lock <LockType>;
-    LockType mLock;
-
     MapType mLedgers;
+
     beast::aged_map <uint256, std::uint32_t> mRecentFailures;
 
     beast::insight::Counter mCounter;
@@ -414,17 +428,19 @@ private:
 
 //------------------------------------------------------------------------------
 
-decltype(InboundLedgersImp::kReacquireInterval) InboundLedgersImp::kReacquireInterval{5};
+decltype(InboundLedgersImp::kReacquireInterval)
+InboundLedgersImp::kReacquireInterval{5};
 
 InboundLedgers::~InboundLedgers()
 {
 }
 
 std::unique_ptr<InboundLedgers>
-make_InboundLedgers (InboundLedgers::clock_type& clock, beast::Stoppable& parent,
-                     beast::insight::Collector::ptr const& collector)
+make_InboundLedgers (Application& app,
+    InboundLedgers::clock_type& clock, beast::Stoppable& parent,
+    beast::insight::Collector::ptr const& collector)
 {
-    return std::make_unique<InboundLedgersImp> (clock, parent, collector);
+    return std::make_unique<InboundLedgersImp> (app, clock, parent, collector);
 }
 
 } // ripple

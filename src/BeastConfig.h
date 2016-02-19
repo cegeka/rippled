@@ -164,37 +164,9 @@
 #define RIPPLE_SINGLE_IO_SERVICE_THREAD 0
 #endif
 
-/** Config: RIPPLE_HOOK_VALIDATORS
-    Activates code for handling validations and validators (work in progress).
-*/
-#ifndef RIPPLE_HOOK_VALIDATORS
-#define RIPPLE_HOOK_VALIDATORS 0
-#endif
-
-/** Config: RIPPLE_ENABLE_TICKETS
-    Enables processing of ticket transactions
-*/
-#ifndef RIPPLE_ENABLE_TICKETS
-#define RIPPLE_ENABLE_TICKETS 0
-#endif
-
-/** Config: RIPPLE_ENABLE_MULTI_SIGN
-    When set, activates the current state of the multi-sign feature which is
-    under development.  When the feature is complete and released this
-    #define should be removed.
-*/
-#ifndef RIPPLE_ENABLE_MULTI_SIGN
-#define RIPPLE_ENABLE_MULTI_SIGN 0
-#endif
-
 // Uses OpenSSL instead of alternatives
 #ifndef RIPPLE_USE_OPENSSL
-#define RIPPLE_USE_OPENSSL 0
-#endif
-
-// Enables the experimental OpenLedger
-#ifndef RIPPLE_OPEN_LEDGER
-#define RIPPLE_OPEN_LEDGER 0
+#define RIPPLE_USE_OPENSSL 1
 #endif
 
 #endif

@@ -31,6 +31,8 @@ class STVector256
     : public STBase
 {
 public:
+    using value_type = std::vector<uint256> const&;
+
     STVector256 () = default;
 
     explicit STVector256 (SField const& n)
@@ -64,7 +66,7 @@ public:
     {
         return STI_VECTOR256;
     }
-    
+
     void
     add (Serializer& s) const override;
 
@@ -73,11 +75,25 @@ public:
 
     bool
     isEquivalent (const STBase& t) const override;
-    
+
     bool
     isDefault () const override
     {
         return mValue.empty ();
+    }
+
+    STVector256&
+    operator= (std::vector<uint256> const& v)
+    {
+        mValue = v;
+        return *this;
+    }
+
+    STVector256&
+    operator= (std::vector<uint256>&& v)
+    {
+        mValue = std::move(v);
+        return *this;
     }
 
     void
@@ -93,15 +109,14 @@ public:
         return mValue;
     }
 
-    // std::vector<uint256> interface:
-    std::vector<uint256>::size_type
+    std::size_t
     size () const
     {
         return mValue.size ();
     }
 
     void
-    resize (std::vector<uint256>::size_type n)
+    resize (std::size_t n)
     {
         return mValue.resize (n);
     }
@@ -122,6 +137,12 @@ public:
     operator[] (std::vector<uint256>::size_type n) const
     {
         return mValue[n];
+    }
+
+    std::vector<uint256> const&
+    value() const
+    {
+        return mValue;
     }
 
     void

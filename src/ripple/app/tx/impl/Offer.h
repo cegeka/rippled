@@ -20,11 +20,11 @@
 #ifndef RIPPLE_APP_BOOK_OFFER_H_INCLUDED
 #define RIPPLE_APP_BOOK_OFFER_H_INCLUDED
 
+#include <ripple/basics/contract.h>
 #include <ripple/ledger/View.h>
 #include <ripple/protocol/Quality.h>
 #include <ripple/protocol/STLedgerEntry.h>
 #include <ripple/protocol/SField.h>
-#include <beast/utility/noexcept.h>
 #include <ostream>
 #include <stdexcept>
 
@@ -100,10 +100,10 @@ public:
         Amounts const& consumed) const
     {
         if (consumed.in > m_amounts.in)
-            throw std::logic_error ("can't consume more than is available.");
+            Throw<std::logic_error> ("can't consume more than is available.");
 
         if (consumed.out > m_amounts.out)
-            throw std::logic_error ("can't produce more than is available.");
+            Throw<std::logic_error> ("can't produce more than is available.");
 
         m_amounts.in -= consumed.in;
         m_amounts.out -= consumed.out;

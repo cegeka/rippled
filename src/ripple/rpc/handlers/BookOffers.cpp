@@ -29,6 +29,7 @@
 #include <ripple/resource/Fees.h>
 #include <ripple/rpc/Context.h>
 #include <ripple/rpc/impl/LookupLedger.h>
+#include <ripple/rpc/impl/Utilities.h>
 
 namespace ripple {
 
@@ -37,7 +38,7 @@ Json::Value doBookOffers (RPC::Context& context)
     // VFALCO TODO Here is a terrible place for this kind of business
     //             logic. It needs to be moved elsewhere and documented,
     //             and encapsulated into a function.
-    if (getApp().getJobQueue ().getJobCountGE (jtCLIENT) > 200)
+    if (context.app.getJobQueue ().getJobCountGE (jtCLIENT) > 200)
         return rpcError (rpcTOO_BUSY);
 
     std::shared_ptr<ReadView const> lpLedger;
@@ -78,7 +79,7 @@ Json::Value doBookOffers (RPC::Context& context)
 
     if (!to_currency (pay_currency, taker_pays [jss::currency].asString ()))
     {
-        WriteLog (lsINFO, RPCHandler) << "Bad taker_pays currency.";
+        JLOG (context.j.info) << "Bad taker_pays currency.";
         return RPC::make_error (rpcSRC_CUR_MALFORMED,
             "Invalid field 'taker_pays.currency', bad currency.");
     }
@@ -87,7 +88,7 @@ Json::Value doBookOffers (RPC::Context& context)
 
     if (!to_currency (get_currency, taker_gets [jss::currency].asString ()))
     {
-        WriteLog (lsINFO, RPCHandler) << "Bad taker_gets currency.";
+        JLOG (context.j.info) << "Bad taker_gets currency.";
         return RPC::make_error (rpcDST_AMT_MALFORMED,
             "Invalid field 'taker_gets.currency', bad currency.");
     }
@@ -167,25 +168,13 @@ Json::Value doBookOffers (RPC::Context& context)
 
     if (pay_currency == get_currency && pay_issuer == get_issuer)
     {
-        WriteLog (lsINFO, RPCHandler) << "taker_gets same as taker_pays.";
+        JLOG (context.j.info) << "taker_gets same as taker_pays.";
         return RPC::make_error (rpcBAD_MARKET);
     }
 
-    unsigned int iLimit;
-    if (context.params.isMember (jss::limit))
-    {
-        auto const& jvLimit (context.params[jss::limit]);
-
-        if (! jvLimit.isIntegral ())
-            return RPC::expected_field_error (jss::limit, "unsigned integer");
-
-        iLimit = jvLimit.isUInt () ? jvLimit.asUInt () :
-            std::max (0, jvLimit.asInt ());
-    }
-    else
-    {
-        iLimit = 0;
-    }
+    unsigned int limit;
+    if (auto err = readLimitField(limit, RPC::Tuning::bookOffers, context))
+        return *err;
 
     bool const bProof (context.params.isMember (jss::proof));
 
@@ -194,10 +183,10 @@ Json::Value doBookOffers (RPC::Context& context)
         : Json::Value (Json::nullValue));
 
     context.netOps.getBookPage (
-        context.role == Role::ADMIN,
+        isUnlimited (context.role),
         lpLedger,
         {{pay_currency, pay_issuer}, {get_currency, get_issuer}},
-        takerID ? *takerID : zero, bProof, iLimit, jvMarker, jvResult);
+        takerID ? *takerID : zero, bProof, limit, jvMarker, jvResult);
 
     context.loadType = Resource::feeMediumBurdenRPC;
 

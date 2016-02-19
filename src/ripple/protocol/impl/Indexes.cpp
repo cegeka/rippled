@@ -20,7 +20,6 @@
 #include <BeastConfig.h>
 #include <ripple/protocol/digest.h>
 #include <ripple/protocol/Indexes.h>
-#include <beast/utility/static_initializer.h>
 #include <cassert>
 
 namespace ripple {
@@ -135,9 +134,9 @@ getQualityIndex (uint256 const& uBase, const std::uint64_t uNodeDir)
 uint256
 getQualityNext (uint256 const& uBase)
 {
-    static beast::static_initializer<uint256> const uNext (
+    static uint256 const uNext (
         from_hex_text<uint256>("10000000000000000"));
-    return uBase + *uNext;
+    return uBase + uNext;
 }
 
 std::uint64_t
@@ -181,9 +180,14 @@ getRippleStateIndex (AccountID const& a, Issue const& issue)
 uint256
 getSignerListIndex (AccountID const& account)
 {
+    // We are prepared for there to be multiple SignerLists in the future,
+    // but we don't have them yet.  In anticipation of multiple SignerLists
+    // We supply a 32-bit ID to locate the SignerList.  Until we actually
+    // *have* multiple signer lists, we can default that ID to zero.
     return sha512Half(
         std::uint16_t(spaceSignerList),
-        account);
+        account,
+        std::uint32_t (0));  // 0 == default SignerList ID.
 }
 
 //------------------------------------------------------------------------------
@@ -306,6 +310,17 @@ Keylet page(Keylet const& root,
 {
     assert(root.type == ltDIR_NODE);
     return page(root.key, index);
+}
+
+Keylet
+susPay (AccountID const& source, std::uint32_t seq)
+{
+    sha512_half_hasher h;
+    using beast::hash_append;
+    hash_append(h, spaceSusPay);
+    hash_append(h, source);
+    hash_append(h, seq);
+    return { ltSUSPAY, static_cast<uint256>(h) };
 }
 
 } // keylet

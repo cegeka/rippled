@@ -24,6 +24,7 @@
 #include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/ledger/impl/ConsensusImp.h>
 #include <ripple/app/ledger/impl/DisputedTx.h>
+#include <ripple/app/main/Application.h>
 #include <ripple/app/misc/CanonicalTXSet.h>
 #include <ripple/app/misc/FeeVote.h>
 #include <ripple/basics/CountedObject.h>
@@ -59,10 +60,12 @@ private:
         // Establishing consensus
         establish,
 
-        // We have closed on a transaction set
-        finished,
+        // We have closed on a transaction set and are
+        // processing the new ledger
+        processing,
 
         // We have accepted / validated a new last closed ledger
+        // and need to start a new round
         accepted,
     };
 
@@ -80,28 +83,32 @@ public:
     ~LedgerConsensusImp () = default;
 
     /**
-        @param previousProposers the number of participants in the last round
-        @param previousConvergeTime how long the last round took (ms)
-        @param inboundTransactions
         @param localtx transactions issued by local clients
-        @param inboundTransactions the set of
+        @param inboundTransactions set of inbound transaction sets
         @param localtx A set of local transactions to apply
-        @param prevLCLHash The hash of the Last Closed Ledger (LCL).
-        @param previousLedger Best guess of what the LCL was.
-        @param closeTime Closing time point of the LCL.
         @param feeVote Our desired fee levels and voting logic.
     */
     LedgerConsensusImp (
-            ConsensusImp& consensus,
-            int previousProposers,
-            int previousConvergeTime,
-            InboundTransactions& inboundTransactions,
-            LocalTxs& localtx,
-            LedgerMaster& ledgerMaster,
-            LedgerHash const & prevLCLHash,
-            Ledger::ref previousLedger,
-            std::uint32_t closeTime,
-            FeeVote& feeVote);
+        Application& app,
+        ConsensusImp& consensus,
+        InboundTransactions& inboundTransactions,
+        LocalTxs& localtx,
+        LedgerMaster& ledgerMaster,
+        FeeVote& feeVote);
+
+    /**
+        @param prevLCLHash The hash of the Last Closed Ledger (LCL).
+        @param previousLedger Best guess of what the LCL was.
+        @param closeTime Closing time point of the LCL.
+        @param previousProposers the number of participants in the last round
+        @param previousConvergeTime how long the last round took (ms)
+    */
+    void startRound (
+        LedgerHash const& prevLCLHash,
+        Ledger::ref prevLedger,
+        NetClock::time_point closeTime,
+        int previousProposers,
+        std::chrono::milliseconds previousConvergeTime) override;
 
     /**
       Get the Json state of the consensus process.
@@ -128,6 +135,40 @@ public:
         bool acquired) override;
 
     /**
+      On timer call the correct handler for each state.
+    */
+    void timerEntry () override;
+
+    std::shared_ptr<SHAMap> getTransactionTree (uint256 const& hash);
+
+    /**
+      A server has taken a new position, adjust our tracking
+      Called when a peer takes a new postion.
+
+      @param newPosition the new position
+      @return            true if we should do delayed relay of this position.
+    */
+    bool peerPosition (LedgerProposal::ref newPosition) override;
+
+    void simulate(
+        boost::optional<std::chrono::milliseconds> consensusDelay) override;
+
+private:
+    /**
+      Handle pre-close state.
+    */
+    void statePreClose ();
+
+    /** We are establishing a consensus
+       Update our position only on the timer, and in this state.
+       If we have consensus, move to the finish state
+    */
+    void stateEstablish ();
+
+    /** Check if we've reached consensus */
+    bool haveConsensus ();
+
+    /**
       Check if our last closed ledger matches the network's.
       This tells us if we are still in sync with the network.
       This also helps us if we enter the consensus round with
@@ -143,43 +184,6 @@ public:
     */
     void handleLCL (uint256 const& lclHash);
 
-    /**
-      On timer call the correct handler for each state.
-    */
-    void timerEntry () override;
-
-    /**
-      Handle pre-close state.
-    */
-    void statePreClose ();
-
-    /** We are establishing a consensus
-       Update our position only on the timer, and in this state.
-       If we have consensus, move to the finish state
-    */
-    void stateEstablish ();
-
-    void stateFinished ();
-
-    void stateAccepted ();
-
-    /** Check if we've reached consensus */
-    bool haveConsensus ();
-
-    std::shared_ptr<SHAMap> getTransactionTree (uint256 const& hash);
-
-    /**
-      A server has taken a new position, adjust our tracking
-      Called when a peer takes a new postion.
-
-      @param newPosition the new position
-      @return            true if we should do delayed relay of this position.
-    */
-    bool peerPosition (LedgerProposal::ref newPosition) override;
-
-    void simulate () override;
-
-private:
     /**
       We have a complete transaction set, typically acquired from the network
 
@@ -259,7 +263,7 @@ private:
 
       @param initialLedger The ledger that contains our initial position.
     */
-    void takeInitialPosition (Ledger& initialLedger);
+    void takeInitialPosition (std::shared_ptr<ReadView const> const& initialLedger);
 
     /**
        Called while trying to avalanche towards consensus.
@@ -286,33 +290,44 @@ private:
     /** We have a new LCL and must accept it */
     void beginAccept (bool synchronous);
 
-    void endConsensus ();
+    void endConsensus (bool correctLCL);
+
 
     /** Add our load fee to our validation */
     void addLoad(STValidation::ref val);
 
+    /** Convert an advertised close time to an effective close time */
+    NetClock::time_point effectiveCloseTime(NetClock::time_point closeTime);
+
 private:
+    Application& app_;
     ConsensusImp& consensus_;
     InboundTransactions& inboundTransactions_;
     LocalTxs& m_localTX;
     LedgerMaster& ledgerMaster_;
     FeeVote& m_feeVote;
+    std::recursive_mutex lock_;
 
     State state_;
-    std::uint32_t mCloseTime;      // The wall time this ledger closed
-    uint256 mPrevLedgerHash, mNewLedgerHash, mAcquiringLedger;
+
+    // The wall time this ledger closed
+    NetClock::time_point mCloseTime;
+
+    uint256 mPrevLedgerHash;
+    uint256 mAcquiringLedger;
+
     Ledger::pointer mPreviousLedger;
     LedgerProposal::pointer mOurPosition;
     RippleAddress mValPublic, mValPrivate;
     bool mProposing, mValidating, mHaveCorrectLCL, mConsensusFail;
 
-    int mCurrentMSeconds;
+    std::chrono::milliseconds mCurrentMSeconds;
 
     // How long the close has taken, expressed as a percentage of the time that
     // we expected it to take.
     int mClosePercent;
 
-    int mCloseResolution;
+    NetClock::duration mCloseResolution;
 
     bool mHaveCloseTimeConsensus;
 
@@ -320,7 +335,7 @@ private:
     int                             mPreviousProposers;
 
     // The time it took for the last consensus process to converge
-    int mPreviousMSeconds;
+    std::chrono::milliseconds mPreviousMSeconds;
 
     // Convergence tracking, trusted peers indexed by hash of public key
     hash_map<NodeID, LedgerProposal::pointer>  mPeerPositions;
@@ -332,20 +347,24 @@ private:
     hash_map<uint256, std::shared_ptr <DisputedTx>> mDisputes;
     hash_set<uint256> mCompares;
 
-    // Close time estimates
-    std::map<std::uint32_t, int> mCloseTimes;
+    // Close time estimates, keep ordered for predictable traverse
+    std::map<NetClock::time_point, int> mCloseTimes;
 
     // nodes that have bowed out of this consensus process
     hash_set<NodeID> mDeadNodes;
+    beast::Journal j_;
 };
 
 //------------------------------------------------------------------------------
 
 std::shared_ptr <LedgerConsensus>
-make_LedgerConsensus (ConsensusImp& consensus, int previousProposers,
-    int previousConvergeTime, InboundTransactions& inboundTransactions,
-    LocalTxs& localtx, LedgerMaster& ledgerMaster, LedgerHash const &prevLCLHash,
-    Ledger::ref previousLedger, std::uint32_t closeTime, FeeVote& feeVote);
+make_LedgerConsensus (
+    Application& app,
+    ConsensusImp& consensus,
+    InboundTransactions& inboundTransactions,
+    LocalTxs& localtx,
+    LedgerMaster& ledgerMaster,
+    FeeVote& feeVote);
 
 } // ripple
 

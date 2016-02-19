@@ -21,13 +21,15 @@
 #define RIPPLE_CORE_CONFIG_H_INCLUDED
 
 #include <ripple/basics/BasicConfig.h>
-#include <ripple/protocol/SystemParameters.h>
-#include <ripple/protocol/RippleAddress.h>
+#include <ripple/basics/base_uint.h>
+#include <ripple/protocol/SystemParameters.h> // VFALCO Breaks levelization
+#include <ripple/protocol/RippleAddress.h> // VFALCO Breaks levelization
 #include <ripple/json/json_value.h>
 #include <beast/http/URL.h>
 #include <beast/net/IPEndpoint.h>
 #include <beast/module/core/files/File.h>
 #include <beast/utility/ci_char_traits.h>
+#include <beast/utility/Journal.h>
 #include <boost/asio/ip/tcp.hpp> // VFALCO FIX: This include should not be here
 #include <boost/filesystem.hpp> // VFALCO FIX: This include should not be here
 #include <boost/lexical_cast.hpp>
@@ -36,6 +38,7 @@
 #include <map>
 #include <string>
 #include <type_traits>
+#include <unordered_set>
 #include <vector>
 
 namespace ripple {
@@ -45,7 +48,7 @@ parseIniFile (std::string const& strInput, const bool bTrim);
 
 bool
 getSingleSection (IniFileSections& secSource,
-    std::string const& strSection, std::string& strValue);
+    std::string const& strSection, std::string& strValue, beast::Journal j);
 
 int
 countSectionEntries (IniFileSections& secSource, std::string const& strSection);
@@ -53,13 +56,13 @@ countSectionEntries (IniFileSections& secSource, std::string const& strSection);
 IniFileSections::mapped_type*
 getIniFileSection (IniFileSections& secSource, std::string const& strSection);
 
+class Rules;
+
 //------------------------------------------------------------------------------
 
 enum SizedItemName
 {
     siSweepInterval,
-    siValidationsSize,
-    siValidationsAge,
     siNodeCacheSize,
     siNodeCacheAge,
     siTreeCacheSize,
@@ -127,6 +130,7 @@ private:
     boost::filesystem::path DEBUG_LOGFILE;
 
     void load ();
+    beast::Journal j_;
 public:
 
     //--------------------------------------------------------------------------
@@ -155,18 +159,10 @@ public:
     */
     beast::File getModuleDatabasePath () const;
 
-    //--------------------------------------------------------------------------
-
-    bool doImport;
-
-    //
-    //
-    //--------------------------------------------------------------------------
-public:
-    // Configuration parameters
-    bool                        QUIET;
-
-    bool                        ELB_SUPPORT;            // Support Amazon ELB
+    bool doImport = false;
+    bool                        QUIET = false;          // Minimize logging verbosity.
+    bool                        SILENT = false;         // No output to console after startup.
+    bool                        ELB_SUPPORT = false;
 
     std::string                 VALIDATORS_SITE;        // Where to find validators.txt on the Internet.
     std::string                 VALIDATORS_URI;         // URI of validators.txt.
@@ -184,14 +180,14 @@ public:
         REPLAY,
         NETWORK
     };
-    StartUpType                 START_UP;
+    StartUpType                 START_UP = NORMAL;
 
-
+    bool                        START_VALID = false;
 
     std::string                 START_LEDGER;
 
     // Network parameters
-    int                         TRANSACTION_FEE_BASE;   // The number of fee units a reference transaction costs
+    int                         TRANSACTION_FEE_BASE = 10;   // The number of fee units a reference transaction costs
 
     /** Operate in stand-alone mode.
 
@@ -202,26 +198,27 @@ public:
         - If no ledger is loaded, the default ledger with the root
           account is created.
     */
-    bool                        RUN_STANDALONE;
+    bool                        RUN_STANDALONE = false;
 
     // Note: The following parameters do not relate to the UNL or trust at all
-    std::size_t                 NETWORK_QUORUM;         // Minimum number of nodes to consider the network present
-    int                         VALIDATION_QUORUM;      // Minimum validations to consider ledger authoritative
+    std::size_t                 NETWORK_QUORUM = 0;         // Minimum number of nodes to consider the network present
+    int                         VALIDATION_QUORUM = 1;      // Minimum validations to consider ledger authoritative
+    bool                        LOCK_QUORUM = false;        // Do not raise the quorum
 
     // Peer networking parameters
-    bool                        PEER_PRIVATE;           // True to ask peers not to relay current IP.
-    unsigned int                PEERS_MAX;
+    bool                        PEER_PRIVATE = false;           // True to ask peers not to relay current IP.
+    int                         PEERS_MAX = 0;
 
-    int                         WEBSOCKET_PING_FREQ;
+    int                         WEBSOCKET_PING_FREQ = 5 * 60;
 
     // RPC parameters
     Json::Value                     RPC_STARTUP;
 
     // Path searching
-    int                         PATH_SEARCH_OLD;
-    int                         PATH_SEARCH;
-    int                         PATH_SEARCH_FAST;
-    int                         PATH_SEARCH_MAX;
+    int                         PATH_SEARCH_OLD = 7;
+    int                         PATH_SEARCH = 7;
+    int                         PATH_SEARCH_FAST = 2;
+    int                         PATH_SEARCH_MAX = 10;
 
     // Validation
     RippleAddress               VALIDATION_SEED;
@@ -234,22 +231,17 @@ public:
     RippleAddress               NODE_PUB;
     RippleAddress               NODE_PRIV;
 
-    // Fee schedule (All below values are in fee units)
-    std::uint64_t                      FEE_DEFAULT;            // Default fee.
-    std::uint64_t                      FEE_ACCOUNT_RESERVE;    // Amount of units not allowed to send.
-    std::uint64_t                      FEE_OWNER_RESERVE;      // Amount of units not allowed to send per owner entry.
-    std::uint64_t                      FEE_OFFER;              // Rate per day.
-    int                                FEE_CONTRACT_OPERATION; // fee for each contract operation
+    std::uint64_t                      FEE_DEFAULT = 10;
+    std::uint64_t                      FEE_ACCOUNT_RESERVE = 200*SYSTEM_CURRENCY_PARTS;
+    std::uint64_t                      FEE_OWNER_RESERVE = 50*SYSTEM_CURRENCY_PARTS;
+    std::uint64_t                      FEE_OFFER = 10;
 
     // Node storage configuration
-    std::uint32_t                      LEDGER_HISTORY;
-    std::uint32_t                      FETCH_DEPTH;
-    int                         NODE_SIZE;
+    std::uint32_t                      LEDGER_HISTORY = 256;
+    std::uint32_t                      FETCH_DEPTH = 1000000000;
+    int                         NODE_SIZE = 0;
 
-    // Client behavior
-    int                         ACCOUNT_PROBE_MAX;      // How far to scan for accounts.
-
-    bool                        SSL_VERIFY;
+    bool                        SSL_VERIFY = true;
     std::string                 SSL_VERIFY_FILE;
     std::string                 SSL_VERIFY_DIR;
 
@@ -257,8 +249,10 @@ public:
     boost::optional<boost::asio::ip::address_v4> rpc_ip;
     boost::optional<std::uint16_t> rpc_port;
 
+    std::unordered_set<uint256, beast::uhash<>> features;
+
 public:
-    Config ();
+    Config() = default;
 
     int getSize (SizedItemName) const;
     void setup (std::string const& strConf, bool bQuiet);
@@ -270,9 +264,6 @@ public:
      */
     void loadFromString (std::string const& fileContents);
 };
-
-// DEPRECATED
-extern Config& getConfig();
 
 } // ripple
 

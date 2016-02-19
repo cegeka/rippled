@@ -19,6 +19,7 @@
 
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/UniqueNodeList.h>
+#include <ripple/basics/contract.h>
 #include <ripple/core/DatabaseCon.h>
 #include <ripple/overlay/impl/Manifest.h>
 #include <ripple/protocol/RippleAddress.h>
@@ -46,7 +47,7 @@ make_Manifest (std::string s)
         }
         return Manifest (std::move (s), *opt_pk, *opt_spk, *opt_seq);
     }
-    catch (...)
+    catch (std::exception const&)
     {
         return boost::none;
     }
@@ -119,31 +120,31 @@ bool Manifest::revoked () const
 
 void
 ManifestCache::configValidatorKey(
-    std::string const& line, beast::Journal const& journal)
+    std::string const& line, beast::Journal journal)
 {
     auto const words = beast::rfc2616::split(line.begin(), line.end(), ' ');
 
     if (words.size () != 2)
     {
-        throw std::runtime_error ("[validator_keys] format is `<key> <comment>");
+        Throw<std::runtime_error> ("[validator_keys] format is `<key> <comment>");
     }
 
     Blob key;
     if (! Base58::decodeWithCheck (words[0], key))
     {
-        throw std::runtime_error ("Error decoding validator key");
+        Throw<std::runtime_error> ("Error decoding validator key");
     }
     if (key.size() != 34)
     {
-        throw std::runtime_error ("Expected 34-byte validator key");
+        Throw<std::runtime_error> ("Expected 34-byte validator key");
     }
     if (key[0] != TOKEN_NODE_PUBLIC)
     {
-        throw std::runtime_error ("Expected TOKEN_NODE_PUBLIC (28)");
+        Throw<std::runtime_error> ("Expected TOKEN_NODE_PUBLIC (28)");
     }
     if (key[1] != 0xED)
     {
-        throw std::runtime_error ("Expected Ed25519 key (0xED)");
+        Throw<std::runtime_error> ("Expected Ed25519 key (0xED)");
     }
 
     auto const masterKey = PublicKey (Slice(key.data() + 1, key.size() - 1));
@@ -156,18 +157,19 @@ ManifestCache::configValidatorKey(
 }
 
 void
-ManifestCache::configManifest(Manifest m, beast::Journal const& journal)
+ManifestCache::configManifest (
+    Manifest m, UniqueNodeList& unl, beast::Journal journal)
 {
-    if (!m.verify())
+    if (! m.verify())
     {
-        throw std::runtime_error("Unverifiable manifest in config");
+        Throw<std::runtime_error> ("Unverifiable manifest in config");
     }
 
-    auto const result = applyManifest (std::move(m), journal);
+    auto const result = applyManifest (std::move(m), unl, journal);
 
     if (result != ManifestDisposition::accepted)
     {
-        throw std::runtime_error("Our own validation manifest was not accepted");
+        Throw<std::runtime_error> ("Our own validation manifest was not accepted");
     }
 }
 
@@ -180,7 +182,7 @@ ManifestCache::addTrustedKey (PublicKey const& pk, std::string comment)
 
     if (value.m)
     {
-        throw std::runtime_error (
+        Throw<std::runtime_error> (
             "New trusted validator key already has a manifest");
     }
 
@@ -189,7 +191,7 @@ ManifestCache::addTrustedKey (PublicKey const& pk, std::string comment)
 
 ManifestDisposition
 ManifestCache::canApply (PublicKey const& pk, std::uint32_t seq,
-    beast::Journal const& journal) const
+    beast::Journal journal) const
 {
     auto const iter = map_.find(pk);
 
@@ -225,7 +227,8 @@ ManifestCache::canApply (PublicKey const& pk, std::uint32_t seq,
 
 
 ManifestDisposition
-ManifestCache::applyManifest (Manifest m, beast::Journal const& journal)
+ManifestCache::applyManifest (
+    Manifest m, UniqueNodeList& unl, beast::Journal journal)
 {
     {
         std::lock_guard<std::mutex> lock (mutex_);
@@ -252,8 +255,6 @@ ManifestCache::applyManifest (Manifest m, beast::Journal const& journal)
             logMftAct(journal.warning, "Invalid", m.masterKey, m.sequence);
         return ManifestDisposition::invalid;
     }
-
-    auto& unl = getApp().getUNL();
 
     std::lock_guard<std::mutex> lock (mutex_);
 
@@ -334,7 +335,7 @@ ManifestCache::applyManifest (Manifest m, beast::Journal const& journal)
 }
 
 void ManifestCache::load (
-    DatabaseCon& dbCon, beast::Journal const& journal)
+    DatabaseCon& dbCon, UniqueNodeList& unl, beast::Journal journal)
 {
     static const char* const sql =
         "SELECT RawData FROM ValidatorManifests;";
@@ -352,13 +353,13 @@ void ManifestCache::load (
         {
             if (!mo->verify())
             {
-                throw std::runtime_error("Unverifiable manifest in db");
+                Throw<std::runtime_error> ("Unverifiable manifest in db");
             }
             // add trusted key
             map_[mo->masterKey];
 
             // OK if not accepted (may have been loaded from the config file)
-            applyManifest (std::move(*mo), journal);
+            applyManifest (std::move(*mo), unl, journal);
         }
         else
         {

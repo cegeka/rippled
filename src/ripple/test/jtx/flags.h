@@ -23,6 +23,7 @@
 #include <ripple/test/jtx/Env.h>
 #include <ripple/protocol/LedgerFormats.h>
 #include <ripple/protocol/TxFlags.h>
+#include <ripple/basics/contract.h>
 
 namespace ripple {
 namespace test {
@@ -72,7 +73,7 @@ private:
         case asfGlobalFreeze:   mask_ |= lsfGlobalFreeze; break;
         case asfDefaultRipple:  mask_ |= lsfDefaultRipple; break;
         default:
-        throw std::runtime_error(
+        Throw<std::runtime_error> (
             "unknown flag");
         }
     }
@@ -102,7 +103,7 @@ class flags : private detail::flags_helper
 {
 private:
     Account account_;
-   
+
 public:
     template <class... Args>
     flags (Account const& account,
@@ -113,7 +114,7 @@ public:
     }
 
     void
-    operator()(Env const& env) const;
+    operator()(Env& env) const;
 };
 
 /** Match clear account flags */
@@ -121,7 +122,7 @@ class nflags : private detail::flags_helper
 {
 private:
     Account account_;
-   
+
 public:
     template <class... Args>
     nflags (Account const& account,
@@ -132,7 +133,7 @@ public:
     }
 
     void
-    operator()(Env const& env) const;
+    operator()(Env& env) const;
 };
 
 } // jtx

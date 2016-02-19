@@ -20,6 +20,7 @@
 #ifndef RIPPLE_BASICS_BASICCONFIG_H_INCLUDED
 #define RIPPLE_BASICS_BASICCONFIG_H_INCLUDED
 
+#include <ripple/basics/contract.h>
 #include <beast/container/const_container.h>
 #include <beast/utility/ci_char_traits.h>
 #include <boost/lexical_cast.hpp>
@@ -104,7 +105,7 @@ public:
         if (lines_.empty ())
             return "";
         else if (lines_.size () > 1)
-            throw std::runtime_error (
+            Throw<std::runtime_error> (
                 "A legacy value must have exactly one line. Section: " + name_);
         return lines_[0];
     }
@@ -175,11 +176,20 @@ public:
         If the section does not exist, an empty section is returned.
     */
     /** @{ */
+    Section&
+    section (std::string const& name);
+
     Section const&
     section (std::string const& name) const;
 
     Section const&
     operator[] (std::string const& name) const
+    {
+        return section(name);
+    }
+
+    Section&
+    operator[] (std::string const& name)
     {
         return section(name);
     }
@@ -216,7 +226,7 @@ public:
      *
      *  @param sectionName Retrieve the contents of this section's
      *         legacy value.
-     *  @returun Contents of the legacy value.
+     *  @return Contents of the legacy value.
      */
     std::string
     legacy(std::string const& sectionName) const;
@@ -314,7 +324,7 @@ get (Section const& section,
     {
         return boost::lexical_cast <std::string> (result.first);
     }
-    catch(...)
+    catch(std::exception const&)
     {
     }
     return defaultValue;

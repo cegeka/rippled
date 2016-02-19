@@ -22,7 +22,6 @@
 #include <ripple/app/paths/RippleState.cpp>
 #include <ripple/app/paths/AccountCurrencies.cpp>
 #include <ripple/app/paths/Credit.cpp>
-#include <ripple/app/paths/FindPaths.cpp>
 #include <ripple/app/paths/Pathfinder.cpp>
 #include <ripple/app/paths/Node.cpp>
 #include <ripple/app/paths/PathRequest.cpp>
@@ -41,5 +40,3 @@
 #include <ripple/app/paths/cursor/ReverseLiquidity.cpp>
 #include <ripple/app/paths/cursor/ReverseLiquidityForAccount.cpp>
 #include <ripple/app/paths/cursor/RippleLiquidity.cpp>
-
-#include <ripple/app/paths/tests/Path_test.cpp>

@@ -24,6 +24,7 @@
 #include <ripple/protocol/TxFormats.h>
 #include <boost/container/flat_set.hpp>
 #include <boost/logic/tribool.hpp>
+#include <functional>
 
 namespace ripple {
 
@@ -42,9 +43,7 @@ class STTx final
 public:
     static char const* getCountedObjectName () { return "STTx"; }
 
-    using pointer = std::shared_ptr<STTx>;
-    using ref     = const std::shared_ptr<STTx>&;
-
+    static std::size_t const minMultiSigners = 1;
     static std::size_t const maxMultiSigners = 8;
 
 public:
@@ -55,9 +54,18 @@ public:
 
     explicit STTx (SerialIter& sit);
     explicit STTx (SerialIter&& sit) : STTx(sit) {}
-    explicit STTx (TxType type);
 
     explicit STTx (STObject&& object);
+
+    /** Constructs a transaction.
+
+        The returned transaction will have the specified type and
+        any fields that the callback function adds to the object
+        that's passed in.
+    */
+    STTx (
+        TxType type,
+        std::function<void(STObject&)> assembler);
 
     STBase*
     copy (std::size_t n, void* buf) const override
@@ -87,20 +95,11 @@ public:
     {
         return tx_type_;
     }
-    STAmount getTransactionFee () const
-    {
-        return getFieldAmount (sfFee);
-    }
-    void setTransactionFee (const STAmount & fee)
-    {
-        setFieldAmount (sfFee, fee);
-    }
 
     Blob getSigningPubKey () const
     {
         return getFieldVL (sfSigningPubKey);
     }
-    void setSigningPubKey (const RippleAddress & naSignPubKey);
 
     std::uint32_t getSequence () const
     {
@@ -114,37 +113,17 @@ public:
     boost::container::flat_set<AccountID>
     getMentionedAccounts() const;
 
-    uint256 getTransactionID () const;
+    uint256 getTransactionID () const
+    {
+        return tid_;
+    }
 
     Json::Value getJson (int options) const override;
     Json::Value getJson (int options, bool binary) const;
 
     void sign (RippleAddress const& private_key);
 
-    bool checkSign(bool allowMultiSign =
-#if RIPPLE_ENABLE_MULTI_SIGN
-        true
-#else
-        false
-#endif
-            ) const;
-
-    bool isKnownGood () const
-    {
-        return (sig_state_ == true);
-    }
-    bool isKnownBad () const
-    {
-        return (sig_state_ == false);
-    }
-    void setGood () const
-    {
-        sig_state_ = true;
-    }
-    void setBad () const
-    {
-        sig_state_ = false;
-    }
+    bool checkSign(bool allowMultiSign) const;
 
     // SQL Functions with metadata.
     static
@@ -164,12 +143,21 @@ private:
     bool checkSingleSign () const;
     bool checkMultiSign () const;
 
+    uint256 tid_;
     TxType tx_type_;
-
-    mutable boost::tribool sig_state_;
 };
 
 bool passesLocalChecks (STObject const& st, std::string&);
+
+/** Sterilize a transaction.
+
+    The transaction is serialized and then deserialized,
+    ensuring that all equivalent transactions are in canonical
+    form. This also ensures that program metadata such as
+    the transaction's digest, are all computed.
+*/
+std::shared_ptr<STTx const>
+sterilize (STTx const& stx);
 
 } // ripple
 

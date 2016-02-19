@@ -21,6 +21,7 @@
 #define RIPPLE_PROTOCOL_STEXCHANGE_H_INCLUDED
 
 #include <ripple/basics/Buffer.h>
+#include <ripple/basics/contract.h>
 #include <ripple/basics/Slice.h>
 #include <ripple/protocol/SField.h>
 #include <ripple/protocol/STBlob.h>
@@ -28,7 +29,7 @@
 #include <ripple/protocol/STObject.h>
 #include <ripple/basics/Blob.h>
 #include <boost/optional.hpp>
-#include <beast/cxx14/memory.h> // <memory>
+#include <memory>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -50,7 +51,7 @@ struct STExchange<STInteger<U>, T>
     get (boost::optional<T>& t,
         STInteger<U> const& u)
     {
-        t = u.getValue();
+        t = u.value();
     }
 
     static
@@ -72,7 +73,7 @@ struct STExchange<STBlob, Slice>
     get (boost::optional<value_type>& t,
         STBlob const& u)
     {
-        t = boost::in_place(u.data(), u.size());
+        t.emplace (u.data(), u.size());
     }
 
     static
@@ -95,7 +96,7 @@ struct STExchange<STBlob, Buffer>
     get (boost::optional<Buffer>& t,
         STBlob const& u)
     {
-        t = boost::in_place(
+        t.emplace (
             u.data(), u.size());
     }
 
@@ -139,7 +140,7 @@ get (STObject const& st,
         dynamic_cast<U const*>(b);
     // This should never happen
     if (! u)
-        throw std::runtime_error (
+        Throw<std::runtime_error> (
             "Wrong field type");
     STExchange<U, T>::get(t, *u);
     return t;

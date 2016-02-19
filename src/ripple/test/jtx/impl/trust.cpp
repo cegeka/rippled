@@ -20,6 +20,7 @@
 #include <BeastConfig.h>
 #include <ripple/test/jtx/trust.h>
 #include <ripple/protocol/JsonFields.h>
+#include <ripple/basics/contract.h>
 #include <stdexcept>
 
 namespace ripple {
@@ -31,7 +32,7 @@ trust (Account const& account,
     STAmount const& amount)
 {
     if (isXRP(amount))
-        throw std::runtime_error(
+        Throw<std::runtime_error> (
             "trust() requires IOU");
     Json::Value jv;
     jv[jss::Account] = account.human();

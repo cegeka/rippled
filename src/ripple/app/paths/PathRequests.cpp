@@ -54,7 +54,7 @@ void PathRequests::updateAll (std::shared_ptr <ReadView const> const& inLedger,
 {
     std::vector<PathRequest::wptr> requests;
 
-    LoadEvent::autoptr event (getApp().getJobQueue().getLoadEventAP(jtPATH_FIND, "PathRequest::updateAll"));
+    LoadEvent::autoptr event (app_.getJobQueue().getLoadEventAP(jtPATH_FIND, "PathRequest::updateAll"));
 
     // Get the ledger and cache we should be using
     RippleLineCache::pointer cache;
@@ -64,7 +64,7 @@ void PathRequests::updateAll (std::shared_ptr <ReadView const> const& inLedger,
         cache = getLineCache (inLedger, true);
     }
 
-    bool newRequests = getApp().getLedgerMaster().isNewPathRequest();
+    bool newRequests = app_.getLedgerMaster().isNewPathRequest();
     bool mustBreak = false;
 
     mJournal.trace << "updateAll seq=" << cache->getLedger()->seq() << ", " <<
@@ -113,8 +113,6 @@ void PathRequests::updateAll (std::shared_ptr <ReadView const> const& inLedger,
 
             if (remove)
             {
-                PathRequest::pointer pRequest = wRequest.lock ();
-
                 ScopedLockType sl (mLock);
 
                 // Remove any dangling weak pointers or weak pointers that refer to this path request.
@@ -132,7 +130,7 @@ void PathRequests::updateAll (std::shared_ptr <ReadView const> const& inLedger,
                 }
             }
 
-            mustBreak = !newRequests && getApp().getLedgerMaster().isNewPathRequest();
+            mustBreak = !newRequests && app_.getLedgerMaster().isNewPathRequest();
             if (mustBreak) // We weren't handling new requests and then there was a new request
                 break;
 
@@ -144,11 +142,11 @@ void PathRequests::updateAll (std::shared_ptr <ReadView const> const& inLedger,
         }
         else if (newRequests)
         { // we only did new requests, so we always need a last pass
-            newRequests = getApp().getLedgerMaster().isNewPathRequest();
+            newRequests = app_.getLedgerMaster().isNewPathRequest();
         }
         else
         { // check if there are any new requests, otherwise we are done
-            newRequests = getApp().getLedgerMaster().isNewPathRequest();
+            newRequests = app_.getLedgerMaster().isNewPathRequest();
             if (!newRequests) // We did a full pass and there are no new requests
                 return;
         }
@@ -179,8 +177,8 @@ void PathRequests::insertPathRequest (PathRequest::pointer const& req)
     std::vector<PathRequest::wptr>::iterator it = mRequests.begin ();
     while (it != mRequests.end ())
     {
-        PathRequest::pointer req = it->lock ();
-        if (req && !req->isNew ())
+        PathRequest::pointer r = it->lock ();
+        if (r && !r->isNew ())
             break; // This request has been handled, we come before it
 
         // This is a newer request, we come after it
@@ -190,13 +188,14 @@ void PathRequests::insertPathRequest (PathRequest::pointer const& req)
 }
 
 // Make a new-style path_find request
-Json::Value PathRequests::makePathRequest(
+Json::Value
+PathRequests::makePathRequest(
     std::shared_ptr <InfoSub> const& subscriber,
     std::shared_ptr<ReadView const> const& inLedger,
     Json::Value const& requestJson)
 {
     PathRequest::pointer req = std::make_shared<PathRequest> (
-        subscriber, ++mLastIdentifier, *this, mJournal);
+        app_, subscriber, ++mLastIdentifier, *this, mJournal);
 
     RippleLineCache::pointer cache;
 
@@ -212,13 +211,14 @@ Json::Value PathRequests::makePathRequest(
     {
         subscriber->setPathRequest (req);
         insertPathRequest (req);
-        getApp().getLedgerMaster().newPathRequest();
+        app_.getLedgerMaster().newPathRequest();
     }
     return result;
 }
 
 // Make an old-style ripple_path_find request
-Json::Value PathRequests::makeLegacyPathRequest(
+Json::Value
+PathRequests::makeLegacyPathRequest(
     PathRequest::pointer& req,
     std::function <void (void)> completion,
     std::shared_ptr<ReadView const> const& inLedger,
@@ -227,7 +227,7 @@ Json::Value PathRequests::makeLegacyPathRequest(
     // This assignment must take place before the
     // completion function is called
     req = std::make_shared<PathRequest> (
-        completion, ++mLastIdentifier, *this, mJournal);
+        app_, completion, ++mLastIdentifier, *this, mJournal);
 
     RippleLineCache::pointer cache;
 
@@ -246,7 +246,7 @@ Json::Value PathRequests::makeLegacyPathRequest(
     else
     {
         insertPathRequest (req);
-        getApp().getLedgerMaster().newPathRequest();
+        app_.getLedgerMaster().newPathRequest();
     }
 
     return result;

@@ -23,6 +23,7 @@
 #include <ripple/protocol/UintTypes.h>
 #include <ripple/protocol/Serializer.h>
 #include <ripple/basics/base_uint.h>
+#include <beast/utility/Journal.h>
 #include <memory>
 
 namespace ripple {
@@ -40,12 +41,13 @@ class DisputedTx
 public:
     // VFALCO `Blob` is a poor choice of parameter
     DisputedTx (uint256 const& txID,
-            Blob const& tx, bool ourVote)
+            Blob const& tx, bool ourVote, beast::Journal j)
         : mTransactionID (txID)
         , mYays (0)
         , mNays (0)
         , mOurVote (ourVote)
         , transaction (tx.data(), tx.size())
+        , j_ (j)
     {
     }
 
@@ -71,8 +73,8 @@ public:
         mOurVote = o;
     }
 
-    // VFALCO NOTE its not really a peer, its the 160 bit hash of the validator's public key
-    //
+    // VFALCO NOTE its not really a peer, its the 160 bit hash of the
+    // validator's public key.
     void setVote (NodeID const& peer, bool votesYes);
     void unVote (NodeID const& peer);
 
@@ -88,6 +90,7 @@ private:
     Serializer transaction;
 
     hash_map <NodeID, bool> mVotes;
+    beast::Journal j_;
 };
 
 } // ripple

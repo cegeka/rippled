@@ -121,16 +121,30 @@ public:
         return value_;
     }
 
-    Buffer&
-    peekValue ()
+    STBlob&
+    operator= (Slice const& slice)
+    {
+        value_ = Buffer(slice.data(), slice.size());
+        return *this;
+    }
+
+    value_type
+    value() const noexcept
     {
         return value_;
     }
 
-    Buffer
-    getValue () const
+    STBlob&
+    operator= (Buffer&& buffer)
     {
-        return Buffer(value_.data (), value_.size ());
+        value_ = std::move(buffer);
+        return *this;
+    }
+
+    Buffer&
+    peekValue ()
+    {
+        return value_;
     }
 
     void

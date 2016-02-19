@@ -57,7 +57,7 @@ void rippleLiquidity (
     STAmount& saCurAct,  // <-> out limit including achieved so far: <-- <= -->
     std::uint64_t& uRateMax)
 {
-    WriteLog (lsTRACE, RippleCalc)
+    JLOG (rippleCalc.j_.trace)
         << "rippleLiquidity>"
         << " uQualityIn=" << uQualityIn
         << " uQualityOut=" << uQualityOut
@@ -84,7 +84,7 @@ void rippleLiquidity (
     // How much could possibly flow through the current node?
     const STAmount  saCur = saCurReq - saCurAct;
 
-    WriteLog (lsTRACE, RippleCalc)
+    JLOG (rippleCalc.j_.trace)
         << "rippleLiquidity: "
         << " bPrvUnlimited=" << bPrvUnlimited
         << " saPrv=" << saPrv
@@ -97,7 +97,7 @@ void rippleLiquidity (
     if (uQualityIn >= uQualityOut)
     {
         // You're getting better quality than you asked for, so no fee.
-        WriteLog (lsTRACE, RippleCalc) << "rippleLiquidity: No fees";
+        JLOG (rippleCalc.j_.trace) << "rippleLiquidity: No fees";
 
         // Only process if the current rate, 1:1, is not worse than the previous
         // rate, uRateMax - otherwise there is no flow.
@@ -127,7 +127,7 @@ void rippleLiquidity (
     else
     {
         // If the quality is worse than the previous
-        WriteLog (lsTRACE, RippleCalc) << "rippleLiquidity: Fee";
+        JLOG (rippleCalc.j_.trace) << "rippleLiquidity: Fee";
 
         std::uint64_t uRate = getRate (
             STAmount (uQualityOut), STAmount (uQualityIn));
@@ -135,18 +135,23 @@ void rippleLiquidity (
         // If the next rate is at least as good as the current rate, process.
         if (!uRateMax || uRate <= uRateMax)
         {
+            STAmountCalcSwitchovers amountCalcSwitchovers (
+                rippleCalc.view.info ().parentCloseTime);
+
             auto currency = saCur.getCurrency ();
             auto uCurIssuerID = saCur.getIssuer ();
 
             // current actual = current request * (quality out / quality in).
             auto numerator = mulRound (
-                saCur, uQualityOut, {currency, uCurIssuerID}, true);
+                saCur, uQualityOut, {currency, uCurIssuerID}, true,
+                amountCalcSwitchovers);
             // True means "round up" to get best flow.
 
             STAmount saCurIn = divRound (
-                numerator, uQualityIn, {currency, uCurIssuerID}, true);
+                numerator, uQualityIn, {currency, uCurIssuerID}, true,
+                amountCalcSwitchovers);
 
-            WriteLog (lsTRACE, RippleCalc)
+            JLOG (rippleCalc.j_.trace)
                 << "rippleLiquidity:"
                 << " bPrvUnlimited=" << bPrvUnlimited
                 << " saPrv=" << saPrv
@@ -157,7 +162,7 @@ void rippleLiquidity (
                 // All of current. Some amount of previous.
                 saCurAct += saCur;
                 saPrvAct += saCurIn;
-                WriteLog (lsTRACE, RippleCalc)
+                JLOG (rippleCalc.j_.trace)
                     << "rippleLiquidity:3c:"
                     << " saCurReq=" << saCurReq
                     << " saPrvAct=" << saPrvAct;
@@ -173,13 +178,15 @@ void rippleLiquidity (
 
                 Issue issue{currency, uCurIssuerID};
                 auto numerator = mulRound (
-                    saPrv, uQualityIn, issue, true);
+                    saPrv, uQualityIn, issue, true,
+                    amountCalcSwitchovers);
                 // A part of current. All of previous. (Cur is the driver
                 // variable.)
                 STAmount saCurOut = divRound (
-                    numerator, uQualityOut, issue, true);
+                    numerator, uQualityOut, issue, true,
+                    amountCalcSwitchovers);
 
-                WriteLog (lsTRACE, RippleCalc)
+                JLOG (rippleCalc.j_.trace)
                     << "rippleLiquidity:4: saCurReq=" << saCurReq;
 
                 saCurAct += saCurOut;
@@ -190,7 +197,7 @@ void rippleLiquidity (
         }
     }
 
-    WriteLog (lsTRACE, RippleCalc)
+    JLOG (rippleCalc.j_.trace)
         << "rippleLiquidity<"
         << " uQualityIn=" << uQualityIn
         << " uQualityOut=" << uQualityOut

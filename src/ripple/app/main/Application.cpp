@@ -30,33 +30,37 @@
 #include <ripple/app/ledger/OpenLedger.h>
 #include <ripple/app/ledger/OrderBookDB.h>
 #include <ripple/app/ledger/PendingSaves.h>
+#include <ripple/app/ledger/InboundTransactions.h>
+#include <ripple/app/ledger/TransactionMaster.h>
 #include <ripple/app/main/CollectorManager.h>
 #include <ripple/app/main/LoadManager.h>
 #include <ripple/app/main/LocalCredentials.h>
 #include <ripple/app/main/NodeStoreScheduler.h>
 #include <ripple/app/misc/AmendmentTable.h>
-#include <ripple/app/misc/IHashRouter.h>
+#include <ripple/app/misc/HashRouter.h>
 #include <ripple/app/misc/NetworkOPs.h>
 #include <ripple/app/misc/SHAMapStore.h>
+#include <ripple/app/misc/TxQ.h>
 #include <ripple/app/misc/Validations.h>
-#include <ripple/app/paths/FindPaths.h>
+#include <ripple/app/paths/Pathfinder.h>
 #include <ripple/app/paths/PathRequests.h>
 #include <ripple/app/misc/UniqueNodeList.h>
-#include <ripple/app/tx/InboundTransactions.h>
-#include <ripple/app/tx/TransactionMaster.h>
+#include <ripple/app/tx/apply.h>
+#include <ripple/basics/contract.h>
 #include <ripple/basics/Log.h>
 #include <ripple/basics/ResolverAsio.h>
 #include <ripple/basics/Sustain.h>
 #include <ripple/basics/chrono.h>
 #include <ripple/json/json_reader.h>
 #include <ripple/json/to_string.h>
-#include <ripple/core/LoadFeeTrack.h>
 #include <ripple/core/ConfigSections.h>
+#include <ripple/core/LoadFeeTrack.h>
+#include <ripple/core/TimeKeeper.h>
 #include <ripple/ledger/CachedSLEs.h>
-#include <ripple/net/SNTPClient.h>
 #include <ripple/nodestore/Database.h>
 #include <ripple/nodestore/DummyScheduler.h>
 #include <ripple/nodestore/Manager.h>
+#include <ripple/overlay/Cluster.h>
 #include <ripple/overlay/make_Overlay.h>
 #include <ripple/protocol/Indexes.h>
 #include <ripple/protocol/SecretKey.h>
@@ -64,7 +68,6 @@
 #include <ripple/protocol/types.h>
 #include <ripple/server/make_ServerHandler.h>
 #include <ripple/shamap/Family.h>
-#include <ripple/validators/make_Manager.h>
 #include <ripple/unity/git_id.h>
 #include <ripple/websocket/MakeServer.h>
 #include <ripple/crypto/RandomNumbers.h>
@@ -80,57 +83,44 @@ namespace ripple {
 // 204/256 about 80%
 static int const MAJORITY_FRACTION (204);
 
-// This hack lets the s_instance variable remain set during
-// the call to ~Application
-class ApplicationImpBase : public Application
-{
-public:
-    ApplicationImpBase ()
-    {
-        assert (s_instance == nullptr);
-        s_instance = this;
-    }
-
-    ~ApplicationImpBase ()
-    {
-        s_instance = nullptr;
-    }
-
-    static Application* s_instance;
-
-    static Application& getInstance ()
-    {
-        bassert (s_instance != nullptr);
-        return *s_instance;
-    }
-};
-
-Application* ApplicationImpBase::s_instance;
-
 //------------------------------------------------------------------------------
 
 namespace detail {
 
-class AppFamily : public shamap::Family
+class AppFamily : public Family
 {
 private:
+    Application& app_;
     TreeNodeCache treecache_;
     FullBelowCache fullbelow_;
     NodeStore::Database& db_;
+    beast::Journal j_;
+
+    // missing node handler
+    std::uint32_t maxSeq = 0;
+    std::mutex maxSeqLock;
 
 public:
     AppFamily (AppFamily const&) = delete;
     AppFamily& operator= (AppFamily const&) = delete;
 
-    AppFamily (NodeStore::Database& db,
+    AppFamily (Application& app, NodeStore::Database& db,
             CollectorManager& collectorManager)
-        : treecache_ ("TreeNodeCache", 65536, 60, stopwatch(),
-            deprecatedLogs().journal("TaggedCache"))
+        : app_ (app)
+        , treecache_ ("TreeNodeCache", 65536, 60, stopwatch(),
+            app.journal("TaggedCache"))
         , fullbelow_ ("full_below", stopwatch(),
             collectorManager.collector(),
                 fullBelowTargetSize, fullBelowExpirationSeconds)
         , db_ (db)
+        , j_ (app.journal("SHAMap"))
     {
+    }
+
+    beast::Journal const&
+    journal() override
+    {
+        return j_;
     }
 
     FullBelowCache&
@@ -172,10 +162,51 @@ public:
     void
     missing_node (std::uint32_t seq) override
     {
-        uint256 const hash = getApp().getLedgerMaster ().getHashBySeq (seq);
-        if (hash.isZero())
-            getApp().getInboundLedgers ().acquire (
-                hash, seq, InboundLedger::fcGENERIC);
+        WriteLog (lsERROR, Ledger) << "Missing node in " << seq;
+
+        // prevent recursive invocation
+        std::unique_lock <std::mutex> lock (maxSeqLock);
+
+        if (maxSeq == 0)
+        {
+            maxSeq = seq;
+
+            do
+            {
+                // Try to acquire the most recent missing ledger
+                seq = maxSeq;
+
+                lock.unlock();
+
+                // This can invoke the missing node handler
+                uint256 hash = app_.getLedgerMaster().getHashBySeq (seq);
+
+                if (hash.isNonZero())
+                    app_.getInboundLedgers().acquire (
+                        hash, seq, InboundLedger::fcGENERIC);
+
+                lock.lock();
+            }
+            while (maxSeq != seq);
+        }
+        else if (maxSeq < seq)
+        {
+            // We found a more recent ledger with a missing node
+            maxSeq = seq;
+        }
+    }
+
+    void
+    missing_node (uint256 const& hash) override
+    {
+        if (hash.isNonZero())
+        {
+            WriteLog (lsERROR, Ledger) << "Missing node in "
+                << to_string (hash);
+
+            app_.getInboundLedgers ().acquire (
+                hash, 0, InboundLedger::fcGENERIC);
+        }
     }
 };
 
@@ -185,7 +216,7 @@ public:
 
 // VFALCO TODO Move the function definitions into the class declaration
 class ApplicationImp
-    : public ApplicationImpBase
+    : public Application
     , public beast::RootStoppable
     , public beast::DeadlineTimer::Listener
     , public BasicApp
@@ -255,7 +286,10 @@ private:
     };
 
 public:
-    Logs& m_logs;
+    std::unique_ptr<Config> config_;
+    std::unique_ptr<Logs> logs_;
+    std::unique_ptr<TimeKeeper> timeKeeper_;
+
     beast::Journal m_journal;
     Application::MutexType m_masterMutex;
 
@@ -286,16 +320,17 @@ public:
     std::unique_ptr <LedgerMaster> m_ledgerMaster;
     std::unique_ptr <InboundLedgers> m_inboundLedgers;
     std::unique_ptr <InboundTransactions> m_inboundTransactions;
+    TaggedCache <uint256, AcceptedLedger> m_acceptedLedgerCache;
     std::unique_ptr <NetworkOPs> m_networkOPs;
+    std::unique_ptr <Cluster> cluster_;
     std::unique_ptr <UniqueNodeList> m_deprecatedUNL;
     std::unique_ptr <ServerHandler> serverHandler_;
-    std::unique_ptr <SNTPClient> m_sntpClient;
-    std::unique_ptr <Validators::Manager> m_validators;
     std::unique_ptr <AmendmentTable> m_amendmentTable;
     std::unique_ptr <LoadFeeTrack> mFeeTrack;
-    std::unique_ptr <IHashRouter> mHashRouter;
+    std::unique_ptr <HashRouter> mHashRouter;
     std::unique_ptr <Validations> mValidations;
     std::unique_ptr <LoadManager> m_loadManager;
+    std::unique_ptr <TxQ> txQ_;
     beast::DeadlineTimer m_sweepTimer;
     beast::DeadlineTimer m_entropyTimer;
 
@@ -315,75 +350,86 @@ public:
     //--------------------------------------------------------------------------
 
     static
-    std::size_t numberOfThreads()
+    std::size_t
+    numberOfThreads(Config const& config)
     {
     #if RIPPLE_SINGLE_IO_SERVICE_THREAD
         return 1;
     #else
-        return (getConfig().NODE_SIZE >= 2) ? 2 : 1;
+        return (config.NODE_SIZE >= 2) ? 2 : 1;
     #endif
     }
 
     //--------------------------------------------------------------------------
 
-    ApplicationImp (Logs& logs)
+    ApplicationImp (
+            std::unique_ptr<Config> config,
+            std::unique_ptr<Logs> logs,
+            std::unique_ptr<TimeKeeper> timeKeeper)
         : RootStoppable ("Application")
-        , BasicApp (numberOfThreads())
-        , m_logs (logs)
+        , BasicApp (numberOfThreads(*config))
+        , config_ (std::move(config))
+        , logs_ (std::move(logs))
+        , timeKeeper_ (std::move(timeKeeper))
 
-        , m_journal (m_logs.journal("Application"))
+        , m_journal (logs_->journal("Application"))
+
+        , m_txMaster (*this)
 
         , m_nodeStoreScheduler (*this)
 
-        , m_shaMapStore (make_SHAMapStore (setup_SHAMapStore (
-                getConfig()), *this, m_nodeStoreScheduler,
-                m_logs.journal ("SHAMapStore"), m_logs.journal ("NodeObject"),
-                m_txMaster, getConfig()))
+        , m_shaMapStore (make_SHAMapStore (*this, setup_SHAMapStore (*config_),
+            *this, m_nodeStoreScheduler,
+            logs_->journal ("SHAMapStore"), logs_->journal ("NodeObject"),
+            m_txMaster, *config_))
 
         , m_nodeStore (m_shaMapStore->makeDatabase ("NodeStore.main", 4))
 
         , accountIDCache_(128000)
 
         , m_tempNodeCache ("NodeCache", 16384, 90, stopwatch(),
-            m_logs.journal("TaggedCache"))
+            logs_->journal("TaggedCache"))
 
         , m_collectorManager (CollectorManager::New (
-            getConfig().section (SECTION_INSIGHT), m_logs.journal("Collector")))
+            config_->section (SECTION_INSIGHT), logs_->journal("Collector")))
 
-        , family_ (*m_nodeStore, *m_collectorManager)
+        , family_ (*this, *m_nodeStore, *m_collectorManager)
 
         , cachedSLEs_ (std::chrono::minutes(1), stopwatch())
 
+        , m_localCredentials (*this)
+
         , m_resourceManager (Resource::make_Manager (
-            m_collectorManager->collector(), m_logs.journal("Resource")))
+            m_collectorManager->collector(), logs_->journal("Resource")))
 
         // The JobQueue has to come pretty early since
         // almost everything is a Stoppable child of the JobQueue.
         //
-        , m_jobQueue (make_JobQueue (m_collectorManager->group ("jobq"),
-            m_nodeStoreScheduler, m_logs.journal("JobQueue")))
+        , m_jobQueue (std::make_unique<JobQueue>(
+            m_collectorManager->group ("jobq"), m_nodeStoreScheduler,
+            logs_->journal("JobQueue"), *logs_))
 
         //
         // Anything which calls addJob must be a descendant of the JobQueue
         //
 
-        , m_orderBookDB (*m_jobQueue)
+        , m_orderBookDB (*this, *m_jobQueue)
 
-        , m_pathRequests (new PathRequests (
-            m_logs.journal("PathRequest"), m_collectorManager->collector ()))
+        , m_pathRequests (std::make_unique<PathRequests> (
+            *this, logs_->journal("PathRequest"), m_collectorManager->collector ()))
 
-        , m_ledgerMaster (make_LedgerMaster (getConfig (), stopwatch (),
+        , m_ledgerMaster (make_LedgerMaster (*this, stopwatch (),
             *m_jobQueue, m_collectorManager->collector (),
-            m_logs.journal("LedgerMaster")))
+            logs_->journal("LedgerMaster")))
 
         // VFALCO NOTE must come before NetworkOPs to prevent a crash due
         //             to dependencies in the destructor.
         //
-        , m_inboundLedgers (make_InboundLedgers (stopwatch(),
+        , m_inboundLedgers (make_InboundLedgers (*this, stopwatch(),
             *m_jobQueue, m_collectorManager->collector ()))
 
         , m_inboundTransactions (make_InboundTransactions
-            ( stopwatch()
+            ( *this, stopwatch()
             , *m_jobQueue
             , m_collectorManager->collector ()
             , [this](uint256 const& setHash,
@@ -392,33 +438,34 @@ public:
                 gotTXSet (setHash, set);
             }))
 
-        , m_networkOPs (make_NetworkOPs (stopwatch(),
-            getConfig ().RUN_STANDALONE, getConfig ().NETWORK_QUORUM,
+        , m_acceptedLedgerCache ("AcceptedLedger", 4, 60, stopwatch(),
+            logs_->journal("TaggedCache"))
+
+        , m_networkOPs (make_NetworkOPs (*this, stopwatch(),
+            config_->RUN_STANDALONE, config_->NETWORK_QUORUM, config_->START_VALID,
             *m_jobQueue, *m_ledgerMaster, *m_jobQueue,
-            m_logs.journal("NetworkOPs")))
+            logs_->journal("NetworkOPs")))
 
         // VFALCO NOTE LocalCredentials starts the deprecated UNL service
-        , m_deprecatedUNL (make_UniqueNodeList (*m_jobQueue))
+        , m_deprecatedUNL (make_UniqueNodeList (*this, *m_jobQueue))
 
-        , serverHandler_ (make_ServerHandler (*m_networkOPs, get_io_service (),
+        , serverHandler_ (make_ServerHandler (*this, *m_networkOPs, get_io_service (),
             *m_jobQueue, *m_networkOPs, *m_resourceManager, *m_collectorManager))
-
-        , m_sntpClient (SNTPClient::New (*this))
-
-        , m_validators (Validators::make_Manager(*this, get_io_service(),
-            m_logs.journal("UVL"), getConfig ()))
 
         , m_amendmentTable (make_AmendmentTable
                             (weeks(2), MAJORITY_FRACTION,
-                             m_logs.journal("AmendmentTable")))
+                             logs_->journal("AmendmentTable")))
 
-        , mFeeTrack (LoadFeeTrack::New (m_logs.journal("LoadManager")))
+        , mFeeTrack (std::make_unique<LoadFeeTrack>(logs_->journal("LoadManager")))
 
-        , mHashRouter (IHashRouter::New (IHashRouter::getDefaultHoldTime ()))
+        , mHashRouter (std::make_unique<HashRouter>(
+            stopwatch(), HashRouter::getDefaultHoldTime ()))
 
-        , mValidations (make_Validations ())
+        , mValidations (make_Validations (*this))
 
-        , m_loadManager (make_LoadManager (*this, m_logs.journal("LoadManager")))
+        , m_loadManager (make_LoadManager (*this, *this, logs_->journal("LoadManager")))
+
+        , txQ_(make_TxQ(setup_TxQ(*config_), logs_->journal("TxQ")))
 
         , m_sweepTimer (this)
 
@@ -426,10 +473,10 @@ public:
 
         , m_signals (get_io_service())
 
-        , m_resolver (ResolverAsio::New (get_io_service(), m_logs.journal("Resolver")))
+        , m_resolver (ResolverAsio::New (get_io_service(), logs_->journal("Resolver")))
 
         , m_io_latency_sampler (m_collectorManager->collector()->make_event ("ios_latency"),
-            m_logs.journal("Application"), std::chrono::milliseconds (100), get_io_service())
+            logs_->journal("Application"), std::chrono::milliseconds (100), get_io_service())
     {
         add (m_resourceManager.get ());
 
@@ -441,74 +488,103 @@ public:
         //  put it in setup (but everything in setup should be moved to onStart
         //  anyway.
         //
-        //  The reason is that the unit tests require the Application object to
-        //  be created (since so much code calls getApp()). But we don't actually
-        //  start all the threads, sockets, and services when running the unit
-        //  tests. Therefore anything which needs to be stopped will not get
-        //  stopped correctly if it is started in this constructor.
+        //  The reason is that the unit tests require an Application object to
+        //  be created. But we don't actually start all the threads, sockets,
+        //  and services when running the unit tests. Therefore anything which
+        //  needs to be stopped will not get stopped correctly if it is
+        //  started in this constructor.
         //
 
         // VFALCO HACK
         m_nodeStoreScheduler.setJobQueue (*m_jobQueue);
 
-        add (*m_validators);
         add (m_ledgerMaster->getPropertySource ());
         add (*serverHandler_);
     }
 
     //--------------------------------------------------------------------------
 
-    CollectorManager& getCollectorManager ()
+    void setup() override;
+    void run() override;
+    bool isShutdown() override;
+    void signalStop() override;
+
+    //--------------------------------------------------------------------------
+
+    Logs&
+    logs() override
+    {
+        return *logs_;
+    }
+
+    Config&
+    config() override
+    {
+        return *config_;
+    }
+
+    CollectorManager& getCollectorManager () override
     {
         return *m_collectorManager;
     }
 
-    shamap::Family&
-    family()
+    Family&
+    family() override
     {
         return family_;
     }
 
-    JobQueue& getJobQueue ()
+    TimeKeeper&
+    timeKeeper() override
+    {
+        return *timeKeeper_;
+    }
+
+    JobQueue& getJobQueue () override
     {
         return *m_jobQueue;
     }
 
-    LocalCredentials& getLocalCredentials ()
+    LocalCredentials& getLocalCredentials () override
     {
         return m_localCredentials ;
     }
 
-    NetworkOPs& getOPs ()
+    NetworkOPs& getOPs () override
     {
         return *m_networkOPs;
     }
 
-    boost::asio::io_service& getIOService ()
+    boost::asio::io_service& getIOService () override
     {
         return get_io_service();
     }
 
-    std::chrono::milliseconds getIOLatency ()
+    std::chrono::milliseconds getIOLatency () override
     {
         std::unique_lock <std::mutex> m_IOLatencyLock;
 
         return m_io_latency_sampler.get ();
     }
 
-    LedgerMaster& getLedgerMaster ()
+    LedgerMaster& getLedgerMaster () override
     {
         return *m_ledgerMaster;
     }
 
-    InboundLedgers& getInboundLedgers ()
+    InboundLedgers& getInboundLedgers () override
     {
         return *m_inboundLedgers;
     }
 
-    InboundTransactions& getInboundTransactions ()
+    InboundTransactions& getInboundTransactions () override
     {
         return *m_inboundTransactions;
+    }
+
+    TaggedCache <uint256, AcceptedLedger>& getAcceptedLedgerCache () override
+    {
+        return m_acceptedLedgerCache;
     }
 
     void gotTXSet (uint256 const& setHash, std::shared_ptr<SHAMap> const& set)
@@ -516,80 +592,80 @@ public:
         m_networkOPs->mapComplete (setHash, set);
     }
 
-    TransactionMaster& getMasterTransaction ()
+    TransactionMaster& getMasterTransaction () override
     {
         return m_txMaster;
     }
 
-    NodeCache& getTempNodeCache ()
+    NodeCache& getTempNodeCache () override
     {
         return m_tempNodeCache;
     }
 
-    NodeStore::Database& getNodeStore ()
+    NodeStore::Database& getNodeStore () override
     {
         return *m_nodeStore;
     }
 
-    Application::MutexType& getMasterMutex ()
+    Application::MutexType& getMasterMutex () override
     {
         return m_masterMutex;
     }
 
-    LoadManager& getLoadManager ()
+    LoadManager& getLoadManager () override
     {
         return *m_loadManager;
     }
 
-    Resource::Manager& getResourceManager ()
+    Resource::Manager& getResourceManager () override
     {
         return *m_resourceManager;
     }
 
-    OrderBookDB& getOrderBookDB ()
+    OrderBookDB& getOrderBookDB () override
     {
         return m_orderBookDB;
     }
 
-    PathRequests& getPathRequests ()
+    PathRequests& getPathRequests () override
     {
         return *m_pathRequests;
     }
 
     CachedSLEs&
-    cachedSLEs()
+    cachedSLEs() override
     {
         return cachedSLEs_;
     }
 
-    Validators::Manager& getValidators ()
-    {
-        return *m_validators;
-    }
-
-    AmendmentTable& getAmendmentTable()
+    AmendmentTable& getAmendmentTable() override
     {
         return *m_amendmentTable;
     }
 
-    LoadFeeTrack& getFeeTrack ()
+    LoadFeeTrack& getFeeTrack () override
     {
         return *mFeeTrack;
     }
 
-    IHashRouter& getHashRouter ()
+    HashRouter& getHashRouter () override
     {
         return *mHashRouter;
     }
 
-    Validations& getValidations ()
+    Validations& getValidations () override
     {
         return *mValidations;
     }
 
-    UniqueNodeList& getUNL ()
+    UniqueNodeList& getUNL () override
     {
         return *m_deprecatedUNL;
+    }
+
+    Cluster& cluster () override
+    {
+        return *cluster_;
     }
 
     SHAMapStore& getSHAMapStore () override
@@ -614,42 +690,42 @@ public:
         return *openLedger_;
     }
 
-    Overlay& overlay ()
+    OpenLedger const&
+    openLedger() const override
+    {
+        return *openLedger_;
+    }
+
+    Overlay& overlay () override
     {
         return *m_overlay;
     }
 
-    // VFALCO TODO Move these to the .cpp
-    bool running ()
+    TxQ& getTxQ() override
     {
-        return mTxnDB != nullptr;
-    }
-    bool getSystemTimeOffset (int& offset)
-    {
-        return m_sntpClient->getOffset (offset);
+        assert(txQ_.get() != nullptr);
+        return *txQ_;
     }
 
-    DatabaseCon& getTxnDB ()
+    DatabaseCon& getTxnDB () override
     {
         assert (mTxnDB.get() != nullptr);
         return *mTxnDB;
     }
-    DatabaseCon& getLedgerDB ()
+    DatabaseCon& getLedgerDB () override
     {
         assert (mLedgerDB.get() != nullptr);
         return *mLedgerDB;
     }
-    DatabaseCon& getWalletDB ()
+    DatabaseCon& getWalletDB () override
     {
         assert (mWalletDB.get() != nullptr);
         return *mWalletDB;
     }
 
-    bool isShutdown ()
-    {
-        // from Stoppable mixin
-        return isStopped();
-    }
+    bool serverOkay (std::string& reason) override;
+
+    beast::Journal journal (std::string const& name) override;
 
     //--------------------------------------------------------------------------
     bool initSqliteDbs ()
@@ -658,7 +734,7 @@ public:
         assert (mLedgerDB.get () == nullptr);
         assert (mWalletDB.get () == nullptr);
 
-        DatabaseCon::Setup setup = setup_DatabaseCon (getConfig());
+        DatabaseCon::Setup setup = setup_DatabaseCon (*config_);
         mTxnDB = std::make_unique <DatabaseCon> (setup, "transaction.db",
                 TxnDBInit, TxnDBCount);
         mLedgerDB = std::make_unique <DatabaseCon> (setup, "ledger.db",
@@ -691,184 +767,6 @@ public:
         }
     }
 
-    // VFALCO TODO Break this function up into many small initialization segments.
-    //             Or better yet refactor these initializations into RAII classes
-    //             which are members of the Application object.
-    //
-    void setup ()
-    {
-        // VFALCO NOTE: 0 means use heuristics to determine the thread count.
-        m_jobQueue->setThreadCount (0, getConfig ().RUN_STANDALONE);
-
-        // We want to intercept and wait for CTRL-C to terminate the process
-        m_signals.add (SIGINT);
-
-        m_signals.async_wait(std::bind(&ApplicationImp::signalled, this,
-            std::placeholders::_1, std::placeholders::_2));
-
-        assert (mTxnDB == nullptr);
-
-        auto debug_log = getConfig ().getDebugLogFile ();
-
-        if (!debug_log.empty ())
-        {
-            // Let debug messages go to the file but only WARNING or higher to
-            // regular output (unless verbose)
-
-            if (!m_logs.open(debug_log))
-                std::cerr << "Can't open log file " << debug_log << '\n';
-
-            if (m_logs.severity() > beast::Journal::kDebug)
-                m_logs.severity (beast::Journal::kDebug);
-        }
-
-        if (!getConfig ().RUN_STANDALONE)
-            m_sntpClient->init (getConfig ().SNTP_SERVERS);
-
-        if (!initSqliteDbs ())
-        {
-            m_journal.fatal << "Can not create database connections!";
-            exitWithCode(3);
-        }
-
-        getApp ().getLedgerDB ().getSession ()
-            << boost::str (boost::format ("PRAGMA cache_size=-%d;") %
-                           (getConfig ().getSize (siLgrDBCache) * 1024));
-
-        getApp().getTxnDB ().getSession ()
-                << boost::str (boost::format ("PRAGMA cache_size=-%d;") %
-                               (getConfig ().getSize (siTxnDBCache) * 1024));
-
-        mTxnDB->setupCheckpointing (m_jobQueue.get());
-        mLedgerDB->setupCheckpointing (m_jobQueue.get());
-
-        if (!getConfig ().RUN_STANDALONE)
-            updateTables ();
-
-        m_amendmentTable->addInitial (
-            getConfig ().section (SECTION_AMENDMENTS));
-        initializePathfinding ();
-
-        m_ledgerMaster->setMinValidations (getConfig ().VALIDATION_QUORUM);
-
-        auto const startUp = getConfig ().START_UP;
-        if (startUp == Config::FRESH)
-        {
-            m_journal.info << "Starting new Ledger";
-
-            startGenesisLedger ();
-        }
-        else if (startUp == Config::LOAD ||
-                 startUp == Config::LOAD_FILE ||
-                 startUp == Config::REPLAY)
-        {
-            m_journal.info << "Loading specified Ledger";
-
-            if (!loadOldLedger (getConfig ().START_LEDGER,
-                                startUp == Config::REPLAY,
-                                startUp == Config::LOAD_FILE))
-            {
-                exitWithCode(-1);
-            }
-        }
-        else if (startUp == Config::NETWORK)
-        {
-            // This should probably become the default once we have a stable network.
-            if (!getConfig ().RUN_STANDALONE)
-                m_networkOPs->needNetworkLedger ();
-
-            startGenesisLedger ();
-        }
-        else
-        {
-            startGenesisLedger ();
-        }
-
-        m_orderBookDB.setup (getApp().getLedgerMaster ().getCurrentLedger ());
-
-        // Begin validation and ip maintenance.
-        //
-        // - LocalCredentials maintains local information: including identity
-        // - and network connection persistence information.
-        //
-        // VFALCO NOTE this starts the UNL
-        m_localCredentials.start ();
-
-        //
-        // Set up UNL.
-        //
-        if (!getConfig ().RUN_STANDALONE)
-            getUNL ().nodeBootstrap ();
-
-        mValidations->tune (getConfig ().getSize (siValidationsSize), getConfig ().getSize (siValidationsAge));
-        m_nodeStore->tune (getConfig ().getSize (siNodeCacheSize), getConfig ().getSize (siNodeCacheAge));
-        m_ledgerMaster->tune (getConfig ().getSize (siLedgerSize), getConfig ().getSize (siLedgerAge));
-        family().treecache().setTargetSize (getConfig ().getSize (siTreeCacheSize));
-        family().treecache().setTargetAge (getConfig ().getSize (siTreeCacheAge));
-
-        //----------------------------------------------------------------------
-        //
-        // Server
-        //
-        //----------------------------------------------------------------------
-
-        // VFALCO NOTE Unfortunately, in stand-alone mode some code still
-        //             foolishly calls overlay(). When this is fixed we can
-        //             move the instantiation inside a conditional:
-        //
-        //             if (!getConfig ().RUN_STANDALONE)
-        m_overlay = make_Overlay (setup_Overlay(getConfig()), *m_jobQueue,
-            *serverHandler_, *m_resourceManager, *m_resolver, get_io_service(),
-            getConfig());
-        add (*m_overlay); // add to PropertyStream
-
-        m_overlay->setupValidatorKeyManifests (getConfig (), getWalletDB ());
-
-        {
-            auto setup = setup_ServerHandler(getConfig(), std::cerr);
-            setup.makeContexts();
-            serverHandler_->setup (setup, m_journal);
-        }
-
-        // Create websocket servers.
-        for (auto const& port : serverHandler_->setup().ports)
-        {
-            if (! port.websockets())
-                continue;
-            auto server = websocket::makeServer (
-                {port, *m_resourceManager, getOPs(), m_journal, getConfig(),
-                 *m_collectorManager});
-            if (!server)
-            {
-                m_journal.fatal << "Could not create Websocket for [" <<
-                    port.name << "]";
-                throw std::exception();
-            }
-            websocketServers_.emplace_back (std::move (server));
-        }
-
-        //----------------------------------------------------------------------
-
-        // Begin connecting to network.
-        if (!getConfig ().RUN_STANDALONE)
-        {
-            // Should this message be here, conceptually? In theory this sort
-            // of message, if displayed, should be displayed from PeerFinder.
-            if (getConfig ().PEER_PRIVATE && getConfig ().IPS.empty ())
-                m_journal.warning << "No outbound peer connections will be made";
-
-            // VFALCO NOTE the state timer resets the deadlock detector.
-            //
-            m_networkOPs->setStateTimer ();
-        }
-        else
-        {
-            m_journal.warning << "Running in standalone mode";
-
-            m_networkOPs->setStandAlone ();
-        }
-    }
-
     //--------------------------------------------------------------------------
     //
     // Stoppable
@@ -878,7 +776,7 @@ public:
     {
     }
 
-    void onStart ()
+    void onStart () override
     {
         m_journal.info << "Application starting. Build is " << gitCommitID();
 
@@ -891,7 +789,7 @@ public:
     }
 
     // Called to indicate shutdown.
-    void onStop ()
+    void onStop () override
     {
         m_journal.debug << "Application stopping";
 
@@ -928,42 +826,11 @@ public:
     // PropertyStream
     //
 
-    void onWrite (beast::PropertyStream::Map& stream)
+    void onWrite (beast::PropertyStream::Map& stream) override
     {
     }
 
     //------------------------------------------------------------------------------
-
-    void run ()
-    {
-        // VFALCO NOTE I put this here in the hopes that when unit tests run (which
-        //             tragically require an Application object to exist or else they
-        //             crash), the run() function will not get called and we will
-        //             avoid doing silly things like contacting the SNTP server, or
-        //             running the various logic threads like Validators, PeerFinder, etc.
-        prepare ();
-        start ();
-
-
-        {
-            if (!getConfig ().RUN_STANDALONE)
-            {
-                // VFALCO NOTE This seems unnecessary. If we properly refactor the load
-                //             manager then the deadlock detector can just always be "armed"
-                //
-                getApp().getLoadManager ().activateDeadlockDetector ();
-            }
-        }
-
-        m_stop.wait ();
-
-        // Stop the server. When this returns, all
-        // Stoppable objects should be stopped.
-        m_journal.info << "Received shutdown request";
-        stop (m_journal);
-        m_journal.info << "Done.";
-        StopSustain();
-    }
 
     void exitWithCode(int code)
     {
@@ -973,14 +840,7 @@ public:
         std::exit(code);
     }
 
-    void signalStop ()
-    {
-        // Unblock the main thread (which is sitting in run()).
-        //
-        m_stop.signal();
-    }
-
-    void onDeadlineTimer (beast::DeadlineTimer& timer)
+    void onDeadlineTimer (beast::DeadlineTimer& timer) override
     {
         if (timer == m_entropyTimer)
         {
@@ -992,24 +852,25 @@ public:
         {
             // VFALCO TODO Move all this into doSweep
 
-            boost::filesystem::space_info space =
-                    boost::filesystem::space (getConfig ().legacy ("database_path"));
-
-            // VFALCO TODO Give this magic constant a name and move it into a well documented header
-            //
-            if (space.available < (512 * 1024 * 1024))
+            if (! config_->RUN_STANDALONE)
             {
-                m_journal.fatal << "Remaining free disk space is less than 512MB";
-                getApp().signalStop ();
+                boost::filesystem::space_info space =
+                        boost::filesystem::space (config_->legacy ("database_path"));
+
+                // VFALCO TODO Give this magic constant a name and move it into a well documented header
+                //
+                if (space.available < (512 * 1024 * 1024))
+                {
+                    m_journal.fatal << "Remaining free disk space is less than 512MB";
+                    signalStop ();
+                }
             }
 
-            m_jobQueue->addJob(jtSWEEP, "sweep",
-                std::bind(&ApplicationImp::doSweep, this,
-                          std::placeholders::_1));
+            m_jobQueue->addJob(jtSWEEP, "sweep", [this] (Job&) { doSweep(); });
         }
     }
 
-    void doSweep (Job& j)
+    void doSweep ()
     {
         // VFALCO NOTE Does the order of calls matter?
         // VFALCO TODO fix the dependency inversion using an observer,
@@ -1022,41 +883,280 @@ public:
         getTempNodeCache().sweep();
         getValidations().sweep();
         getInboundLedgers().sweep();
-        AcceptedLedger::sweep();
+        m_acceptedLedgerCache.sweep();
         family().treecache().sweep();
         cachedSLEs_.expire();
 
         // VFALCO NOTE does the call to sweep() happen on another thread?
-        m_sweepTimer.setExpiration (getConfig ().getSize (siSweepInterval));
+        m_sweepTimer.setExpiration (config_->getSize (siSweepInterval));
     }
 
 
 private:
+    void addTxnSeqField();
     void updateTables ();
     void startGenesisLedger ();
     Ledger::pointer getLastFullLedger();
     bool loadOldLedger (
         std::string const& ledgerID, bool replay, bool isFilename);
-
-    void onAnnounceAddress ();
 };
 
 //------------------------------------------------------------------------------
 
-void ApplicationImp::startGenesisLedger ()
+// VFALCO TODO Break this function up into many small initialization segments.
+//             Or better yet refactor these initializations into RAII classes
+//             which are members of the Application object.
+//
+void ApplicationImp::setup()
 {
-    std::shared_ptr<Ledger const> const genesis =
+    // VFALCO NOTE: 0 means use heuristics to determine the thread count.
+    m_jobQueue->setThreadCount (0, config_->RUN_STANDALONE);
+
+    // We want to intercept and wait for CTRL-C to terminate the process
+    m_signals.add (SIGINT);
+
+    m_signals.async_wait(std::bind(&ApplicationImp::signalled, this,
+        std::placeholders::_1, std::placeholders::_2));
+
+    assert (mTxnDB == nullptr);
+
+    auto debug_log = config_->getDebugLogFile ();
+
+    if (!debug_log.empty ())
+    {
+        // Let debug messages go to the file but only WARNING or higher to
+        // regular output (unless verbose)
+
+        if (!logs_->open(debug_log))
+            std::cerr << "Can't open log file " << debug_log << '\n';
+
+        if (logs_->severity() > beast::Journal::kDebug)
+            logs_->severity (beast::Journal::kDebug);
+    }
+
+    logs_->silent (config_->SILENT);
+
+    if (!config_->RUN_STANDALONE)
+        timeKeeper_->run(config_->SNTP_SERVERS);
+
+    if (!initSqliteDbs ())
+    {
+        m_journal.fatal << "Can not create database connections!";
+        exitWithCode(3);
+    }
+
+    getLedgerDB ().getSession ()
+        << boost::str (boost::format ("PRAGMA cache_size=-%d;") %
+                        (config_->getSize (siLgrDBCache) * 1024));
+
+    getTxnDB ().getSession ()
+            << boost::str (boost::format ("PRAGMA cache_size=-%d;") %
+                            (config_->getSize (siTxnDBCache) * 1024));
+
+    mTxnDB->setupCheckpointing (m_jobQueue.get(), logs());
+    mLedgerDB->setupCheckpointing (m_jobQueue.get(), logs());
+
+    if (!config_->RUN_STANDALONE)
+        updateTables ();
+
+    m_amendmentTable->addInitial (
+        config_->section (SECTION_AMENDMENTS));
+    Pathfinder::initPathTable();
+
+    m_ledgerMaster->setMinValidations (
+        config_->VALIDATION_QUORUM, config_->LOCK_QUORUM);
+
+    auto const startUp = config_->START_UP;
+    if (startUp == Config::FRESH)
+    {
+        m_journal.info << "Starting new Ledger";
+
+        startGenesisLedger ();
+    }
+    else if (startUp == Config::LOAD ||
+                startUp == Config::LOAD_FILE ||
+                startUp == Config::REPLAY)
+    {
+        m_journal.info << "Loading specified Ledger";
+
+        if (!loadOldLedger (config_->START_LEDGER,
+                            startUp == Config::REPLAY,
+                            startUp == Config::LOAD_FILE))
+        {
+            exitWithCode(-1);
+        }
+    }
+    else if (startUp == Config::NETWORK)
+    {
+        // This should probably become the default once we have a stable network.
+        if (!config_->RUN_STANDALONE)
+            m_networkOPs->needNetworkLedger ();
+
+        startGenesisLedger ();
+    }
+    else
+    {
+        startGenesisLedger ();
+    }
+
+    m_orderBookDB.setup (getLedgerMaster ().getCurrentLedger ());
+
+    cluster_ = make_Cluster (config (), logs_->journal("Overlay"));
+
+    // Begin validation and ip maintenance.
+    //
+    // - LocalCredentials maintains local information: including identity
+    // - and network connection persistence information.
+    //
+    // VFALCO NOTE this starts the UNL
+    m_localCredentials.start ();
+
+    //
+    // Set up UNL.
+    //
+    if (!config_->RUN_STANDALONE)
+        getUNL ().nodeBootstrap ();
+
+    m_nodeStore->tune (config_->getSize (siNodeCacheSize), config_->getSize (siNodeCacheAge));
+    m_ledgerMaster->tune (config_->getSize (siLedgerSize), config_->getSize (siLedgerAge));
+    family().treecache().setTargetSize (config_->getSize (siTreeCacheSize));
+    family().treecache().setTargetAge (config_->getSize (siTreeCacheAge));
+
+    //----------------------------------------------------------------------
+    //
+    // Server
+    //
+    //----------------------------------------------------------------------
+
+    // VFALCO NOTE Unfortunately, in stand-alone mode some code still
+    //             foolishly calls overlay(). When this is fixed we can
+    //             move the instantiation inside a conditional:
+    //
+    //             if (!config_.RUN_STANDALONE)
+    m_overlay = make_Overlay (*this, setup_Overlay(*config_), *m_jobQueue,
+        *serverHandler_, *m_resourceManager, *m_resolver, get_io_service(),
+        *config_);
+    add (*m_overlay); // add to PropertyStream
+
+    // start first consensus round
+    if (! m_networkOPs->beginConsensus(m_ledgerMaster->getClosedLedger()->info().hash))
+    {
+        LogicError ("Unable to start consensus");
+    }
+
+    m_overlay->setupValidatorKeyManifests (*config_, getWalletDB ());
+
+    {
+        auto setup = setup_ServerHandler(*config_, std::cerr);
+        setup.makeContexts();
+        serverHandler_->setup (setup, m_journal);
+    }
+
+    // Create websocket servers.
+    for (auto const& port : serverHandler_->setup().ports)
+    {
+        if (! port.websockets())
+            continue;
+        auto server = websocket::makeServer (
+            {*this, port, *m_resourceManager, getOPs(), m_journal, *config_,
+                *m_collectorManager});
+        if (!server)
+        {
+            m_journal.fatal << "Could not create Websocket for [" <<
+                port.name << "]";
+            Throw<std::exception> ();
+        }
+        websocketServers_.emplace_back (std::move (server));
+    }
+
+    //----------------------------------------------------------------------
+
+    // Begin connecting to network.
+    if (!config_->RUN_STANDALONE)
+    {
+        // Should this message be here, conceptually? In theory this sort
+        // of message, if displayed, should be displayed from PeerFinder.
+        if (config_->PEER_PRIVATE && config_->IPS_FIXED.empty ())
+            m_journal.warning << "No outbound peer connections will be made";
+
+        // VFALCO NOTE the state timer resets the deadlock detector.
+        //
+        m_networkOPs->setStateTimer ();
+    }
+    else
+    {
+        m_journal.warning << "Running in standalone mode";
+
+        m_networkOPs->setStandAlone ();
+    }
+}
+
+void
+ApplicationImp::run()
+{
+    // VFALCO NOTE I put this here in the hopes that when unit tests run (which
+    //             tragically require an Application object to exist or else they
+    //             crash), the run() function will not get called and we will
+    //             avoid doing silly things like contacting the SNTP server, or
+    //             running the various logic threads like Validators, PeerFinder, etc.
+    prepare ();
+    start ();
+
+
+    {
+        if (!config_->RUN_STANDALONE)
+        {
+            // VFALCO NOTE This seems unnecessary. If we properly refactor the load
+            //             manager then the deadlock detector can just always be "armed"
+            //
+            getLoadManager ().activateDeadlockDetector ();
+        }
+    }
+
+    m_stop.wait ();
+
+    // Stop the server. When this returns, all
+    // Stoppable objects should be stopped.
+    m_journal.info << "Received shutdown request";
+    stop (m_journal);
+    m_journal.info << "Done.";
+    StopSustain();
+}
+
+void
+ApplicationImp::signalStop()
+{
+    // Unblock the main thread (which is sitting in run()).
+    //
+    m_stop.signal();
+}
+
+bool
+ApplicationImp::isShutdown()
+{
+    // from Stoppable mixin
+    return isStopped();
+}
+
+//------------------------------------------------------------------------------
+
+void
+ApplicationImp::startGenesisLedger()
+{
+    std::shared_ptr<Ledger> const genesis =
         std::make_shared<Ledger>(
-            create_genesis, getConfig());
+            create_genesis, *config_, family());
+    m_ledgerMaster->storeLedger (genesis);
+
     auto const next = std::make_shared<Ledger>(
-        open_ledger, *genesis);
+        open_ledger, *genesis, timeKeeper().closeTime());
+    next->updateSkipList ();
     next->setClosed ();
-    next->setAccepted ();
+    next->setImmutable (*config_);
     m_networkOPs->setLastCloseTime (next->info().closeTime);
-    openLedger_.emplace(next, getConfig(),
-        cachedSLEs_, deprecatedLogs().journal("OpenLedger"));
-    m_ledgerMaster->pushLedger (next,
-        std::make_shared<Ledger>(open_ledger, *next));
+    openLedger_.emplace(next, cachedSLEs_,
+        logs_->journal("OpenLedger"));
+    m_ledgerMaster->switchLCL (next);
 }
 
 Ledger::pointer
@@ -1068,40 +1168,38 @@ ApplicationImp::getLastFullLedger()
         std::uint32_t ledgerSeq;
         uint256 ledgerHash;
         std::tie (ledger, ledgerSeq, ledgerHash) =
-                loadLedgerHelper ("order by LedgerSeq desc limit 1");
+                loadLedgerHelper ("order by LedgerSeq desc limit 1", *this);
 
         if (!ledger)
             return ledger;
 
         ledger->setClosed ();
-        ledger->setImmutable();
+        ledger->setImmutable(*config_);
 
-        if (getApp().getLedgerMaster ().haveLedger (ledgerSeq))
-        {
-            ledger->setAccepted ();
+        if (getLedgerMaster ().haveLedger (ledgerSeq))
             ledger->setValidated ();
-        }
 
         if (ledger->getHash () != ledgerHash)
         {
-            if (ShouldLog (lsERROR, Ledger))
+            auto j = journal ("Ledger");
+            if (j.error)
             {
-                WriteLog (lsERROR, Ledger) << "Failed on ledger";
+                j.error  << "Failed on ledger";
                 Json::Value p;
                 addJson (p, {*ledger, LedgerFill::full});
-                WriteLog (lsERROR, Ledger) << p;
+                j.error << p;
             }
 
             assert (false);
             return Ledger::pointer ();
         }
 
-        WriteLog (lsTRACE, Ledger) << "Loaded ledger: " << ledgerHash;
+        JLOG (journal ("Ledger").trace) << "Loaded ledger: " << ledgerHash;
         return ledger;
     }
     catch (SHAMapMissingNode& sn)
     {
-        WriteLog (lsWARNING, Ledger)
+        JLOG (journal ("Ledger").warning)
                 << "Database contains ledger with missing nodes: " << sn;
         return Ledger::pointer ();
     }
@@ -1139,8 +1237,9 @@ bool ApplicationImp::loadOldLedger (
 
 
                      std::uint32_t seq = 1;
-                     std::uint32_t closeTime = getApp().getOPs().getCloseTimeNC ();
-                     std::uint32_t closeTimeResolution = 30;
+                     auto closeTime = timeKeeper().closeTime();
+                     using namespace std::chrono_literals;
+                     auto closeTimeResolution = 30s;
                      bool closeTimeEstimated = false;
                      std::uint64_t totalDrops = 0;
 
@@ -1152,12 +1251,14 @@ bool ApplicationImp::loadOldLedger (
                           }
                           if (ledger.get().isMember ("close_time"))
                           {
-                              closeTime = ledger.get()["close_time"].asUInt();
+                              using tp = NetClock::time_point;
+                              using d = tp::duration;
+                              closeTime = tp{d{ledger.get()["close_time"].asUInt()}};
                           }
                           if (ledger.get().isMember ("close_time_resolution"))
                           {
-                              closeTimeResolution =
-                                  ledger.get()["close_time_resolution"].asUInt();
+                              closeTimeResolution = std::chrono::seconds{
+                                  ledger.get()["close_time_resolution"].asUInt()};
                           }
                           if (ledger.get().isMember ("close_time_estimated"))
                           {
@@ -1178,7 +1279,7 @@ bool ApplicationImp::loadOldLedger (
                      }
                      else
                      {
-                         loadLedger = std::make_shared<Ledger> (seq, closeTime, getConfig());
+                         loadLedger = std::make_shared<Ledger> (seq, closeTime, *config_, family());
                          loadLedger->setTotalDrops(totalDrops);
 
                          for (Json::UInt index = 0; index < ledger.get().size(); ++index)
@@ -1208,8 +1309,11 @@ bool ApplicationImp::loadOldLedger (
                          }
 
                          loadLedger->setClosed ();
+                         loadLedger->stateMap().flushDirty
+                             (hotACCOUNT_NODE, loadLedger->info().seq);
                          loadLedger->setAccepted (closeTime,
-                             closeTimeResolution, ! closeTimeEstimated);
+                             closeTimeResolution, ! closeTimeEstimated,
+                                *config_);
                      }
                  }
             }
@@ -1223,21 +1327,21 @@ bool ApplicationImp::loadOldLedger (
             // by hash
             uint256 hash;
             hash.SetHex (ledgerID);
-            loadLedger = Ledger::loadByHash (hash);
+            loadLedger = loadByHash (hash, *this);
 
             if (!loadLedger)
             {
                 // Try to build the ledger from the back end
-                auto il = std::make_shared <InboundLedger> (hash, 0, InboundLedger::fcGENERIC,
-                    stopwatch());
+                auto il = std::make_shared <InboundLedger> (
+                    *this, hash, 0, InboundLedger::fcGENERIC, stopwatch());
                 if (il->checkLocal ())
                     loadLedger = il->getLedger ();
             }
 
         }
         else // assume by sequence
-            loadLedger = Ledger::loadByIndex (
-                beast::lexicalCastThrow <std::uint32_t> (ledgerID));
+            loadLedger = loadByIndex (
+                beast::lexicalCastThrow <std::uint32_t> (ledgerID), *this);
 
         if (!loadLedger)
         {
@@ -1255,14 +1359,14 @@ bool ApplicationImp::loadOldLedger (
 
             m_journal.info << "Loading parent ledger";
 
-            loadLedger = Ledger::loadByHash (replayLedger->info().parentHash);
+            loadLedger = loadByHash (replayLedger->info().parentHash, *this);
             if (!loadLedger)
             {
                 m_journal.info << "Loading parent ledger from node store";
 
                 // Try to build the ledger from the back end
                 auto il = std::make_shared <InboundLedger> (
-                    replayLedger->info().parentHash, 0, InboundLedger::fcGENERIC,
+                    *this, replayLedger->info().parentHash, 0, InboundLedger::fcGENERIC,
                     stopwatch());
                 if (il->checkLocal ())
                     loadLedger = il->getLedger ();
@@ -1287,14 +1391,14 @@ bool ApplicationImp::loadOldLedger (
             return false;
         }
 
-        if (!loadLedger->walkLedger ())
+        if (!loadLedger->walkLedger (journal ("Ledger")))
         {
             m_journal.fatal << "Ledger is missing nodes.";
             assert(false);
             return false;
         }
 
-        if (!loadLedger->assertSane ())
+        if (!loadLedger->assertSane (journal ("Ledger")))
         {
             m_journal.fatal << "Ledger is not sane.";
             assert(false);
@@ -1304,40 +1408,47 @@ bool ApplicationImp::loadOldLedger (
         m_ledgerMaster->setLedgerRangePresent (loadLedger->info().seq, loadLedger->info().seq);
 
         auto const openLedger =
-            std::make_shared<Ledger>(open_ledger, *loadLedger);
-        m_ledgerMaster->switchLedgers (loadLedger, openLedger);
+            std::make_shared<Ledger>(open_ledger, *loadLedger, timeKeeper().closeTime());
+        m_ledgerMaster->switchLCL (loadLedger);
         m_ledgerMaster->forceValid(loadLedger);
         m_networkOPs->setLastCloseTime (loadLedger->info().closeTime);
-        openLedger_.emplace(loadLedger, getConfig(),
-            cachedSLEs_, deprecatedLogs().journal("OpenLedger"));
+        openLedger_.emplace(loadLedger, cachedSLEs_,
+            logs_->journal("OpenLedger"));
 
         if (replay)
         {
             // inject transaction(s) from the replayLedger into our open ledger
+            // and build replay structure
             auto const& txns = replayLedger->txMap();
+            auto replayData = std::make_unique <LedgerReplay> ();
 
-            // Get a mutable snapshot of the open ledger
-            Ledger::pointer cur = getLedgerMaster().getCurrentLedger();
-            cur = std::make_shared <Ledger> (*cur, true);
-            assert (!cur->isImmutable());
+            replayData->prevLedger_ = replayLedger;
+            replayData->closeTime_ = replayLedger->info().closeTime;
+            replayData->closeFlags_ = replayLedger->info().closeFlags;
 
             for (auto const& item : txns)
             {
-                auto const txn =
-                    getTransaction(*replayLedger, item.key(),
-                        getApp().getMasterTransaction());
-                if (m_journal.info) m_journal.info <<
-                    txn->getJson(0);
-                Serializer s;
-                txn->getSTransaction()->add(s);
-                cur->rawTxInsert(item.key(),
-                    std::make_shared<Serializer const>(
-                        std::move(s)), nullptr);
-                getApp().getHashRouter().setFlag (item.key(), SF_SIGGOOD);
+                auto txID = item.key();
+                auto txPair = replayLedger->txRead (txID);
+                auto txIndex = (*txPair.second)[sfTransactionIndex];
+
+                auto s = std::make_shared <Serializer> ();
+                txPair.first->add(*s);
+
+                forceValidity(getHashRouter(),
+                    txID, Validity::SigGoodOnly);
+
+                replayData->txns_.emplace (txIndex, txPair.first);
+
+                openLedger_->modify(
+                    [&txID, &s](OpenView& view, beast::Journal j)
+                    {
+                        view.rawTxInsert (txID, std::move (s), nullptr);
+                        return true;
+                    });
             }
 
-            // Switch to the mutable snapshot
-            m_ledgerMaster->switchLedgers (loadLedger, cur);
+            m_ledgerMaster->takeReplay (std::move (replayData));
         }
     }
     catch (SHAMapMissingNode&)
@@ -1354,39 +1465,39 @@ bool ApplicationImp::loadOldLedger (
     return true;
 }
 
-bool serverOkay (std::string& reason)
+bool ApplicationImp::serverOkay (std::string& reason)
 {
-    if (!getConfig ().ELB_SUPPORT)
+    if (! config().ELB_SUPPORT)
         return true;
 
-    if (getApp().isShutdown ())
+    if (isShutdown ())
     {
         reason = "Server is shutting down";
         return false;
     }
 
-    if (getApp().getOPs ().isNeedNetworkLedger ())
+    if (getOPs ().isNeedNetworkLedger ())
     {
         reason = "Not synchronized with network yet";
         return false;
     }
 
-    if (getApp().getOPs ().getOperatingMode () < NetworkOPs::omSYNCING)
+    if (getOPs ().getOperatingMode () < NetworkOPs::omSYNCING)
     {
         reason = "Not synchronized with network";
         return false;
     }
 
-    if (!getApp().getLedgerMaster().isCaughtUp(reason))
+    if (!getLedgerMaster().isCaughtUp(reason))
         return false;
 
-    if (getApp().getFeeTrack ().isLoadedLocal ())
+    if (getFeeTrack ().isLoadedLocal ())
     {
         reason = "Too much load";
         return false;
     }
 
-    if (getApp().getOPs ().isAmendmentBlocked ())
+    if (getOPs ().isAmendmentBlocked ())
     {
         reason = "Server version too old";
         return false;
@@ -1395,9 +1506,17 @@ bool serverOkay (std::string& reason)
     return true;
 }
 
+beast::Journal
+ApplicationImp::journal (std::string const& name)
+{
+    return logs_->journal (name);
+}
+
 //VFALCO TODO clean this up since it is just a file holding a single member function definition
 
-static std::vector<std::string> getSchema (DatabaseCon& dbc, std::string const& dbName)
+static
+std::vector<std::string>
+getSchema (DatabaseCon& dbc, std::string const& dbName)
 {
     std::vector<std::string> schema;
     schema.reserve(32);
@@ -1418,32 +1537,34 @@ static std::vector<std::string> getSchema (DatabaseCon& dbc, std::string const& 
     return schema;
 }
 
-static bool schemaHas (DatabaseCon& dbc, std::string const& dbName, int line, std::string const& content)
+static bool schemaHas (
+    DatabaseCon& dbc, std::string const& dbName, int line,
+    std::string const& content, beast::Journal j)
 {
     std::vector<std::string> schema = getSchema (dbc, dbName);
 
     if (static_cast<int> (schema.size ()) <= line)
     {
-        WriteLog (lsFATAL, Application) << "Schema for " << dbName << " has too few lines";
-        throw std::runtime_error ("bad schema");
+        JLOG (j.fatal) << "Schema for " << dbName << " has too few lines";
+        Throw<std::runtime_error> ("bad schema");
     }
 
     return schema[line].find (content) != std::string::npos;
 }
 
-static void addTxnSeqField ()
+void ApplicationImp::addTxnSeqField ()
 {
-    if (schemaHas (getApp().getTxnDB (), "AccountTransactions", 0, "TxnSeq"))
+    if (schemaHas (getTxnDB (), "AccountTransactions", 0, "TxnSeq", m_journal))
         return;
 
-    WriteLog (lsWARNING, Application) << "Transaction sequence field is missing";
+    JLOG (m_journal.warning) << "Transaction sequence field is missing";
 
-    auto& session = getApp().getTxnDB ().getSession ();
+    auto& session = getTxnDB ().getSession ();
 
     std::vector< std::pair<uint256, int> > txIDs;
     txIDs.reserve (300000);
 
-    WriteLog (lsINFO, Application) << "Parsing transactions";
+    JLOG (m_journal.info) << "Parsing transactions";
     int i = 0;
     uint256 transID;
 
@@ -1472,28 +1593,28 @@ static void addTxnSeqField ()
         if (txnMeta.size () == 0)
         {
             txIDs.push_back (std::make_pair (transID, -1));
-            WriteLog (lsINFO, Application) << "No metadata for " << transID;
+            JLOG (m_journal.info) << "No metadata for " << transID;
         }
         else
         {
-            TxMeta m (transID, 0, txnMeta);
+            TxMeta m (transID, 0, txnMeta, journal ("TxMeta"));
             txIDs.push_back (std::make_pair (transID, m.getIndex ()));
         }
 
         if ((++i % 1000) == 0)
         {
-            WriteLog (lsINFO, Application) << i << " transactions read";
+            JLOG (m_journal.info) << i << " transactions read";
         }
     }
 
-    WriteLog (lsINFO, Application) << "All " << i << " transactions read";
+    JLOG (m_journal.info) << "All " << i << " transactions read";
 
     soci::transaction tr(session);
 
-    WriteLog (lsINFO, Application) << "Dropping old index";
+    JLOG (m_journal.info) << "Dropping old index";
     session << "DROP INDEX AcctTxIndex;";
 
-    WriteLog (lsINFO, Application) << "Altering table";
+    JLOG (m_journal.info) << "Altering table";
     session << "ALTER TABLE AccountTransactions ADD COLUMN TxnSeq INTEGER;";
 
     boost::format fmt ("UPDATE AccountTransactions SET TxnSeq = %d WHERE TransID = '%s';");
@@ -1504,11 +1625,11 @@ static void addTxnSeqField ()
 
         if ((++i % 1000) == 0)
         {
-            WriteLog (lsINFO, Application) << i << " transactions updated";
+            JLOG (m_journal.info) << i << " transactions updated";
         }
     }
 
-    WriteLog (lsINFO, Application) << "Building new index";
+    JLOG (m_journal.info) << "Building new index";
     session << "CREATE INDEX AcctTxIndex ON AccountTransactions(Account, LedgerSeq, TxnSeq, TransID);";
 
     tr.commit ();
@@ -1516,42 +1637,37 @@ static void addTxnSeqField ()
 
 void ApplicationImp::updateTables ()
 {
-    if (getConfig ().section (ConfigSection::nodeDatabase ()).empty ())
+    if (config_->section (ConfigSection::nodeDatabase ()).empty ())
     {
-        WriteLog (lsFATAL, Application) << "The [node_db] configuration setting has been updated and must be set";
+        JLOG (m_journal.fatal) << "The [node_db] configuration setting has been updated and must be set";
         exitWithCode(1);
     }
 
     // perform any needed table updates
-    assert (schemaHas (getApp().getTxnDB (), "AccountTransactions", 0, "TransID"));
-    assert (!schemaHas (getApp().getTxnDB (), "AccountTransactions", 0, "foobar"));
+    assert (schemaHas (getTxnDB (), "AccountTransactions", 0, "TransID", m_journal));
+    assert (!schemaHas (getTxnDB (), "AccountTransactions", 0, "foobar", m_journal));
     addTxnSeqField ();
 
-    if (schemaHas (getApp().getTxnDB (), "AccountTransactions", 0, "PRIMARY"))
+    if (schemaHas (getTxnDB (), "AccountTransactions", 0, "PRIMARY", m_journal))
     {
-        WriteLog (lsFATAL, Application) << "AccountTransactions database should not have a primary key";
+        JLOG (m_journal.fatal) << "AccountTransactions database should not have a primary key";
         exitWithCode(1);
     }
 
-    if (getConfig ().doImport)
+    if (config_->doImport)
     {
         NodeStore::DummyScheduler scheduler;
         std::unique_ptr <NodeStore::Database> source =
             NodeStore::Manager::instance().make_Database ("NodeStore.import", scheduler,
-                deprecatedLogs().journal("NodeObject"), 0,
-                getConfig ()[ConfigSection::importNodeDatabase ()]);
+                logs_->journal("NodeObject"), 0,
+                config_->section(ConfigSection::importNodeDatabase ()));
 
-        WriteLog (lsWARNING, NodeObject) <<
-            "Node import from '" << source->getName () << "' to '"
-                                 << getApp().getNodeStore().getName () << "'.";
+        JLOG (journal ("NodeObject").warning)
+            << "Node import from '" << source->getName () << "' to '"
+            << getNodeStore ().getName () << "'.";
 
-        getApp().getNodeStore().import (*source);
+        getNodeStore().import (*source);
     }
-}
-
-void ApplicationImp::onAnnounceAddress ()
-{
-    // NIKB CODEME
 }
 
 //------------------------------------------------------------------------------
@@ -1561,15 +1677,17 @@ Application::Application ()
 {
 }
 
-std::unique_ptr <Application>
-make_Application (Logs& logs)
-{
-    return std::make_unique <ApplicationImp> (logs);
-}
+//------------------------------------------------------------------------------
 
-Application& getApp ()
+std::unique_ptr<Application>
+make_Application (
+    std::unique_ptr<Config> config,
+    std::unique_ptr<Logs> logs,
+    std::unique_ptr<TimeKeeper> timeKeeper)
 {
-    return ApplicationImpBase::getInstance ();
+    return std::make_unique<ApplicationImp> (
+        std::move(config), std::move(logs),
+            std::move(timeKeeper));
 }
 
 }

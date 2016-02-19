@@ -20,13 +20,16 @@
 #include <BeastConfig.h>
 #include <ripple/core/Config.h>
 #include <ripple/core/ConfigSections.h>
+#include <ripple/basics/contract.h>
 #include <ripple/basics/Log.h>
 #include <ripple/json/json_reader.h>
+#include <ripple/protocol/Feature.h>
 #include <ripple/protocol/SystemParameters.h>
 #include <ripple/net/HTTPClient.h>
 #include <beast/http/URL.h>
 #include <beast/module/core/text/LexicalCast.h>
 #include <beast/streams/debug_ostream.h>
+#include <beast/utility/ci_char_traits.h>
 #include <boost/algorithm/string.hpp>
 #include <boost/format.hpp>
 #include <boost/regex.hpp>
@@ -42,16 +45,6 @@ namespace ripple {
 //
 // TODO: Check permissions on config file before using it.
 //
-
-// Fees are in XRP.
-#define DEFAULT_FEE_DEFAULT             10
-#define DEFAULT_FEE_ACCOUNT_RESERVE     200*SYSTEM_CURRENCY_PARTS
-#define DEFAULT_FEE_OWNER_RESERVE       50*SYSTEM_CURRENCY_PARTS
-#define DEFAULT_FEE_OFFER               DEFAULT_FEE_DEFAULT
-#define DEFAULT_FEE_OPERATION           1
-
-// Fee in fee units
-#define DEFAULT_TRANSACTION_FEE_BASE    10
 
 #define SECTION_DEFAULT_NAME    ""
 
@@ -127,7 +120,7 @@ countSectionEntries (IniFileSections& secSource, std::string const& strSection)
 }
 
 bool getSingleSection (IniFileSections& secSource,
-    std::string const& strSection, std::string& strValue)
+    std::string const& strSection, std::string& strValue, beast::Journal j)
 {
     IniFileSections::mapped_type* pmtEntries =
         getIniFileSection (secSource, strSection);
@@ -139,9 +132,9 @@ bool getSingleSection (IniFileSections& secSource,
     }
     else if (pmtEntries)
     {
-        WriteLog (lsWARNING, parseIniFile) << boost::str (boost::format ("Section [%s]: requires 1 line not %d lines.")
-                                              % strSection
-                                              % pmtEntries->size ());
+        JLOG (j.warning) << boost::str (
+            boost::format ("Section [%s]: requires 1 line not %d lines.") %
+            strSection % pmtEntries->size ());
     }
 
     return bSingle;
@@ -193,49 +186,6 @@ parseAddresses (OutputSequence& out, InputIterator first, InputIterator last,
 //
 //------------------------------------------------------------------------------
 
-Config::Config ()
-{
-    //
-    // Defaults
-    //
-
-    WEBSOCKET_PING_FREQ     = (5 * 60);
-
-    PEER_PRIVATE            = false;
-    PEERS_MAX               = 0;    // indicates "use default"
-
-    TRANSACTION_FEE_BASE    = DEFAULT_TRANSACTION_FEE_BASE;
-
-    NETWORK_QUORUM          = 0;    // Don't need to see other nodes
-    VALIDATION_QUORUM       = 1;    // Only need one node to vouch
-
-    FEE_ACCOUNT_RESERVE     = DEFAULT_FEE_ACCOUNT_RESERVE;
-    FEE_OWNER_RESERVE       = DEFAULT_FEE_OWNER_RESERVE;
-    FEE_OFFER               = DEFAULT_FEE_OFFER;
-    FEE_DEFAULT             = DEFAULT_FEE_DEFAULT;
-    FEE_CONTRACT_OPERATION  = DEFAULT_FEE_OPERATION;
-
-    LEDGER_HISTORY          = 256;
-    FETCH_DEPTH             = 1000000000;
-
-    // An explanation of these magical values would be nice.
-    PATH_SEARCH_OLD         = 7;
-    PATH_SEARCH             = 7;
-    PATH_SEARCH_FAST        = 2;
-    PATH_SEARCH_MAX         = 10;
-
-    ACCOUNT_PROBE_MAX       = 10;
-
-    VALIDATORS_SITE         = "";
-
-    SSL_VERIFY              = true;
-
-    ELB_SUPPORT             = false;
-    RUN_STANDALONE          = false;
-    doImport                = false;
-    START_UP                = NORMAL;
-}
-
 static
 std::string
 getEnvVar (char const* name)
@@ -263,7 +213,6 @@ void Config::setup (std::string const& strConf, bool bQuiet)
     //
 
     QUIET       = bQuiet;
-    NODE_SIZE   = 0;
 
     strDbPath           = Helpers::getDatabaseDirName ();
     strConfFile         = strConf.empty () ? Helpers::getConfigFileName () : strConf;
@@ -316,14 +265,14 @@ void Config::setup (std::string const& strConf, bool bQuiet)
             CONFIG_FILE = CONFIG_DIR / strConfFile;
             dataDir    = strXdgDataHome + "/" + systemName ();
 
-            boost::filesystem::create_directories (CONFIG_DIR, ec);
-
-            if (ec)
-                throw std::runtime_error (boost::str (boost::format ("Can not create %s") % CONFIG_DIR));
+            if (!boost::filesystem::exists (CONFIG_FILE))
+            {
+                CONFIG_DIR  = "/etc/opt/" + systemName ();
+                CONFIG_FILE = CONFIG_DIR / strConfFile;
+                dataDir = "/var/opt/" + systemName();
+            }
         }
     }
-
-    HTTPClient::initializeSSLContext();
 
     // Update default values
     load ();
@@ -339,10 +288,12 @@ void Config::setup (std::string const& strConf, bool bQuiet)
     boost::filesystem::create_directories (dataDir, ec);
 
     if (ec)
-        throw std::runtime_error (
+        Throw<std::runtime_error> (
             boost::str (boost::format ("Can not create %s") % dataDir));
 
     legacy ("database_path", boost::filesystem::absolute (dataDir).string ());
+
+    HTTPClient::initializeSSLContext(*this);
 }
 
 void Config::load ()
@@ -401,10 +352,11 @@ void Config::loadFromString (std::string const& fileContents)
             Json::Reader    jrReader;
             Json::Value     jvCommand;
 
-            if (!jrReader.parse (strJson, jvCommand))
-                throw std::runtime_error (
+            if (! jrReader.parse (strJson, jvCommand))
+                Throw<std::runtime_error> (
                     boost::str (boost::format (
-                        "Couldn't parse [" SECTION_RPC_STARTUP "] command: %s") % strJson));
+                        "Couldn't parse [" SECTION_RPC_STARTUP "] command: %s")
+                            % strJson));
 
             RPC_STARTUP.append (jvCommand);
         }
@@ -412,34 +364,35 @@ void Config::loadFromString (std::string const& fileContents)
 
     {
         std::string dbPath;
-        if (getSingleSection (secConfig, "database_path", dbPath))
+        if (getSingleSection (secConfig, "database_path", dbPath, j_))
         {
             boost::filesystem::path p(dbPath);
-            legacy("database_path", 
+            legacy("database_path",
                    boost::filesystem::absolute (p).string ());
         }
     }
 
-    (void) getSingleSection (secConfig, SECTION_VALIDATORS_SITE, VALIDATORS_SITE);
+    (void) getSingleSection (secConfig, SECTION_VALIDATORS_SITE, VALIDATORS_SITE, j_);
 
     std::string strTemp;
-    if (getSingleSection (secConfig, SECTION_PEER_PRIVATE, strTemp))
+
+    if (getSingleSection (secConfig, SECTION_PEER_PRIVATE, strTemp, j_))
         PEER_PRIVATE        = beast::lexicalCastThrow <bool> (strTemp);
 
-    if (getSingleSection (secConfig, SECTION_PEERS_MAX, strTemp))
-        PEERS_MAX           = beast::lexicalCastThrow <int> (strTemp);
+    if (getSingleSection (secConfig, SECTION_PEERS_MAX, strTemp, j_))
+        PEERS_MAX = std::max (0, beast::lexicalCastThrow <int> (strTemp));
 
-    if (getSingleSection (secConfig, SECTION_NODE_SIZE, strTemp))
+    if (getSingleSection (secConfig, SECTION_NODE_SIZE, strTemp, j_))
     {
-        if (strTemp == "tiny")
+        if (beast::ci_equal(strTemp, "tiny"))
             NODE_SIZE = 0;
-        else if (strTemp == "small")
+        else if (beast::ci_equal(strTemp, "small"))
             NODE_SIZE = 1;
-        else if (strTemp == "medium")
+        else if (beast::ci_equal(strTemp, "medium"))
             NODE_SIZE = 2;
-        else if (strTemp == "large")
+        else if (beast::ci_equal(strTemp, "large"))
             NODE_SIZE = 3;
-        else if (strTemp == "huge")
+        else if (beast::ci_equal(strTemp, "huge"))
             NODE_SIZE = 4;
         else
         {
@@ -452,19 +405,19 @@ void Config::loadFromString (std::string const& fileContents)
         }
     }
 
-    if (getSingleSection (secConfig, SECTION_ELB_SUPPORT, strTemp))
+    if (getSingleSection (secConfig, SECTION_ELB_SUPPORT, strTemp, j_))
         ELB_SUPPORT         = beast::lexicalCastThrow <bool> (strTemp);
 
-    if (getSingleSection (secConfig, SECTION_WEBSOCKET_PING_FREQ, strTemp))
+    if (getSingleSection (secConfig, SECTION_WEBSOCKET_PING_FREQ, strTemp, j_))
         WEBSOCKET_PING_FREQ = beast::lexicalCastThrow <int> (strTemp);
 
-    getSingleSection (secConfig, SECTION_SSL_VERIFY_FILE, SSL_VERIFY_FILE);
-    getSingleSection (secConfig, SECTION_SSL_VERIFY_DIR, SSL_VERIFY_DIR);
+    getSingleSection (secConfig, SECTION_SSL_VERIFY_FILE, SSL_VERIFY_FILE, j_);
+    getSingleSection (secConfig, SECTION_SSL_VERIFY_DIR, SSL_VERIFY_DIR, j_);
 
-    if (getSingleSection (secConfig, SECTION_SSL_VERIFY, strTemp))
+    if (getSingleSection (secConfig, SECTION_SSL_VERIFY, strTemp, j_))
         SSL_VERIFY          = beast::lexicalCastThrow <bool> (strTemp);
 
-    if (getSingleSection (secConfig, SECTION_VALIDATION_SEED, strTemp))
+    if (getSingleSection (secConfig, SECTION_VALIDATION_SEED, strTemp, j_))
     {
         VALIDATION_SEED.setSeedGeneric (strTemp);
 
@@ -475,7 +428,7 @@ void Config::loadFromString (std::string const& fileContents)
         }
     }
 
-    if (getSingleSection (secConfig, SECTION_NODE_SEED, strTemp))
+    if (getSingleSection (secConfig, SECTION_NODE_SEED, strTemp, j_))
     {
         NODE_SEED.setSeedGeneric (strTemp);
 
@@ -486,46 +439,39 @@ void Config::loadFromString (std::string const& fileContents)
         }
     }
 
-    if (getSingleSection (secConfig, SECTION_NETWORK_QUORUM, strTemp))
+    if (getSingleSection (secConfig, SECTION_NETWORK_QUORUM, strTemp, j_))
         NETWORK_QUORUM      = beast::lexicalCastThrow <std::size_t> (strTemp);
 
-    if (getSingleSection (secConfig, SECTION_VALIDATION_QUORUM, strTemp))
+    if (getSingleSection (secConfig, SECTION_VALIDATION_QUORUM, strTemp, j_))
         VALIDATION_QUORUM   = std::max (0, beast::lexicalCastThrow <int> (strTemp));
 
-    if (getSingleSection (secConfig, SECTION_FEE_ACCOUNT_RESERVE, strTemp))
+    if (getSingleSection (secConfig, SECTION_FEE_ACCOUNT_RESERVE, strTemp, j_))
         FEE_ACCOUNT_RESERVE = beast::lexicalCastThrow <std::uint64_t> (strTemp);
 
-    if (getSingleSection (secConfig, SECTION_FEE_OWNER_RESERVE, strTemp))
+    if (getSingleSection (secConfig, SECTION_FEE_OWNER_RESERVE, strTemp, j_))
         FEE_OWNER_RESERVE   = beast::lexicalCastThrow <std::uint64_t> (strTemp);
 
-    if (getSingleSection (secConfig, SECTION_FEE_OFFER, strTemp))
+    if (getSingleSection (secConfig, SECTION_FEE_OFFER, strTemp, j_))
         FEE_OFFER           = beast::lexicalCastThrow <int> (strTemp);
 
-    if (getSingleSection (secConfig, SECTION_FEE_DEFAULT, strTemp))
+    if (getSingleSection (secConfig, SECTION_FEE_DEFAULT, strTemp, j_))
         FEE_DEFAULT         = beast::lexicalCastThrow <int> (strTemp);
 
-    if (getSingleSection (secConfig, SECTION_FEE_OPERATION, strTemp))
-        FEE_CONTRACT_OPERATION  = beast::lexicalCastThrow <int> (strTemp);
-
-    if (getSingleSection (secConfig, SECTION_LEDGER_HISTORY, strTemp))
+    if (getSingleSection (secConfig, SECTION_LEDGER_HISTORY, strTemp, j_))
     {
-        boost::to_lower (strTemp);
-
-        if (strTemp == "full")
+        if (beast::ci_equal(strTemp, "full"))
             LEDGER_HISTORY = 1000000000u;
-        else if (strTemp == "none")
+        else if (beast::ci_equal(strTemp, "none"))
             LEDGER_HISTORY = 0;
         else
             LEDGER_HISTORY = beast::lexicalCastThrow <std::uint32_t> (strTemp);
     }
 
-    if (getSingleSection (secConfig, SECTION_FETCH_DEPTH, strTemp))
+    if (getSingleSection (secConfig, SECTION_FETCH_DEPTH, strTemp, j_))
     {
-        boost::to_lower (strTemp);
-
-        if (strTemp == "none")
+        if (beast::ci_equal(strTemp, "none"))
             FETCH_DEPTH = 0;
-        else if (strTemp == "full")
+        else if (beast::ci_equal(strTemp, "full"))
             FETCH_DEPTH = 1000000000u;
         else
             FETCH_DEPTH = beast::lexicalCastThrow <std::uint32_t> (strTemp);
@@ -534,25 +480,28 @@ void Config::loadFromString (std::string const& fileContents)
             FETCH_DEPTH = 10;
     }
 
-    if (getSingleSection (secConfig, SECTION_PATH_SEARCH_OLD, strTemp))
+    if (getSingleSection (secConfig, SECTION_PATH_SEARCH_OLD, strTemp, j_))
         PATH_SEARCH_OLD     = beast::lexicalCastThrow <int> (strTemp);
-    if (getSingleSection (secConfig, SECTION_PATH_SEARCH, strTemp))
+    if (getSingleSection (secConfig, SECTION_PATH_SEARCH, strTemp, j_))
         PATH_SEARCH         = beast::lexicalCastThrow <int> (strTemp);
-    if (getSingleSection (secConfig, SECTION_PATH_SEARCH_FAST, strTemp))
+    if (getSingleSection (secConfig, SECTION_PATH_SEARCH_FAST, strTemp, j_))
         PATH_SEARCH_FAST    = beast::lexicalCastThrow <int> (strTemp);
-    if (getSingleSection (secConfig, SECTION_PATH_SEARCH_MAX, strTemp))
+    if (getSingleSection (secConfig, SECTION_PATH_SEARCH_MAX, strTemp, j_))
         PATH_SEARCH_MAX     = beast::lexicalCastThrow <int> (strTemp);
 
-    if (getSingleSection (secConfig, SECTION_ACCOUNT_PROBE_MAX, strTemp))
-        ACCOUNT_PROBE_MAX   = beast::lexicalCastThrow <int> (strTemp);
-
-    if (getSingleSection (secConfig, SECTION_VALIDATORS_FILE, strTemp))
+    if (getSingleSection (secConfig, SECTION_VALIDATORS_FILE, strTemp, j_))
     {
         VALIDATORS_FILE     = strTemp;
     }
 
-    if (getSingleSection (secConfig, SECTION_DEBUG_LOGFILE, strTemp))
+    if (getSingleSection (secConfig, SECTION_DEBUG_LOGFILE, strTemp, j_))
         DEBUG_LOGFILE       = strTemp;
+
+    {
+        auto const part = section("features");
+        for(auto const& s : part.values())
+            features.insert(feature(s));
+    }
 }
 
 int Config::getSize (SizedItemName item) const
@@ -563,9 +512,6 @@ int Config::getSize (SizedItemName item) const
         { siSweepInterval,      {   10,     30,     60,     90,         120     } },
 
         { siLedgerFetch,        {   2,      2,      3,      3,          3       } },
-
-        { siValidationsSize,    {   256,    256,    512,    1024,       1024    } },
-        { siValidationsAge,     {   500,    500,    500,    500,        500     } },
 
         { siNodeCacheSize,      {   16384,  32768,  131072, 262144,     524288  } },
         { siNodeCacheAge,       {   60,     90,     120,    900,        1800    } },
@@ -603,7 +549,7 @@ boost::filesystem::path Config::getDebugLogFile () const
         // Unless an absolute path for the log file is specified, the
         // path is relative to the config file directory.
         log_file = boost::filesystem::absolute (
-            log_file, getConfig ().CONFIG_DIR);
+            log_file, CONFIG_DIR);
     }
 
     if (!log_file.empty ())
@@ -627,12 +573,6 @@ boost::filesystem::path Config::getDebugLogFile () const
     }
 
     return log_file;
-}
-
-Config& getConfig ()
-{
-    static Config config;
-    return config;
 }
 
 beast::File Config::getConfigDir () const

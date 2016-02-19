@@ -20,6 +20,7 @@
 #ifndef RIPPLE_OVERLAY_MANIFEST_H_INCLUDED
 #define RIPPLE_OVERLAY_MANIFEST_H_INCLUDED
 
+#include <ripple/app/misc/UniqueNodeList.h>
 #include <ripple/basics/BasicConfig.h>
 #include <ripple/basics/UnorderedContainers.h>
 #include <ripple/protocol/PublicKey.h>
@@ -91,27 +92,8 @@ struct Manifest
 
     Manifest(std::string s, PublicKey pk, PublicKey spk, std::uint32_t seq);
 
-#ifdef _MSC_VER
-    Manifest(Manifest&& other)
-      : serialized(std::move(other.serialized))
-      , masterKey(std::move(other.masterKey))
-      , signingKey(std::move(other.signingKey))
-      , sequence(other.sequence)
-    {
-    }
-
-    Manifest& operator=(Manifest&& other)
-    {
-        serialized = std::move(other.serialized);
-        masterKey = std::move(other.masterKey);
-        signingKey = std::move(other.signingKey);
-        sequence = other.sequence;
-        return *this;
-    }
-#else
     Manifest(Manifest&& other) = default;
     Manifest& operator=(Manifest&& other) = default;
-#endif
 
     bool verify () const;
     uint256 hash () const;
@@ -148,22 +130,9 @@ private:
     struct MappedType
     {
         MappedType() = default;
-#ifdef _MSC_VER
-        MappedType(MappedType&& rhs)
-            :comment (std::move (rhs.comment))
-            , m (std::move (rhs.m))
-        {
-        }
-        MappedType& operator=(MappedType&& rhs)
-        {
-            comment = std::move (rhs.comment);
-            m = std::move (rhs.m);
-            return *this;
-        }
-#else
         MappedType(MappedType&&) = default;
         MappedType& operator=(MappedType&&) = default;
-#endif
+
         MappedType(std::string comment,
                    std::string serialized,
                    PublicKey pk, PublicKey spk, std::uint32_t seq)
@@ -184,7 +153,7 @@ private:
 
     ManifestDisposition
     canApply (PublicKey const& pk, std::uint32_t seq,
-        beast::Journal const& journal) const;
+        beast::Journal journal) const;
 
 public:
     ManifestCache() = default;
@@ -192,15 +161,17 @@ public:
     ManifestCache& operator= (ManifestCache const&) = delete;
     ~ManifestCache() = default;
 
-    void configValidatorKey(std::string const& line, beast::Journal const& journal);
-    void configManifest(Manifest m, beast::Journal const& journal);
+    void configValidatorKey(std::string const& line, beast::Journal journal);
+    void configManifest (Manifest m, UniqueNodeList& unl, beast::Journal journal);
 
     void addTrustedKey (PublicKey const& pk, std::string comment);
 
     ManifestDisposition
-    applyManifest (Manifest m, beast::Journal const& journal);
+    applyManifest (
+        Manifest m, UniqueNodeList& unl, beast::Journal journal);
 
-    void load (DatabaseCon& dbCon, beast::Journal const& journal);
+    void load (
+        DatabaseCon& dbCon, UniqueNodeList& unl, beast::Journal journal);
     void save (DatabaseCon& dbCon) const;
 
     // A "for_each" for populated manifests only

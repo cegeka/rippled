@@ -40,14 +40,14 @@ public:
     //
     void setJobQueue (JobQueue& jobQueue);
 
-    void onStop ();
-    void onChildrenStopped ();
-    void scheduleTask (NodeStore::Task& task);
+    void onStop () override;
+    void onChildrenStopped () override;
+    void scheduleTask (NodeStore::Task& task) override;
     void onFetch (NodeStore::FetchReport const& report) override;
     void onBatchWrite (NodeStore::BatchWriteReport const& report) override;
 
 private:
-    void doTask (NodeStore::Task& task, Job&);
+    void doTask (NodeStore::Task& task);
 
     JobQueue* m_jobQueue;
     std::atomic <int> m_taskCount;

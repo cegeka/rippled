@@ -20,10 +20,10 @@
 #ifndef RIPPLE_PROTOCOL_IOUAMOUNT_H_INCLUDED
 #define RIPPLE_PROTOCOL_IOUAMOUNT_H_INCLUDED
 
-#include <beast/utility/noexcept.h>
 #include <beast/utility/Zero.h>
 #include <boost/operators.hpp>
 #include <cstdint>
+#include <string>
 #include <utility>
 
 using beast::zero;
@@ -136,6 +136,9 @@ public:
         return mantissa_;
     }
 };
+
+std::string
+to_string (IOUAmount const& amount);
 
 }
 

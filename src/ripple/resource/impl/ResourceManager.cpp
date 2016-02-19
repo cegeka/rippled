@@ -18,90 +18,110 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/basics/chrono.h>
 #include <ripple/resource/ResourceManager.h>
+#include <ripple/resource/impl/Logic.h>
+#include <ripple/basics/chrono.h>
+#include <ripple/basics/Log.h>
 #include <beast/threads/Thread.h>
-#include <beast/cxx14/memory.h> // <memory>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
 
 namespace ripple {
 namespace Resource {
 
-class ManagerImp
-    : public Manager
-    , public beast::Thread
+class ManagerImp : public Manager
 {
 private:
-    beast::Journal m_journal;
-    Logic m_logic;
+    beast::Journal journal_;
+    Logic logic_;
+    std::thread thread_;
+    bool stop_ = false;
+    std::mutex mutex_;
+    std::condition_variable cond_;
+
 public:
     ManagerImp (beast::insight::Collector::ptr const& collector,
         beast::Journal journal)
-        : Thread ("Resource::Manager")
-        , m_journal (journal)
-        , m_logic (collector, stopwatch(), journal)
+        : journal_ (journal)
+        , logic_ (collector, stopwatch(), journal)
     {
-        startThread ();
+        thread_ = std::thread {&ManagerImp::run, this};
     }
 
-    ~ManagerImp ()
+    ManagerImp () = delete;
+    ManagerImp (ManagerImp const&) = delete;
+    ManagerImp& operator= (ManagerImp const&) = delete;
+
+    ~ManagerImp () override
     {
-        stopThread ();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stop_ = true;
+            cond_.notify_one();
+        }
+        thread_.join();
     }
 
-    Consumer newInboundEndpoint (beast::IP::Endpoint const& address)
+    Consumer newInboundEndpoint (beast::IP::Endpoint const& address) override
     {
-        return m_logic.newInboundEndpoint (address);
+        return logic_.newInboundEndpoint (address);
     }
 
-    Consumer newOutboundEndpoint (beast::IP::Endpoint const& address)
+    Consumer newOutboundEndpoint (beast::IP::Endpoint const& address) override
     {
-        return m_logic.newOutboundEndpoint (address);
+        return logic_.newOutboundEndpoint (address);
     }
 
-    Consumer newAdminEndpoint (std::string const& name)
+    Consumer newUnlimitedEndpoint (std::string const& name) override
     {
-        return m_logic.newAdminEndpoint (name);
+        return logic_.newUnlimitedEndpoint (name);
     }
 
-    Gossip exportConsumers ()
+    Gossip exportConsumers () override
     {
-        return m_logic.exportConsumers();
+        return logic_.exportConsumers();
     }
 
-    void importConsumers (std::string const& origin, Gossip const& gossip)
+    void importConsumers (
+        std::string const& origin, Gossip const& gossip) override
     {
-        m_logic.importConsumers (origin, gossip);
-    }
-
-    //--------------------------------------------------------------------------
-
-    Json::Value getJson ()
-    {
-        return m_logic.getJson ();
-    }
-
-    Json::Value getJson (int threshold)
-    {
-        return m_logic.getJson (threshold);
+        logic_.importConsumers (origin, gossip);
     }
 
     //--------------------------------------------------------------------------
 
-    void onWrite (beast::PropertyStream::Map& map)
+    Json::Value getJson () override
     {
-        m_logic.onWrite (map);
+        return logic_.getJson ();
+    }
+
+    Json::Value getJson (int threshold) override
+    {
+        return logic_.getJson (threshold);
     }
 
     //--------------------------------------------------------------------------
 
+    void onWrite (beast::PropertyStream::Map& map) override
+    {
+        logic_.onWrite (map);
+    }
+
+    //--------------------------------------------------------------------------
+
+private:
     void run ()
     {
-        do
+        beast::Thread::setCurrentThreadName ("Resource::Manager");
+        for(;;)
         {
-            m_logic.periodicActivity();
-            wait (1000);
+            logic_.periodicActivity();
+            std::unique_lock<std::mutex> lock(mutex_);
+            cond_.wait_for(lock, std::chrono::seconds(1));
+            if (stop_)
+                break;
         }
-        while (! threadShouldExit ());
     }
 };
 

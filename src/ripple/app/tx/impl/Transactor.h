@@ -21,24 +21,64 @@
 #define RIPPLE_APP_TX_TRANSACTOR_H_INCLUDED
 
 #include <ripple/app/tx/impl/ApplyContext.h>
+#include <ripple/protocol/XRPAmount.h>
 #include <beast/utility/Journal.h>
 
 namespace ripple {
 
+/** State information when preflighting a tx. */
+struct PreflightContext
+{
+public:
+    Application& app;
+    STTx const& tx;
+    Rules const rules;
+    ApplyFlags flags;
+    beast::Journal j;
+
+    PreflightContext(Application& app_, STTx const& tx_,
+        Rules const& rules_, ApplyFlags flags_,
+            beast::Journal j_);
+
+    PreflightContext& operator=(PreflightContext const&) = delete;
+};
+
+/** State information when determining if a tx is likely to claim a fee. */
+struct PreclaimContext
+{
+public:
+    Application& app;
+    ReadView const& view;
+    TER preflightResult;
+    STTx const& tx;
+    ApplyFlags flags;
+    beast::Journal j;
+
+    PreclaimContext(Application& app_, ReadView const& view_,
+        TER preflightResult_, STTx const& tx_,
+            ApplyFlags flags_, beast::Journal j_ = {})
+        : app(app_)
+        , view(view_)
+        , preflightResult(preflightResult_)
+        , tx(tx_)
+        , flags(flags_)
+        , j(j_)
+    {
+    }
+
+    PreclaimContext& operator=(PreclaimContext const&) = delete;
+};
+
 class Transactor
 {
 protected:
-    STTx const& mTxn;
     ApplyContext& ctx_;
     beast::Journal j_;
 
     AccountID     account_;
-    STAmount      mFeeDue;
-    STAmount      mPriorBalance;  // Balance before fees.
-    STAmount      mSourceBalance; // Balance after fees.
-    bool          mHasAuthKey;
-    bool          mSigMaster;
-    RippleAddress mSigningPubKey;
+    XRPAmount     mFeeDue;
+    XRPAmount     mPriorBalance;  // Balance before fees.
+    XRPAmount     mSourceBalance; // Balance after fees.
 
 public:
     /** Process the transaction. */
@@ -57,6 +97,44 @@ public:
         return ctx_.view();
     }
 
+    /////////////////////////////////////////////////////
+    /*
+    These static functions are called from invoke_preclaim<Tx>
+    using name hiding to accomplish compile-time polymorphism,
+    so derived classes can override for different or extra
+    functionality. Use with care, as these are not really
+    virtual and so don't have the compiler-time protection that
+    comes with it.
+    */
+
+    static
+    TER
+    checkSeq (PreclaimContext const& ctx);
+
+    static
+    TER
+    checkFee (PreclaimContext const& ctx, std::uint64_t baseFee);
+
+    static
+    TER
+    checkSign (PreclaimContext const& ctx);
+
+    // Returns the fee in fee units, not scaled for load.
+    static
+    std::uint64_t
+    calculateBaseFee (
+        PreclaimContext const& ctx);
+
+    static
+    TER
+    preclaim(PreclaimContext const &ctx)
+    {
+        // Most transactors do nothing
+        // after checkSeq/Fee/Sign.
+        return tesSUCCESS;
+    }
+    /////////////////////////////////////////////////////
+
 protected:
     TER
     apply();
@@ -64,33 +142,28 @@ protected:
     explicit
     Transactor (ApplyContext& ctx);
 
-    TER preCheckAccount ();
-    TER preCheckSigningKey ();
-    void calculateFee ();
+    virtual void preCompute();
 
-    // VFALCO This is the equivalent of dynamic_cast
-    //        to discover the type of the derived class,
-    //        and therefore bad.
-    virtual
-    bool
-    mustHaveValidAccount()
-    {
-        return true;
-    }
-
-    // Returns the fee, not scaled for load (Should be in fee units. FIXME)
-    virtual std::uint64_t calculateBaseFee ();
-
-    virtual TER preCheck ();
-    virtual TER checkSeq ();
-    virtual TER payFee ();
-    virtual TER checkSign ();
     virtual TER doApply () = 0;
 
 private:
-    TER checkSingleSign ();
-    TER checkMultiSign ();
+    void setSeq ();
+    TER payFee ();
+    static TER checkSingleSign (PreclaimContext const& ctx);
+    static TER checkMultiSign (PreclaimContext const& ctx);
 };
+
+/** Performs early sanity checks on the txid */
+TER
+preflight0(PreflightContext const& ctx);
+
+/** Performs early sanity checks on the account and fee fields */
+TER
+preflight1 (PreflightContext const& ctx);
+
+/** Checks whether the signature appears valid */
+TER
+preflight2 (PreflightContext const& ctx);
 
 }
 

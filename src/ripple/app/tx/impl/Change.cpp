@@ -29,41 +29,38 @@
 namespace ripple {
 
 TER
-Change::doApply()
+Change::preflight (PreflightContext const& ctx)
 {
-    if (mTxn.getTxnType () == ttAMENDMENT)
-        return applyAmendment ();
+    auto const ret = preflight0(ctx);
+    if (!isTesSuccess(ret))
+        return ret;
 
-    if (mTxn.getTxnType () == ttFEE)
-        return applyFee ();
-
-    return temUNKNOWN;
-}
-
-TER
-Change::checkSign()
-{
-    if (mTxn.getAccountID (sfAccount).isNonZero ())
+    auto account = ctx.tx.getAccountID(sfAccount);
+    if (account != zero)
     {
-        j_.warning << "Bad source account";
+        JLOG(ctx.j.warning) << "Change: Bad source id";
         return temBAD_SRC_ACCOUNT;
     }
 
-    if (!mTxn.getSigningPubKey ().empty () || !mTxn.getSignature ().empty ())
+    // No point in going any further if the transaction fee is malformed.
+    auto const fee = ctx.tx.getFieldAmount (sfFee);
+    if (!fee.native () || fee != beast::zero)
     {
-        j_.warning << "Bad signature";
+        JLOG(ctx.j.warning) << "Change: invalid fee";
+        return temBAD_FEE;
+    }
+
+    if (!ctx.tx.getSigningPubKey ().empty () ||
+        !ctx.tx.getSignature ().empty () ||
+        ctx.tx.isFieldPresent (sfSigners))
+    {
+        JLOG(ctx.j.warning) << "Change: Bad signature";
         return temBAD_SIGNATURE;
     }
 
-    return tesSUCCESS;
-}
-
-TER
-Change::checkSeq()
-{
-    if ((mTxn.getSequence () != 0) || mTxn.isFieldPresent (sfPreviousTxnID))
+    if (ctx.tx.getSequence () != 0 || ctx.tx.isFieldPresent (sfPreviousTxnID))
     {
-        j_.warning << "Bad sequence";
+        JLOG(ctx.j.warning) << "Change: Bad sequence";
         return temBAD_SEQUENCE;
     }
 
@@ -71,41 +68,45 @@ Change::checkSeq()
 }
 
 TER
-Change::payFee()
+Change::preclaim(PreclaimContext const &ctx)
 {
-    if (mTxn.getTransactionFee () != STAmount ())
+    // If tapOPEN_LEDGER is resurrected into ApplyFlags,
+    // this block can be moved to preflight.
+    if (ctx.view.open())
     {
-        j_.warning << "Non-zero fee";
-        return temBAD_FEE;
+        ctx.j.warning << "Change transaction against open ledger";
+        return temINVALID;
     }
+
+    if (ctx.tx.getTxnType() != ttAMENDMENT
+        && ctx.tx.getTxnType() != ttFEE)
+        return temUNKNOWN;
 
     return tesSUCCESS;
 }
 
+
 TER
-Change::preCheck()
+Change::doApply()
 {
-    account_ = mTxn.getAccountID(sfAccount);
+    if (ctx_.tx.getTxnType () == ttAMENDMENT)
+        return applyAmendment ();
 
-    if (account_.isNonZero ())
-    {
-        j_.warning << "Bad source id";
-        return temBAD_SRC_ACCOUNT;
-    }
+    assert(ctx_.tx.getTxnType() == ttFEE);
+    return applyFee ();
+}
 
-    if (view().open())
-    {
-        j_.warning << "Change transaction against open ledger";
-        return temINVALID;
-    }
-
-    return tesSUCCESS;
+void
+Change::preCompute()
+{
+    account_ = ctx_.tx.getAccountID(sfAccount);
+    assert(account_ == zero);
 }
 
 TER
 Change::applyAmendment()
 {
-    uint256 amendment (mTxn.getFieldH256 (sfAmendment));
+    uint256 amendment (ctx_.tx.getFieldH256 (sfAmendment));
 
     auto const k = keylet::amendments();
 
@@ -125,7 +126,7 @@ Change::applyAmendment()
             amendment) != amendments.end ())
         return tefALREADY;
 
-    auto flags = mTxn.getFlags ();
+    auto flags = ctx_.tx.getFlags ();
 
     const bool gotMajority = (flags & tfGotMajority) != 0;
     const bool lostMajority = (flags & tfLostMajority) != 0;
@@ -165,7 +166,7 @@ Change::applyAmendment()
         auto& entry = newMajorities.back ();
         entry.emplace_back (STHash256 (sfAmendment, amendment));
         entry.emplace_back (STUInt32 (sfCloseTime,
-            view().parentCloseTime()));
+            view().parentCloseTime().time_since_epoch().count()));
     }
     else if (!lostMajority)
     {
@@ -173,10 +174,10 @@ Change::applyAmendment()
         amendments.push_back (amendment);
         amendmentObject->setFieldV256 (sfAmendments, amendments);
 
-        getApp().getAmendmentTable ().enable (amendment);
+        ctx_.app.getAmendmentTable ().enable (amendment);
 
-        if (!getApp().getAmendmentTable ().isSupported (amendment))
-            getApp().getOPs ().setAmendmentBlocked ();
+        if (!ctx_.app.getAmendmentTable ().isSupported (amendment))
+            ctx_.app.getOPs ().setAmendmentBlocked ();
     }
 
     if (newMajorities.empty ())
@@ -207,13 +208,13 @@ Change::applyFee()
     //     "Previous fee object: " << feeObject->getJson (0);
 
     feeObject->setFieldU64 (
-        sfBaseFee, mTxn.getFieldU64 (sfBaseFee));
+        sfBaseFee, ctx_.tx.getFieldU64 (sfBaseFee));
     feeObject->setFieldU32 (
-        sfReferenceFeeUnits, mTxn.getFieldU32 (sfReferenceFeeUnits));
+        sfReferenceFeeUnits, ctx_.tx.getFieldU32 (sfReferenceFeeUnits));
     feeObject->setFieldU32 (
-        sfReserveBase, mTxn.getFieldU32 (sfReserveBase));
+        sfReserveBase, ctx_.tx.getFieldU32 (sfReserveBase));
     feeObject->setFieldU32 (
-        sfReserveIncrement, mTxn.getFieldU32 (sfReserveIncrement));
+        sfReserveIncrement, ctx_.tx.getFieldU32 (sfReserveIncrement));
 
     view().update (feeObject);
 

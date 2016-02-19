@@ -20,25 +20,30 @@
 #include <BeastConfig.h>
 #include <ripple/app/tx/impl/CancelTicket.h>
 #include <ripple/basics/Log.h>
+#include <ripple/protocol/Feature.h>
 #include <ripple/protocol/Indexes.h>
 #include <ripple/ledger/View.h>
 
 namespace ripple {
 
 TER
-CancelTicket::preCheck()
+CancelTicket::preflight (PreflightContext const& ctx)
 {
-#if ! RIPPLE_ENABLE_TICKETS
-    if (! (view().flags() & tapENABLE_TESTING))
+    if (! ctx.rules.enabled(featureTickets,
+            ctx.app.config().features))
         return temDISABLED;
-#endif
-    return Transactor::preCheck ();
+
+    auto const ret = preflight1 (ctx);
+    if (!isTesSuccess (ret))
+        return ret;
+
+    return preflight2 (ctx);
 }
 
 TER
 CancelTicket::doApply ()
 {
-    uint256 const ticketId = mTxn.getFieldH256 (sfTicketID);
+    uint256 const ticketId = ctx_.tx.getFieldH256 (sfTicketID);
 
     // VFALCO This is highly suspicious, we're requiring that the
     //        transaction provide the return value of getTicketIndex?
@@ -60,7 +65,9 @@ CancelTicket::doApply ()
     // And finally, anyone can remove an expired ticket
     if (!authorized && sleTicket->isFieldPresent (sfExpiration))
     {
-        std::uint32_t const expiration = sleTicket->getFieldU32 (sfExpiration);
+        using tp = NetClock::time_point;
+        using d = tp::duration;
+        auto const expiration = tp{d{sleTicket->getFieldU32(sfExpiration)}};
 
         if (view().parentCloseTime() >= expiration)
             authorized = true;
@@ -71,11 +78,12 @@ CancelTicket::doApply ()
 
     std::uint64_t const hint (sleTicket->getFieldU64 (sfOwnerNode));
 
+    auto viewJ = ctx_.app.journal ("View");
     TER const result = dirDelete (ctx_.view (), false, hint,
-        getOwnerDirIndex (ticket_owner), ticketId, false, (hint == 0));
+        getOwnerDirIndex (ticket_owner), ticketId, false, (hint == 0), viewJ);
 
     adjustOwnerCount(view(), view().peek(
-        keylet::account(ticket_owner)), -1);
+        keylet::account(ticket_owner)), -1, viewJ);
     ctx_.view ().erase (sleTicket);
 
     return result;

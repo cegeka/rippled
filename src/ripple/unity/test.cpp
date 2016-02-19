@@ -24,6 +24,7 @@
 #include <ripple/test/jtx/impl/balance.cpp>
 #include <ripple/test/jtx/impl/delivermin.cpp>
 #include <ripple/test/jtx/impl/Env.cpp>
+#include <ripple/test/jtx/impl/Env_test.cpp>
 #include <ripple/test/jtx/impl/fee.cpp>
 #include <ripple/test/jtx/impl/flags.cpp>
 #include <ripple/test/jtx/impl/jtx_json.cpp>
@@ -38,9 +39,13 @@
 #include <ripple/test/jtx/impl/sendmax.cpp>
 #include <ripple/test/jtx/impl/seq.cpp>
 #include <ripple/test/jtx/impl/sig.cpp>
+#include <ripple/test/jtx/impl/tag.cpp>
 #include <ripple/test/jtx/impl/ticket.cpp>
 #include <ripple/test/jtx/impl/trust.cpp>
 #include <ripple/test/jtx/impl/txflags.cpp>
 #include <ripple/test/jtx/impl/utility.cpp>
 
-#include <ripple/test/jtx/impl/Env_test.cpp>
+#include <ripple/test/mao/impl/Net.cpp>
+#include <ripple/test/mao/impl/Net_test.cpp>
+
+#include <ripple/test/impl/ManualTimeKeeper.cpp>

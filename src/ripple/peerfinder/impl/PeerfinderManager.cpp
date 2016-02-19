@@ -26,7 +26,8 @@
 #include <ripple/core/SociDB.h>
 #include <boost/asio/io_service.hpp>
 #include <boost/optional.hpp>
-#include <beast/cxx14/memory.h> // <memory>
+#include <boost/utility/in_place_factory.hpp>
+#include <memory>
 #include <thread>
 
 namespace ripple {
@@ -218,18 +219,18 @@ public:
     //--------------------------------------------------------------------------
 
     void
-    onPrepare ()
+    onPrepare () override
     {
         m_store.open (m_sociConfig);
         m_logic.load ();
     }
 
     void
-    onStart()
+    onStart() override
     {
     }
 
-    void onStop ()
+    void onStop () override
     {
         close();
         stopped();
@@ -241,7 +242,7 @@ public:
     //
     //--------------------------------------------------------------------------
 
-    void onWrite (beast::PropertyStream::Map& map)
+    void onWrite (beast::PropertyStream::Map& map) override
     {
         m_logic.onWrite (map);
     }

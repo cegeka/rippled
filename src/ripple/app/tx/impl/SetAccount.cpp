@@ -21,30 +21,38 @@
 #include <ripple/app/tx/impl/SetAccount.h>
 #include <ripple/basics/Log.h>
 #include <ripple/core/Config.h>
+#include <ripple/protocol/Feature.h>
 #include <ripple/protocol/Indexes.h>
 #include <ripple/protocol/Quality.h>
-#include <ripple/protocol/TxFlags.h>
+#include <ripple/protocol/st.h>
 #include <ripple/ledger/View.h>
 
 namespace ripple {
 
 TER
-SetAccount::preCheck ()
+SetAccount::preflight (PreflightContext const& ctx)
 {
-    std::uint32_t const uTxFlags = mTxn.getFlags ();
+    auto const ret = preflight1 (ctx);
+    if (!isTesSuccess (ret))
+        return ret;
+
+    auto& tx = ctx.tx;
+    auto& j = ctx.j;
+
+    std::uint32_t const uTxFlags = tx.getFlags ();
 
     if (uTxFlags & tfAccountSetMask)
     {
-        j_.trace << "Malformed transaction: Invalid flags set.";
+        JLOG(j.trace) << "Malformed transaction: Invalid flags set.";
         return temINVALID_FLAG;
     }
 
-    std::uint32_t const uSetFlag = mTxn.getFieldU32 (sfSetFlag);
-    std::uint32_t const uClearFlag = mTxn.getFieldU32 (sfClearFlag);
+    std::uint32_t const uSetFlag = tx.getFieldU32 (sfSetFlag);
+    std::uint32_t const uClearFlag = tx.getFieldU32 (sfClearFlag);
 
     if ((uSetFlag != 0) && (uSetFlag == uClearFlag))
     {
-        j_.trace << "Malformed transaction: Set and clear same flag.";
+        JLOG(j.trace) << "Malformed transaction: Set and clear same flag.";
         return temINVALID_FLAG;
     }
 
@@ -56,7 +64,7 @@ SetAccount::preCheck ()
 
     if (bSetRequireAuth && bClearRequireAuth)
     {
-        j_.trace << "Malformed transaction: Contradictory flags set.";
+        JLOG(j.trace) << "Malformed transaction: Contradictory flags set.";
         return temINVALID_FLAG;
     }
 
@@ -68,7 +76,7 @@ SetAccount::preCheck ()
 
     if (bSetRequireDest && bClearRequireDest)
     {
-        j_.trace << "Malformed transaction: Contradictory flags set.";
+        JLOG(j.trace) << "Malformed transaction: Contradictory flags set.";
         return temINVALID_FLAG;
     }
 
@@ -80,29 +88,76 @@ SetAccount::preCheck ()
 
     if (bSetDisallowXRP && bClearDisallowXRP)
     {
-        j_.trace << "Malformed transaction: Contradictory flags set.";
+        JLOG(j.trace) << "Malformed transaction: Contradictory flags set.";
         return temINVALID_FLAG;
     }
 
     // TransferRate
-    if (mTxn.isFieldPresent (sfTransferRate))
+    if (tx.isFieldPresent (sfTransferRate))
     {
-        std::uint32_t uRate = mTxn.getFieldU32 (sfTransferRate);
+        std::uint32_t uRate = tx.getFieldU32 (sfTransferRate);
 
         if (uRate && (uRate < QUALITY_ONE))
         {
-            j_.trace << "Malformed transaction: Bad transfer rate.";
+            JLOG(j.trace) << "Malformed transaction: Bad transfer rate.";
             return temBAD_TRANSFER_RATE;
         }
     }
 
-    return Transactor::preCheck ();
+    auto const messageKey = tx[~sfMessageKey];
+    if (messageKey && messageKey->size() > PUBLIC_BYTES_MAX)
+    {
+        JLOG(j.trace) << "message key too long";
+        return telBAD_PUBLIC_KEY;
+    }
+
+    auto const domain = tx[~sfDomain];
+    if (domain&& domain->size() > DOMAIN_BYTES_MAX)
+    {
+        JLOG(j.trace) << "domain too long";
+        return telBAD_DOMAIN;
+    }
+
+    return preflight2(ctx);
+}
+
+TER
+SetAccount::preclaim(PreclaimContext const& ctx)
+{
+    auto const id = ctx.tx[sfAccount];
+
+    std::uint32_t const uTxFlags = ctx.tx.getFlags();
+
+    auto const sle = ctx.view.read(
+        keylet::account(id));
+
+    std::uint32_t const uFlagsIn = sle->getFieldU32(sfFlags);
+
+    std::uint32_t const uSetFlag = ctx.tx.getFieldU32(sfSetFlag);
+
+    // legacy AccountSet flags
+    bool bSetRequireAuth = (uTxFlags & tfRequireAuth) || (uSetFlag == asfRequireAuth);
+
+    //
+    // RequireAuth
+    //
+    if (bSetRequireAuth && !(uFlagsIn & lsfRequireAuth))
+    {
+        if (!dirIsEmpty(ctx.view,
+            keylet::ownerDir(id)))
+        {
+            JLOG(ctx.j.trace) << "Retry: Owner directory not empty.";
+            return (ctx.flags & tapRETRY) ? terOWNERS : tecOWNERS;
+        }
+    }
+
+    return tesSUCCESS;
 }
 
 TER
 SetAccount::doApply ()
 {
-    std::uint32_t const uTxFlags = mTxn.getFlags ();
+    std::uint32_t const uTxFlags = ctx_.tx.getFlags ();
 
     auto const sle = view().peek(
         keylet::account(account_));
@@ -110,8 +165,8 @@ SetAccount::doApply ()
     std::uint32_t const uFlagsIn = sle->getFieldU32 (sfFlags);
     std::uint32_t uFlagsOut = uFlagsIn;
 
-    std::uint32_t const uSetFlag = mTxn.getFieldU32 (sfSetFlag);
-    std::uint32_t const uClearFlag = mTxn.getFieldU32 (sfClearFlag);
+    std::uint32_t const uSetFlag = ctx_.tx.getFieldU32 (sfSetFlag);
+    std::uint32_t const uClearFlag = ctx_.tx.getFieldU32 (sfClearFlag);
 
     // legacy AccountSet flags
     bool bSetRequireDest   = (uTxFlags & TxFlag::requireDestTag) || (uSetFlag == asfRequireDest);
@@ -121,18 +176,26 @@ SetAccount::doApply ()
     bool bSetDisallowXRP   = (uTxFlags & tfDisallowXRP) || (uSetFlag == asfDisallowXRP);
     bool bClearDisallowXRP = (uTxFlags & tfAllowXRP) || (uClearFlag == asfDisallowXRP);
 
+    bool sigWithMaster = false;
+
+    {
+        auto const blob = ctx_.tx.getSigningPubKey();
+
+        if (!blob.empty ())
+        {
+            auto const signingPubKey =
+                RippleAddress::createAccountPublic(blob);
+
+            if (calcAccountID(signingPubKey) == account_)
+                sigWithMaster = true;
+        }
+    }
+
     //
     // RequireAuth
     //
     if (bSetRequireAuth && !(uFlagsIn & lsfRequireAuth))
     {
-        if (! dirIsEmpty (view(),
-            keylet::ownerDir(account_)))
-        {
-            j_.trace << "Retry: Owner directory not empty.";
-            return (view().flags() & tapRETRY) ? terOWNERS : tecOWNERS;
-        }
-
         j_.trace << "Set RequireAuth.";
         uFlagsOut |= lsfRequireAuth;
     }
@@ -178,14 +241,24 @@ SetAccount::doApply ()
     //
     if ((uSetFlag == asfDisableMaster) && !(uFlagsIn & lsfDisableMaster))
     {
-        if (!mSigMaster)
+        if (!sigWithMaster)
         {
             j_.trace << "Must use master key to disable master key.";
             return tecNEED_MASTER_KEY;
         }
 
-        if (!sle->isFieldPresent (sfRegularKey))
+        if ((!sle->isFieldPresent (sfRegularKey)) &&
+            (!view().peek (keylet::signers (account_))))
+        {
+            // Account has no regular key or multi-signer signer list.
+
+            // Prevent transaction changes until we're ready.
+            if (view().rules().enabled(featureMultiSign,
+                    ctx_.app.config().features))
+                return tecNO_ALTERNATIVE_KEY;
+
             return tecNO_REGULAR_KEY;
+        }
 
         j_.trace << "Set lsfDisableMaster.";
         uFlagsOut |= lsfDisableMaster;
@@ -214,7 +287,7 @@ SetAccount::doApply ()
     //
     if (uSetFlag == asfNoFreeze)
     {
-        if (!mSigMaster && !(uFlagsIn & lsfDisableMaster))
+        if (!sigWithMaster && !(uFlagsIn & lsfDisableMaster))
         {
             j_.trace << "Can't use regular key to set NoFreeze.";
             return tecNEED_MASTER_KEY;
@@ -259,9 +332,9 @@ SetAccount::doApply ()
     //
     // EmailHash
     //
-    if (mTxn.isFieldPresent (sfEmailHash))
+    if (ctx_.tx.isFieldPresent (sfEmailHash))
     {
-        uint128 const uHash = mTxn.getFieldH128 (sfEmailHash);
+        uint128 const uHash = ctx_.tx.getFieldH128 (sfEmailHash);
 
         if (!uHash)
         {
@@ -278,9 +351,9 @@ SetAccount::doApply ()
     //
     // WalletLocator
     //
-    if (mTxn.isFieldPresent (sfWalletLocator))
+    if (ctx_.tx.isFieldPresent (sfWalletLocator))
     {
-        uint256 const uHash = mTxn.getFieldH256 (sfWalletLocator);
+        uint256 const uHash = ctx_.tx.getFieldH256 (sfWalletLocator);
 
         if (!uHash)
         {
@@ -297,15 +370,9 @@ SetAccount::doApply ()
     //
     // MessageKey
     //
-    if (mTxn.isFieldPresent (sfMessageKey))
+    if (ctx_.tx.isFieldPresent (sfMessageKey))
     {
-        Blob const messageKey = mTxn.getFieldVL (sfMessageKey);
-
-        if (messageKey.size () > PUBLIC_BYTES_MAX)
-        {
-            j_.trace << "message key too long";
-            return telBAD_PUBLIC_KEY;
-        }
+        Blob const messageKey = ctx_.tx.getFieldVL (sfMessageKey);
 
         if (messageKey.empty ())
         {
@@ -322,15 +389,9 @@ SetAccount::doApply ()
     //
     // Domain
     //
-    if (mTxn.isFieldPresent (sfDomain))
+    if (ctx_.tx.isFieldPresent (sfDomain))
     {
-        Blob const domain = mTxn.getFieldVL (sfDomain);
-
-        if (domain.size () > DOMAIN_BYTES_MAX)
-        {
-            j_.trace << "domain too long";
-            return telBAD_DOMAIN;
-        }
+        Blob const domain = ctx_.tx.getFieldVL (sfDomain);
 
         if (domain.empty ())
         {
@@ -347,9 +408,9 @@ SetAccount::doApply ()
     //
     // TransferRate
     //
-    if (mTxn.isFieldPresent (sfTransferRate))
+    if (ctx_.tx.isFieldPresent (sfTransferRate))
     {
-        std::uint32_t uRate = mTxn.getFieldU32 (sfTransferRate);
+        std::uint32_t uRate = ctx_.tx.getFieldU32 (sfTransferRate);
 
         if (uRate == 0 || uRate == QUALITY_ONE)
         {

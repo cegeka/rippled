@@ -22,10 +22,11 @@
 
 #include <beast/intrusive/LockFreeStack.h>
 #include <beast/utility/Journal.h>
-
 #include <beast/threads/WaitableEvent.h>
-
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 
 namespace beast {
 
@@ -64,7 +65,7 @@ class RootStoppable;
         This override is called for all Stoppable objects in the hierarchy
         during the prepare stage. It is guaranteed that all child Stoppable
         objects have already been prepared when this is called.
-        
+
         Objects are called children first.
 
     4.  start()
@@ -127,7 +128,7 @@ class RootStoppable;
         funtion areChildrenStopped() can be used after children have stopped,
         but before the Stoppable logic itself has stopped, to determine if the
         stoppable's logic is a true stop.
-        
+
         Pseudo code for this process is as follows:
 
         @code
@@ -189,6 +190,15 @@ public:
     /** Returns `true` if all children have stopped. */
     bool areChildrenStopped () const;
 
+    /** Sleep or wake up on stop.
+
+        @return `true` if we are stopping
+    */
+    template <class Rep, class Period>
+    bool
+    alertable_sleep_for(
+        std::chrono::duration<Rep, Period> const& d);
+
 protected:
     /** Called by derived classes to indicate that the stoppable has stopped. */
     void stopped ();
@@ -236,7 +246,7 @@ private:
         onStop and onChildrenStopped will never be called concurrently, across
         all Stoppable objects descended from the same root, inclusive of the
         root.
-        
+
         It is safe to call isStopping, isStopped, and  areChildrenStopped from
         within this function; The values returned will always be valid and never
         change during the callback.
@@ -266,8 +276,8 @@ private:
 
     void prepareRecursive ();
     void startRecursive ();
-    void stopAsyncRecursive ();
-    void stopRecursive (Journal journal);
+    void stopAsyncRecursive (Journal j);
+    void stopRecursive (Journal j);
 
     std::string m_name;
     RootStoppable& m_root;
@@ -314,21 +324,54 @@ public:
         Thread safety:
             Safe to call from any thread not associated with a Stoppable.
     */
-    void stop (Journal journal = Journal());
+    void stop (Journal j);
+
+    /** Sleep or wake up on stop.
+
+        @return `true` if we are stopping
+    */
+    template <class Rep, class Period>
+    bool
+    alertable_sleep_for(
+        std::chrono::duration<Rep, Period> const& d);
+
 private:
-    /** Notify a root stoppable and children to stop, without waiting.
+    /*  Notify a root stoppable and children to stop, without waiting.
         Has no effect if the stoppable was already notified.
 
         Thread safety:
             Safe to call from any thread at any time.
     */
-    void stopAsync ();
+    void stopAsync(Journal j);
 
     std::atomic<bool> m_prepared;
-    std::atomic<bool> m_calledStop;
+    bool m_calledStop;
     std::atomic<bool> m_calledStopAsync;
+    std::mutex m_;
+    std::condition_variable c_;
 };
 /** @} */
+
+//------------------------------------------------------------------------------
+
+template <class Rep, class Period>
+bool
+RootStoppable::alertable_sleep_for(
+    std::chrono::duration<Rep, Period> const& d)
+{
+    std::unique_lock<std::mutex> lock(m_);
+    if (m_calledStop)
+        return true;
+    return c_.wait_for(lock, d, [this]{return m_calledStop;});
+}
+
+template <class Rep, class Period>
+bool
+Stoppable::alertable_sleep_for(
+    std::chrono::duration<Rep, Period> const& d)
+{
+    return m_root.alertable_sleep_for(d);
+}
 
 }
 

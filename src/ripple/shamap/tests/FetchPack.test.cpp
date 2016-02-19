@@ -21,6 +21,7 @@
 #include <ripple/shamap/SHAMap.h>
 #include <ripple/shamap/tests/common.h>
 #include <ripple/protocol/digest.h>
+#include <ripple/basics/contract.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/basics/UnorderedContainers.h>
 #include <ripple/protocol/UInt160.h>
@@ -30,7 +31,6 @@
 #include <stdexcept>
 
 namespace ripple {
-namespace shamap {
 namespace tests {
 
 class FetchPack_test : public beast::unit_test::suite
@@ -42,7 +42,7 @@ public:
         tableItemsExtra = 20
     };
 
-    using Map   = hash_map <uint256, Blob>;
+    using Map   = hash_map <SHAMapHash, Blob>;
     using Table = SHAMap;
     using Item  = SHAMapItem;
 
@@ -50,7 +50,7 @@ public:
     {
         void operator()(std::uint32_t refNum) const
         {
-            throw std::runtime_error("missing node");
+            Throw<std::runtime_error> ("missing node");
         }
     };
 
@@ -61,13 +61,13 @@ public:
         }
 
         void gotNode (bool fromFilter,
-            SHAMapNodeID const& id, uint256 const& nodeHash,
-                Blob& nodeData, SHAMapTreeNode::TNType type)
+            SHAMapNodeID const& id, SHAMapHash const& nodeHash,
+                Blob& nodeData, SHAMapTreeNode::TNType type) const override
         {
         }
 
         bool haveNode (SHAMapNodeID const& id,
-            uint256 const& nodeHash, Blob& nodeData)
+            SHAMapHash const& nodeHash, Blob& nodeData) const override
         {
             Map::iterator it = mMap.find (nodeHash);
             if (it == mMap.end ())
@@ -106,9 +106,9 @@ public:
         }
     }
 
-    void on_fetch (Map& map, uint256 const& hash, Blob const& blob)
+    void on_fetch (Map& map, SHAMapHash const& hash, Blob const& blob)
     {
-        expect (sha512Half(makeSlice(blob)) == hash,
+        expect (sha512Half(makeSlice(blob)) == hash.as_uint256(),
             "Hash mismatch");
         map.emplace (hash, blob);
     }
@@ -118,7 +118,7 @@ public:
         beast::Journal const j;                            // debug journal
         TestFamily f(j);
         std::shared_ptr <Table> t1 (std::make_shared <Table> (
-            SHAMapType::FREE, f, beast::Journal()));
+            SHAMapType::FREE, f));
 
         pass ();
 
@@ -154,7 +154,7 @@ public:
 //             expect (t3->getHash () == t2->getHash (), "root hashes do not match");
 //             expect (t3->deepCompare (*t2), "failed compare");
 //         }
-//         catch (...)
+//         catch (std::exception const&)
 //         {
 //             fail ("unhandled exception");
 //         }
@@ -164,6 +164,5 @@ public:
 BEAST_DEFINE_TESTSUITE(FetchPack,shamap,ripple);
 
 } // tests
-} // shamap
 } // ripple
 

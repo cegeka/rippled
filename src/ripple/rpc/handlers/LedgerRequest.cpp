@@ -39,7 +39,7 @@ Json::Value doLedgerRequest (RPC::Context& context)
     auto const hasHash = context.params.isMember (jss::ledger_hash);
     auto const hasIndex = context.params.isMember (jss::ledger_index);
 
-    auto& ledgerMaster = getApp().getLedgerMaster();
+    auto& ledgerMaster = context.app.getLedgerMaster();
     LedgerHash ledgerHash;
 
     if ((hasHash && hasIndex) || !(hasHash || hasIndex))
@@ -71,7 +71,7 @@ Json::Value doLedgerRequest (RPC::Context& context)
         if (ledgerIndex >= ledger->info().seq)
             return RPC::make_param_error("Ledger index too large");
 
-        auto const j = deprecatedLogs().journal("RPCHandler");
+        auto const j = context.app.journal("RPCHandler");
         // Try to get the hash of the desired ledger from the validated ledger
         auto neededHash = hashOfSeq(*ledger, ledgerIndex, j);
         if (! neededHash)
@@ -87,15 +87,22 @@ Json::Value doLedgerRequest (RPC::Context& context)
                 // We don't have the ledger we need to figure out which ledger
                 // they want. Try to get it.
 
-                if (auto il = getApp().getInboundLedgers().acquire (
+                if (auto il = context.app.getInboundLedgers().acquire (
                         *refHash, refIndex, InboundLedger::fcGENERIC))
-                    return getJson (LedgerFill (*il));
-
-                if (auto il = getApp().getInboundLedgers().find (*refHash))
                 {
-                    Json::Value jvResult = il->getJson (0);
+                    Json::Value jvResult = RPC::make_error(
+                        rpcLGR_NOT_FOUND,
+                            "acquiring ledger containing requested index");
+                    jvResult[jss::acquiring] = getJson (LedgerFill (*il));
+                    return jvResult;
+                }
 
-                    jvResult[jss::error] = "ledgerNotFound";
+                if (auto il = context.app.getInboundLedgers().find (*refHash))
+                {
+                    Json::Value jvResult = RPC::make_error(
+                        rpcLGR_NOT_FOUND,
+                            "acquiring ledger containing requested index");
+                    jvResult[jss::acquiring] = il->getJson (0);
                     return jvResult;
                 }
 
@@ -121,11 +128,11 @@ Json::Value doLedgerRequest (RPC::Context& context)
     else
     {
         // Try to get the desired ledger
-        if (auto il = getApp ().getInboundLedgers ().acquire (
+        if (auto il = context.app.getInboundLedgers ().acquire (
                 ledgerHash, 0, InboundLedger::fcGENERIC))
             return getJson (LedgerFill (*il));
 
-        if (auto il = getApp().getInboundLedgers().find (ledgerHash))
+        if (auto il = context.app.getInboundLedgers().find (ledgerHash))
             return il->getJson (0);
 
         return RPC::make_error (

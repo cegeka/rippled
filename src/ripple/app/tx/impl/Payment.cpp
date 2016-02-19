@@ -21,31 +21,28 @@
 #include <ripple/app/tx/impl/Payment.h>
 #include <ripple/app/paths/RippleCalc.h>
 #include <ripple/basics/Log.h>
-#include <ripple/protocol/TxFlags.h>
+#include <ripple/protocol/st.h>
 #include <ripple/protocol/JsonFields.h>
 
 namespace ripple {
 
 // See https://ripple.com/wiki/Transaction_Format#Payment_.280.29
 
-// Mon Aug 17 11:00:00am PDT
-static std::uint32_t const deliverMinTime = 493149600;
-
-bool
-allowDeliverMin (ApplyView const& view)
-{
-    return view.info().parentCloseTime > deliverMinTime ||
-        (view.flags() & tapENABLE_TESTING);
-}
-
 TER
-Payment::preCheck ()
+Payment::preflight (PreflightContext const& ctx)
 {
-    std::uint32_t const uTxFlags = mTxn.getFlags ();
+    auto const ret = preflight1 (ctx);
+    if (!isTesSuccess (ret))
+        return ret;
+
+    auto& tx = ctx.tx;
+    auto& j = ctx.j;
+
+    std::uint32_t const uTxFlags = tx.getFlags ();
 
     if (uTxFlags & tfPaymentMask)
     {
-        j_.trace << "Malformed transaction: " <<
+        JLOG(j.trace) << "Malformed transaction: " <<
             "Invalid flags set.";
         return temINVALID_FLAG;
     }
@@ -53,20 +50,21 @@ Payment::preCheck ()
     bool const partialPaymentAllowed = uTxFlags & tfPartialPayment;
     bool const limitQuality = uTxFlags & tfLimitQuality;
     bool const defaultPathsAllowed = !(uTxFlags & tfNoRippleDirect);
-    bool const bPaths = mTxn.isFieldPresent (sfPaths);
-    bool const bMax = mTxn.isFieldPresent (sfSendMax);
+    bool const bPaths = tx.isFieldPresent (sfPaths);
+    bool const bMax = tx.isFieldPresent (sfSendMax);
 
-    STAmount const saDstAmount (mTxn.getFieldAmount (sfAmount));
+    STAmount const saDstAmount (tx.getFieldAmount (sfAmount));
 
     STAmount maxSourceAmount;
+    auto const account = tx.getAccountID(sfAccount);
 
     if (bMax)
-        maxSourceAmount = mTxn.getFieldAmount (sfSendMax);
+        maxSourceAmount = tx.getFieldAmount (sfSendMax);
     else if (saDstAmount.native ())
         maxSourceAmount = saDstAmount;
     else
         maxSourceAmount = STAmount (
-            { saDstAmount.getCurrency (), account_ },
+            { saDstAmount.getCurrency (), account },
             saDstAmount.mantissa(), saDstAmount.exponent (),
             saDstAmount < zero);
 
@@ -79,134 +77,227 @@ Payment::preCheck ()
     if (!isLegalNet (saDstAmount) || !isLegalNet (maxSourceAmount))
         return temBAD_AMOUNT;
 
-    AccountID const uDstAccountID (mTxn.getAccountID (sfDestination));
+    auto const uDstAccountID = tx.getAccountID (sfDestination);
 
     if (!uDstAccountID)
     {
-        j_.trace << "Malformed transaction: " <<
+        JLOG(j.trace) << "Malformed transaction: " <<
             "Payment destination account not specified.";
         return temDST_NEEDED;
     }
     if (bMax && maxSourceAmount <= zero)
     {
-        j_.trace << "Malformed transaction: " <<
+        JLOG(j.trace) << "Malformed transaction: " <<
             "bad max amount: " << maxSourceAmount.getFullText ();
         return temBAD_AMOUNT;
     }
     if (saDstAmount <= zero)
     {
-        j_.trace << "Malformed transaction: "<<
+        JLOG(j.trace) << "Malformed transaction: "<<
             "bad dst amount: " << saDstAmount.getFullText ();
         return temBAD_AMOUNT;
     }
     if (badCurrency() == uSrcCurrency || badCurrency() == uDstCurrency)
     {
-        j_.trace <<"Malformed transaction: " <<
+        JLOG(j.trace) <<"Malformed transaction: " <<
             "Bad currency.";
         return temBAD_CURRENCY;
     }
-    if (account_ == uDstAccountID && uSrcCurrency == uDstCurrency && !bPaths)
+    if (account == uDstAccountID && uSrcCurrency == uDstCurrency && !bPaths)
     {
         // You're signing yourself a payment.
         // If bPaths is true, you might be trying some arbitrage.
-        j_.trace << "Malformed transaction: " <<
-            "Redundant payment from " << to_string (account_) <<
+        JLOG(j.trace) << "Malformed transaction: " <<
+            "Redundant payment from " << to_string (account) <<
             " to self without path for " << to_string (uDstCurrency);
         return temREDUNDANT;
     }
     if (bXRPDirect && bMax)
     {
         // Consistent but redundant transaction.
-        j_.trace << "Malformed transaction: " <<
+        JLOG(j.trace) << "Malformed transaction: " <<
             "SendMax specified for XRP to XRP.";
         return temBAD_SEND_XRP_MAX;
     }
     if (bXRPDirect && bPaths)
     {
         // XRP is sent without paths.
-        j_.trace << "Malformed transaction: " <<
+        JLOG(j.trace) << "Malformed transaction: " <<
             "Paths specified for XRP to XRP.";
         return temBAD_SEND_XRP_PATHS;
     }
     if (bXRPDirect && partialPaymentAllowed)
     {
         // Consistent but redundant transaction.
-        j_.trace << "Malformed transaction: " <<
+        JLOG(j.trace) << "Malformed transaction: " <<
             "Partial payment specified for XRP to XRP.";
         return temBAD_SEND_XRP_PARTIAL;
     }
     if (bXRPDirect && limitQuality)
     {
         // Consistent but redundant transaction.
-        j_.trace << "Malformed transaction: " <<
+        JLOG(j.trace) << "Malformed transaction: " <<
             "Limit quality specified for XRP to XRP.";
         return temBAD_SEND_XRP_LIMIT;
     }
     if (bXRPDirect && !defaultPathsAllowed)
     {
         // Consistent but redundant transaction.
-        j_.trace << "Malformed transaction: " <<
+        JLOG(j.trace) << "Malformed transaction: " <<
             "No ripple direct specified for XRP to XRP.";
         return temBAD_SEND_XRP_NO_DIRECT;
     }
 
-    if (mTxn.isFieldPresent(sfDeliverMin))
+    auto const deliverMin = tx[~sfDeliverMin];
+    if (deliverMin)
     {
-        if (! allowDeliverMin(view()))
-            return temMALFORMED;
-
         if (! partialPaymentAllowed)
         {
-            j_.trace << "Malformed transaction: Partial payment not "
+            JLOG(j.trace) << "Malformed transaction: Partial payment not "
                 "specified for " << jss::DeliverMin.c_str() << ".";
             return temBAD_AMOUNT;
         }
 
-        auto const dMin = mTxn.getFieldAmount(sfDeliverMin);
-        if (! isLegalNet(dMin) || dMin <= zero)
+        auto const dMin = *deliverMin;
+        if (!isLegalNet(dMin) || dMin <= zero)
         {
-            j_.trace << "Malformed transaction: Invalid " <<
+            JLOG(j.trace) << "Malformed transaction: Invalid " <<
                 jss::DeliverMin.c_str() << " amount. " <<
                     dMin.getFullText();
             return temBAD_AMOUNT;
         }
         if (dMin.issue() != saDstAmount.issue())
         {
-            j_.trace <<  "Malformed transaction: Dst issue differs "
+            JLOG(j.trace) <<  "Malformed transaction: Dst issue differs "
                 "from " << jss::DeliverMin.c_str() << ". " <<
                     dMin.getFullText();
             return temBAD_AMOUNT;
         }
         if (dMin > saDstAmount)
         {
-            j_.trace << "Malformed transaction: Dst amount less than " <<
+            JLOG(j.trace) << "Malformed transaction: Dst amount less than " <<
                 jss::DeliverMin.c_str() << ". " <<
                     dMin.getFullText();
             return temBAD_AMOUNT;
         }
     }
 
-    return Transactor::preCheck ();
+    return preflight2 (ctx);
 }
+
+TER
+Payment::preclaim(PreclaimContext const& ctx)
+{
+    // Ripple if source or destination is non-native or if there are paths.
+    std::uint32_t const uTxFlags = ctx.tx.getFlags();
+    bool const partialPaymentAllowed = uTxFlags & tfPartialPayment;
+    auto const paths = ctx.tx.isFieldPresent(sfPaths);
+    auto const sendMax = ctx.tx[~sfSendMax];
+
+    AccountID const uDstAccountID(ctx.tx[sfDestination]);
+    STAmount const saDstAmount(ctx.tx[sfAmount]);
+
+    auto const k = keylet::account(uDstAccountID);
+    auto const sleDst = ctx.view.read(k);
+
+    if (!sleDst)
+    {
+        // Destination account does not exist.
+        if (!saDstAmount.native())
+        {
+            JLOG(ctx.j.trace) <<
+                "Delay transaction: Destination account does not exist.";
+
+            // Another transaction could create the account and then this
+            // transaction would succeed.
+            return tecNO_DST;
+        }
+        else if (ctx.view.open()
+            && partialPaymentAllowed)
+        {
+            // You cannot fund an account with a partial payment.
+            // Make retry work smaller, by rejecting this.
+            JLOG(ctx.j.trace) <<
+                "Delay transaction: Partial payment not allowed to create account.";
+
+
+            // Another transaction could create the account and then this
+            // transaction would succeed.
+            return telNO_DST_PARTIAL;
+        }
+        else if (saDstAmount < STAmount(ctx.view.fees().accountReserve(0)))
+        {
+            // accountReserve is the minimum amount that an account can have.
+            // Reserve is not scaled by load.
+            JLOG(ctx.j.trace) <<
+                "Delay transaction: Destination account does not exist. " <<
+                "Insufficent payment to create account.";
+
+            // TODO: dedupe
+            // Another transaction could create the account and then this
+            // transaction would succeed.
+            return tecNO_DST_INSUF_XRP;
+        }
+    }
+    else if ((sleDst->getFlags() & lsfRequireDestTag) &&
+        !ctx.tx.isFieldPresent(sfDestinationTag))
+    {
+        // The tag is basically account-specific information we don't
+        // understand, but we can require someone to fill it in.
+
+        // We didn't make this test for a newly-formed account because there's
+        // no way for this field to be set.
+        JLOG(ctx.j.trace) << "Malformed transaction: DestinationTag required.";
+
+        return tecDST_TAG_NEEDED;
+    }
+
+    if (paths || sendMax || !saDstAmount.native())
+    {
+        // Ripple payment with at least one intermediate step and uses
+        // transitive balances.
+
+        // Copy paths into an editable class.
+        STPathSet const spsPaths = ctx.tx.getFieldPathSet(sfPaths);
+
+        auto pathTooBig = spsPaths.size() > MaxPathSize;
+
+        if(!pathTooBig)
+            for (auto const& path : spsPaths)
+                if (path.size() > MaxPathLength)
+                {
+                    pathTooBig = true;
+                    break;
+                }
+
+        if (ctx.view.open() && pathTooBig)
+        {
+            return telBAD_PATH_COUNT; // Too many paths for proposed ledger.
+        }
+    }
+
+    return tesSUCCESS;
+}
+
 
 TER
 Payment::doApply ()
 {
+    auto const deliverMin = ctx_.tx[~sfDeliverMin];
+
     // Ripple if source or destination is non-native or if there are paths.
-    std::uint32_t const uTxFlags = mTxn.getFlags ();
+    std::uint32_t const uTxFlags = ctx_.tx.getFlags ();
     bool const partialPaymentAllowed = uTxFlags & tfPartialPayment;
     bool const limitQuality = uTxFlags & tfLimitQuality;
     bool const defaultPathsAllowed = !(uTxFlags & tfNoRippleDirect);
-    bool const bPaths = mTxn.isFieldPresent (sfPaths);
-    bool const bMax = mTxn.isFieldPresent (sfSendMax);
-    bool const deliverMin = mTxn.isFieldPresent(sfDeliverMin) &&
-        allowDeliverMin(view());
+    auto const paths = ctx_.tx.isFieldPresent(sfPaths);
+    auto const sendMax = ctx_.tx[~sfSendMax];
 
-    AccountID const uDstAccountID (mTxn.getAccountID (sfDestination));
-    STAmount const saDstAmount (mTxn.getFieldAmount (sfAmount));
+    AccountID const uDstAccountID (ctx_.tx.getAccountID (sfDestination));
+    STAmount const saDstAmount (ctx_.tx.getFieldAmount (sfAmount));
     STAmount maxSourceAmount;
-    if (bMax)
-        maxSourceAmount = mTxn.getFieldAmount (sfSendMax);
+    if (sendMax)
+        maxSourceAmount = *sendMax;
     else if (saDstAmount.native ())
         maxSourceAmount = saDstAmount;
     else
@@ -215,7 +306,7 @@ Payment::doApply ()
             saDstAmount.mantissa(), saDstAmount.exponent (),
             saDstAmount < zero);
 
-    j_.trace <<
+    JLOG(j_.trace) <<
         "maxSourceAmount=" << maxSourceAmount.getFullText () <<
         " saDstAmount=" << saDstAmount.getFullText ();
 
@@ -225,64 +316,15 @@ Payment::doApply ()
 
     if (!sleDst)
     {
-        // Destination account does not exist.
-        if (!saDstAmount.native ())
-        {
-            j_.trace <<
-                "Delay transaction: Destination account does not exist.";
-
-            // Another transaction could create the account and then this
-            // transaction would succeed.
-            return tecNO_DST;
-        }
-        else if (view().open()
-            && partialPaymentAllowed)
-        {
-            // You cannot fund an account with a partial payment.
-            // Make retry work smaller, by rejecting this.
-            j_.trace <<
-                "Delay transaction: Partial payment not allowed to create account.";
-
-
-            // Another transaction could create the account and then this
-            // transaction would succeed.
-            return telNO_DST_PARTIAL;
-        }
-        else if (saDstAmount < STAmount (view().fees().accountReserve(0)))
-        {
-            // getReserve() is the minimum amount that an account can have.
-            // Reserve is not scaled by load.
-            j_.trace <<
-                "Delay transaction: Destination account does not exist. " <<
-                "Insufficent payment to create account.";
-
-            // TODO: dedupe
-            // Another transaction could create the account and then this
-            // transaction would succeed.
-            return tecNO_DST_INSUF_XRP;
-        }
-
         // Create the account.
         sleDst = std::make_shared<SLE>(k);
-        sleDst->setAccountID (sfAccount, uDstAccountID);
-        sleDst->setFieldU32 (sfSequence, 1);
+        sleDst->setAccountID(sfAccount, uDstAccountID);
+        sleDst->setFieldU32(sfSequence, 1);
         view().insert(sleDst);
-    }
-    else if ((sleDst->getFlags () & lsfRequireDestTag) &&
-                !mTxn.isFieldPresent (sfDestinationTag))
-    {
-        // The tag is basically account-specific information we don't
-        // understand, but we can require someone to fill it in.
-
-        // We didn't make this test for a newly-formed account because there's
-        // no way for this field to be set.
-        j_.trace << "Malformed transaction: DestinationTag required.";
-
-        return tecDST_TAG_NEEDED;
     }
     else
     {
-        // Tell the engine that we are intending to change the the destination
+        // Tell the engine that we are intending to change the destination
         // account.  The source account gets always charged a fee so it's always
         // marked as modified.
         view().update (sleDst);
@@ -290,8 +332,8 @@ Payment::doApply ()
 
     TER terResult;
 
-    bool const bRipple = bPaths || bMax || !saDstAmount.native ();
-    // XXX Should bMax be sufficient to imply ripple?
+    bool const bRipple = paths || sendMax || !saDstAmount.native ();
+    // XXX Should sendMax be sufficient to imply ripple?
 
     if (bRipple)
     {
@@ -299,76 +341,58 @@ Payment::doApply ()
         // transitive balances.
 
         // Copy paths into an editable class.
-        STPathSet spsPaths = mTxn.getFieldPathSet (sfPaths);
+        STPathSet spsPaths = ctx_.tx.getFieldPathSet (sfPaths);
 
-        try
+        path::RippleCalc::Input rcInput;
+        rcInput.partialPaymentAllowed = partialPaymentAllowed;
+        rcInput.defaultPathsAllowed = defaultPathsAllowed;
+        rcInput.limitQuality = limitQuality;
+        rcInput.deleteUnfundedOffers = true;
+        rcInput.isLedgerOpen = view().open();
+
+        path::RippleCalc::Output rc;
         {
-            path::RippleCalc::Input rcInput;
-            rcInput.partialPaymentAllowed = partialPaymentAllowed;
-            rcInput.defaultPathsAllowed = defaultPathsAllowed;
-            rcInput.limitQuality = limitQuality;
-            rcInput.deleteUnfundedOffers = true;
-            rcInput.isLedgerOpen = view().open();
+            PaymentSandbox pv(&view());
+            rc = path::RippleCalc::rippleCalculate (
+                pv,
+                maxSourceAmount,
+                saDstAmount,
+                uDstAccountID,
+                account_,
+                spsPaths,
+                ctx_.app.logs(),
+                &rcInput);
+            // VFALCO NOTE We might not need to apply, depending
+            //             on the TER. But always applying *should*
+            //             be safe.
+            pv.apply(ctx_.rawView());
+        }
 
-            bool pathTooBig = spsPaths.size () > MaxPathSize;
-
-            for (auto const& path : spsPaths)
-                if (path.size () > MaxPathLength)
-                    pathTooBig = true;
-
-            if (rcInput.isLedgerOpen && pathTooBig)
-            {
-                terResult = telBAD_PATH_COUNT; // Too many paths for proposed ledger.
-            }
+        // TODO: is this right?  If the amount is the correct amount, was
+        // the delivered amount previously set?
+        if (rc.result () == tesSUCCESS &&
+            rc.actualAmountOut != saDstAmount)
+        {
+            if (deliverMin && rc.actualAmountOut <
+                *deliverMin)
+                rc.setResult (tecPATH_PARTIAL);
             else
-            {
-                path::RippleCalc::Output rc;
-                {
-                    PaymentSandbox pv(&view());
-                    rc = path::RippleCalc::rippleCalculate (
-                        pv,
-                        maxSourceAmount,
-                        saDstAmount,
-                        uDstAccountID,
-                        account_,
-                        spsPaths,
-                        &rcInput);
-                    // VFALCO NOTE We might not need to apply, depending
-                    //             on the TER. But always applying *should*
-                    //             be safe.
-                    pv.apply(ctx_.rawView());
-                }
-
-                // TODO: is this right?  If the amount is the correct amount, was
-                // the delivered amount previously set?
-                if (rc.result () == tesSUCCESS &&
-                    rc.actualAmountOut != saDstAmount)
-                {
-                    if (deliverMin && rc.actualAmountOut <
-                        mTxn.getFieldAmount (sfDeliverMin))
-                        rc.setResult (tecPATH_PARTIAL);
-                    else
-                        ctx_.deliver (rc.actualAmountOut);
-                }
-
-                terResult = rc.result ();
-            }
-
-            // TODO(tom): what's going on here?
-            if (isTerRetry (terResult))
-                terResult = tecPATH_DRY;
-
+                ctx_.deliver (rc.actualAmountOut);
         }
-        catch (std::exception const& e)
-        {
-            j_.trace <<
-                "Caught throw: " << e.what ();
 
-            terResult = tefEXCEPTION;
-        }
+        terResult = rc.result ();
+
+        // Because of its overhead, if RippleCalc
+        // fails with a retry code, claim a fee
+        // instead. Maybe the user will be more
+        // careful with their path spec next time.
+        if (isTerRetry (terResult))
+            terResult = tecPATH_DRY;
     }
     else
     {
+        assert (saDstAmount.native ());
+
         // Direct XRP payment.
 
         // uOwnerCount is the number of entries in this legder for this
@@ -377,23 +401,22 @@ Payment::doApply ()
             keylet::account(account_))->getFieldU32 (sfOwnerCount);
 
         // This is the total reserve in drops.
-        auto const uReserve =
-            view().fees().accountReserve(uOwnerCount);
+        auto const reserve = view().fees().accountReserve(uOwnerCount);
 
         // mPriorBalance is the balance on the sending account BEFORE the
         // fees were charged. We want to make sure we have enough reserve
         // to send. Allow final spend to use reserve for fee.
-        auto const mmm = std::max(mTxn.getTransactionFee (),
-            STAmount (uReserve));
+        auto const mmm = std::max(reserve,
+            ctx_.tx.getFieldAmount (sfFee).xrp ());
 
-        if (mPriorBalance < saDstAmount + mmm)
+        if (mPriorBalance < saDstAmount.xrp () + mmm)
         {
             // Vote no. However the transaction might succeed, if applied in
             // a different order.
-            j_.trace << "Delay transaction: Insufficient funds: " <<
-                " " << mPriorBalance.getText () <<
-                " / " << (saDstAmount + mmm).getText () <<
-                " (" << uReserve << ")";
+            JLOG(j_.trace) << "Delay transaction: Insufficient funds: " <<
+                " " << to_string (mPriorBalance) <<
+                " / " << to_string (saDstAmount.xrp () + mmm) <<
+                " (" << to_string (reserve) << ")";
 
             terResult = tecUNFUNDED_PAYMENT;
         }
@@ -412,19 +435,6 @@ Payment::doApply ()
 
             terResult = tesSUCCESS;
         }
-    }
-
-    std::string strToken;
-    std::string strHuman;
-
-    if (transResultInfo (terResult, strToken, strHuman))
-    {
-        j_.trace <<
-            strToken << ": " << strHuman;
-    }
-    else
-    {
-        assert (false);
     }
 
     return terResult;

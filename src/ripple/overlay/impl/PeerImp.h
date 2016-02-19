@@ -33,7 +33,7 @@
 #include <ripple/core/LoadEvent.h>
 #include <ripple/protocol/Protocol.h>
 #include <ripple/protocol/STTx.h>
-#include <ripple/validators/ValidatorManager.h>
+#include <ripple/protocol/STValidation.h>
 #include <beast/ByteOrder.h>
 #include <beast/asio/IPAddressConversion.h>
 #include <beast/asio/placeholders.h>
@@ -100,6 +100,7 @@ private:
     // The length of the smallest valid finished message
     static const size_t sslMinimumFinishedLength = 12;
 
+    Application& app_;
     id_t const id_;
     beast::WrappedSink sink_;
     beast::WrappedSink p_sink_;
@@ -160,17 +161,16 @@ private:
     int large_sendq_ = 0;
     int no_ping_ = 0;
     std::unique_ptr <LoadEvent> load_event_;
-    std::unique_ptr<Validators::Connection> validatorsConnection_;
     bool hopsAware_ = false;
 
-    //--------------------------------------------------------------------------
+    friend class OverlayImpl;
 
 public:
     PeerImp (PeerImp const&) = delete;
     PeerImp& operator= (PeerImp const&) = delete;
 
     /** Create an active incoming peer from an established ssl connection. */
-    PeerImp (id_t id, endpoint_type remote_endpoint,
+    PeerImp (Application& app, id_t id, endpoint_type remote_endpoint,
         PeerFinder::Slot::ptr const& slot, beast::http::message&& request,
             protocol::TMHello const& hello, RippleAddress const& publicKey,
                 Resource::Consumer consumer,
@@ -180,7 +180,7 @@ public:
     /** Create outgoing, handshaked peer. */
     // VFALCO legacyPublicKey should be implied by the Slot
     template <class Buffers>
-    PeerImp (std::unique_ptr<beast::asio::ssl_bundle>&& ssl_bundle,
+    PeerImp (Application& app, std::unique_ptr<beast::asio::ssl_bundle>&& ssl_bundle,
         Buffers const& buffers, PeerFinder::Slot::ptr&& slot,
             beast::http::message&& response, Resource::Consumer usage,
                 protocol::TMHello&& hello,
@@ -325,12 +325,12 @@ public:
     bool
     isHighLatency() const override;
 
+    void
+    fail(std::string const& reason);
+
 private:
     void
     close();
-
-    void
-    fail(std::string const& reason);
 
     void
     fail(std::string const& name, error_code ec);
@@ -359,9 +359,9 @@ private:
     void
     doAccept();
 
-    static
     beast::http::message
     makeResponse (bool crawl, beast::http::message const& req,
+        beast::IP::Endpoint remoteAddress,
         uint256 const& sharedValue);
 
     void
@@ -403,7 +403,8 @@ public:
 
     error_code
     onMessageBegin (std::uint16_t type,
-        std::shared_ptr <::google::protobuf::Message> const& m);
+        std::shared_ptr <::google::protobuf::Message> const& m,
+        std::size_t size);
 
     void
     onMessageEnd (std::uint16_t type,
@@ -441,15 +442,6 @@ private:
     void
     sendGetPeers();
 
-    /** Perform a secure handshake with the peer at the other end.
-        If this function returns false then we cannot guarantee that there
-        is no active man-in-the-middle attack taking place and the link
-        MUST be disconnected.
-        @return true if successful, false otherwise.
-    */
-    bool
-    sendHello();
-
     void
     addLedger (uint256 const& hash);
 
@@ -457,7 +449,8 @@ private:
     doFetchPack (const std::shared_ptr<protocol::TMGetObjectByHash>& packet);
 
     void
-    checkTransaction (Job&, int flags, STTx::pointer stx);
+    checkTransaction (int flags, bool checkSignature,
+        std::shared_ptr<STTx const> const& stx);
 
     void
     checkPropose (Job& job,
@@ -465,7 +458,7 @@ private:
             LedgerProposal::pointer proposal);
 
     void
-    checkValidation (Job&, STValidation::pointer val,
+    checkValidation (STValidation::pointer val,
         bool isTrusted, std::shared_ptr<protocol::TMValidation> const& packet);
 
     void
@@ -473,7 +466,7 @@ private:
 
     // Called when we receive tx set data.
     void
-    peerTXData (Job&, uint256 const& hash,
+    peerTXData (uint256 const& hash,
         std::shared_ptr <protocol::TMLedgerData> const& pPacket,
             beast::Journal journal);
 };
@@ -481,16 +474,17 @@ private:
 //------------------------------------------------------------------------------
 
 template <class Buffers>
-PeerImp::PeerImp (std::unique_ptr<beast::asio::ssl_bundle>&& ssl_bundle,
+PeerImp::PeerImp (Application& app, std::unique_ptr<beast::asio::ssl_bundle>&& ssl_bundle,
     Buffers const& buffers, PeerFinder::Slot::ptr&& slot,
         beast::http::message&& response, Resource::Consumer usage,
             protocol::TMHello&& hello,
                 RippleAddress const& legacyPublicKey, id_t id,
                     OverlayImpl& overlay)
     : Child (overlay)
+    , app_ (app)
     , id_ (id)
-    , sink_ (deprecatedLogs().journal("Peer"), makePrefix(id))
-    , p_sink_ (deprecatedLogs().journal("Protocol"), makePrefix(id))
+    , sink_ (app_.journal("Peer"), makePrefix(id))
+    , p_sink_ (app_.journal("Protocol"), makePrefix(id))
     , journal_ (sink_)
     , p_journal_ (p_sink_)
     , ssl_bundle_(std::move(ssl_bundle))
@@ -511,7 +505,6 @@ PeerImp::PeerImp (std::unique_ptr<beast::asio::ssl_bundle>&& ssl_bundle,
     , fee_ (Resource::feeLightPeer)
     , slot_ (std::move(slot))
     , http_message_(std::move(response))
-    , validatorsConnection_(getApp().getValidators().newConnection(id))
 {
     read_buffer_.commit (boost::asio::buffer_copy(read_buffer_.prepare(
         boost::asio::buffer_size(buffers)), buffers));

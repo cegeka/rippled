@@ -20,18 +20,22 @@
 #ifndef RIPPLE_APP_PATHS_PATHREQUESTS_H_INCLUDED
 #define RIPPLE_APP_PATHS_PATHREQUESTS_H_INCLUDED
 
+#include <ripple/app/main/Application.h>
 #include <ripple/app/paths/PathRequest.h>
 #include <ripple/app/paths/RippleLineCache.h>
 #include <ripple/core/Job.h>
 #include <atomic>
+#include <mutex>
 
 namespace ripple {
 
 class PathRequests
 {
 public:
-    PathRequests (beast::Journal journal, beast::insight::Collector::ptr const& collector)
-        : mJournal (journal)
+    PathRequests (Application& app,
+            beast::Journal journal, beast::insight::Collector::ptr const& collector)
+        : app_ (app)
+        , mJournal (journal)
         , mLastIdentifier (0)
     {
         mFast = collector->make_event ("pathfind_fast");
@@ -68,6 +72,7 @@ public:
 private:
     void insertPathRequest (PathRequest::pointer const&);
 
+    Application& app_;
     beast::Journal                   mJournal;
 
     beast::insight::Event            mFast;
@@ -81,9 +86,8 @@ private:
 
     std::atomic<int>                 mLastIdentifier;
 
-    using LockType       = RippleRecursiveMutex;
-    using ScopedLockType = std::lock_guard <LockType>;
-    LockType                         mLock;
+    using ScopedLockType = std::lock_guard <std::recursive_mutex>;
+    std::recursive_mutex mLock;
 
 };
 

@@ -23,6 +23,7 @@
 
 #if RIPPLE_ROCKSDB_AVAILABLE
 
+#include <ripple/basics/contract.h>
 #include <ripple/core/Config.h> // VFALCO Bad dependency
 #include <ripple/nodestore/Factory.h>
 #include <ripple/nodestore/Manager.h>
@@ -31,7 +32,7 @@
 #include <ripple/nodestore/impl/EncodedBlob.h>
 #include <beast/threads/Thread.h>
 #include <atomic>
-#include <beast/cxx14/memory.h> // <memory>
+#include <memory>
 
 namespace ripple {
 namespace NodeStore {
@@ -107,32 +108,19 @@ public:
         , m_scheduler (scheduler)
         , m_batch (*this, scheduler)
     {
-        if (!get_if_exists(keyValues, "path", m_name))
-            throw std::runtime_error ("Missing path in RocksDBFactory backend");
+        if (! get_if_exists(keyValues, "path", m_name))
+            Throw<std::runtime_error> ("Missing path in RocksDBFactory backend");
 
         rocksdb::Options options;
         rocksdb::BlockBasedTableOptions table_options;
         options.create_if_missing = true;
         options.env = env;
 
-        if (!keyValues.exists ("cache_mb"))
-        {
-            table_options.block_cache = rocksdb::NewLRUCache (getConfig ().getSize (siHashNodeDBCache) * 1024 * 1024);
-        }
-        else
-        {
+        if (keyValues.exists ("cache_mb"))
             table_options.block_cache = rocksdb::NewLRUCache (get<int>(keyValues, "cache_mb") * 1024L * 1024L);
-        }
 
-        if (!keyValues.exists ("filter_bits"))
-        {
-            if (getConfig ().NODE_SIZE >= 2)
-                table_options.filter_policy.reset (rocksdb::NewBloomFilterPolicy (10));
-        }
-        else if (auto const v = get<int>(keyValues, "filter_bits"))
-        {
+        if (auto const v = get<int>(keyValues, "filter_bits"))
             table_options.filter_policy.reset (rocksdb::NewBloomFilterPolicy (v));
-        }
 
         get_if_exists (keyValues, "open_files", options.max_open_files);
 
@@ -183,8 +171,9 @@ public:
 
         rocksdb::DB* db = nullptr;
         rocksdb::Status status = rocksdb::DB::Open (options, m_name, &db);
-        if (!status.ok () || !db)
-            throw std::runtime_error (std::string("Unable to open/create RocksDB: ") + status.ToString());
+        if (! status.ok () || ! db)
+            Throw<std::runtime_error> (
+                std::string("Unable to open/create RocksDB: ") + status.ToString());
 
         m_db.reset (db);
     }
@@ -209,7 +198,7 @@ public:
     }
 
     std::string
-    getName()
+    getName() override
     {
         return m_name;
     }
@@ -217,7 +206,7 @@ public:
     //--------------------------------------------------------------------------
 
     Status
-    fetch (void const* key, std::shared_ptr<NodeObject>* pObject)
+    fetch (void const* key, std::shared_ptr<NodeObject>* pObject) override
     {
         pObject->reset ();
 
@@ -275,18 +264,18 @@ public:
     std::vector<std::shared_ptr<NodeObject>>
     fetchBatch (std::size_t n, void const* const* keys) override
     {
-        throw std::runtime_error("pure virtual called");
+        Throw<std::runtime_error> ("pure virtual called");
         return {};
     }
 
     void
-    store (std::shared_ptr<NodeObject> const& object)
+    store (std::shared_ptr<NodeObject> const& object) override
     {
         m_batch.store (object);
     }
 
     void
-    storeBatch (Batch const& batch)
+    storeBatch (Batch const& batch) override
     {
         rocksdb::WriteBatch wb;
 
@@ -307,12 +296,12 @@ public:
 
         auto ret = m_db->Write (options, &wb);
 
-        if (!ret.ok ())
-            throw std::runtime_error ("storeBatch failed: " + ret.ToString());
+        if (! ret.ok ())
+            Throw<std::runtime_error> ("storeBatch failed: " + ret.ToString());
     }
 
     void
-    for_each (std::function <void(std::shared_ptr<NodeObject>)> f)
+    for_each (std::function <void(std::shared_ptr<NodeObject>)> f) override
     {
         rocksdb::ReadOptions const options;
 
@@ -349,7 +338,7 @@ public:
     }
 
     int
-    getWriteLoad ()
+    getWriteLoad () override
     {
         return m_batch.getWriteLoad ();
     }
@@ -363,7 +352,7 @@ public:
     //--------------------------------------------------------------------------
 
     void
-    writeBatch (Batch const& batch)
+    writeBatch (Batch const& batch) override
     {
         storeBatch (batch);
     }

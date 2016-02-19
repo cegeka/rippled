@@ -19,34 +19,36 @@
 
 #include <BeastConfig.h>
 #include <ripple/basics/contract.h>
+#include <cstdlib>
+#include <exception>
 
 namespace ripple {
 
 namespace detail {
 
+[[noreturn]]
 void
-accessViolation()
+accessViolation() noexcept
 {
-    // dereference memory
-    // location zero
+    // dereference memory location zero
     int volatile* j = 0;
     (void)*j;
-}
-
-// This hook lets you do pre or post
-// processing on exceptions to suit needs.
-void
-throwException (std::exception_ptr ep)
-{
-    std::rethrow_exception(ep);
+    std::abort ();
 }
 
 } // detail
 
+[[noreturn]]
 void
-LogicError (std::string const&)
+LogicError (std::string const&) noexcept
 {
     detail::accessViolation();
+}
+
+void
+Throw ()
+{
+    throw;
 }
 
 } // ripple

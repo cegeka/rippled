@@ -17,9 +17,6 @@
 */
 //==============================================================================
 
-#include <BeastConfig.h>
-#include <ripple/app/ledger/tests/common_ledger.h>
-#include <ripple/app/tx/impl/BookTip.h>
 #include <ripple/basics/Log.h>
 #include <ripple/protocol/TxFlags.h>
 #include <ripple/test/jtx.h>
@@ -31,13 +28,13 @@ namespace test {
  */
 inline
 bool
-isOffer (jtx::Env const& env,
+isOffer (jtx::Env& env,
     jtx::Account const& account,
     STAmount const& takerPays,
     STAmount const& takerGets)
 {
     bool exists = false;
-    forEachItem (*env.open(), account,
+    forEachItem (*env.current(), account,
         [&](std::shared_ptr<SLE const> const& sle)
         {
             if (sle->getType () == ltOFFER &&
@@ -56,20 +53,9 @@ public:
     Path () = default;
     Path (Path const&) = default;
     Path& operator=(Path const&) = default;
-
-#ifdef _MSC_VER
-    Path (Path&& rhs) : path (std::move (rhs.path))
-    {
-    }
-    Path& operator=(Path&& rhs)
-    {
-        path = std::move (rhs.path);
-        return *this;
-    }
-#else
     Path (Path&&) = default;
     Path& operator=(Path&&) = default;
-#endif
+
     template <class First, class... Rest>
     explicit Path (First&& first, Rest&&... rest)
     {
@@ -119,20 +105,9 @@ public:
     PathSet () = default;
     PathSet (PathSet const&) = default;
     PathSet& operator=(PathSet const&) = default;
-
-#ifdef _MSC_VER
-    PathSet (PathSet&& rhs) : paths (std::move (rhs.paths))
-    {
-    }
-    PathSet& operator=(PathSet&& rhs)
-    {
-        paths = std::move (rhs.paths);
-        return *this;
-    }
-#else
     PathSet (PathSet&&) = default;
     PathSet& operator=(PathSet&&) = default;
-#endif
+
     template <class First, class... Rest>
     explicit PathSet (First&& first, Rest&&... rest)
     {

@@ -24,12 +24,13 @@
 #include <ripple/app/tx/impl/OfferStream.h>
 #include <ripple/app/tx/impl/Taker.h>
 #include <ripple/app/tx/impl/Transactor.h>
-#include <ripple/protocol/Quality.h>
+#include <ripple/basics/chrono.h>
 #include <ripple/basics/Log.h>
 #include <ripple/json/to_string.h>
-#include <beast/cxx14/memory.h>
+#include <ripple/protocol/Quality.h>
 #include <beast/utility/Journal.h>
 #include <beast/utility/WrappedSink.h>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 
@@ -39,20 +40,22 @@ class CreateOffer
     : public Transactor
 {
 public:
-    template <class... Args>
-    CreateOffer (Args&&... args)
-        : Transactor(std::forward<
-            Args>(args)...)
+    CreateOffer (ApplyContext& ctx)
+        : Transactor(ctx)
+        , stepCounter_ (1000, j_)
     {
     }
 
-    /** Returns the reserve the account would have if an offer was added. */
-    // VFALCO This function is not needed just inline the behavior
-    STAmount
-    getAccountReserve (SLE::pointer account); // const?
-
+    static
     TER
-    preCheck () override;
+    preflight (PreflightContext const& ctx);
+
+    static
+    TER
+    preclaim(PreclaimContext const& ctx);
+
+    void
+    preCompute() override;
 
     std::pair<TER, bool>
     applyGuts (ApplyView& view, ApplyView& view_cancel);
@@ -62,8 +65,11 @@ public:
 
 private:
     /** Determine if we are authorized to hold the asset we want to get */
+    static
     TER
-    checkAcceptAsset(IssueRef issue) const;
+    checkAcceptAsset(ReadView const& view,
+        ApplyFlags const flags, AccountID const id,
+            beast::Journal const j, Issue const& issue);
 
     bool
     dry_offer (ApplyView& view, Offer const& offer);
@@ -72,28 +78,29 @@ private:
     std::pair<bool, Quality>
     select_path (
         bool have_direct, OfferStream const& direct,
-        bool have_bridge, OfferStream const& leg1, OfferStream const& leg2);
+        bool have_bridge, OfferStream const& leg1, OfferStream const& leg2,
+        STAmountCalcSwitchovers const& amountCalcSwitchovers);
 
     std::pair<TER, Amounts>
     bridged_cross (
         Taker& taker,
         ApplyView& view,
         ApplyView& view_cancel,
-        Clock::time_point const when);
+        NetClock::time_point const when);
 
     std::pair<TER, Amounts>
     direct_cross (
         Taker& taker,
         ApplyView& view,
         ApplyView& view_cancel,
-        Clock::time_point const when);
+        NetClock::time_point const when);
 
     // Step through the stream for as long as possible, skipping any offers
     // that are from the taker or which cross the taker's threshold.
     // Return false if the is no offer in the book, true otherwise.
     static
     bool
-    step_account (OfferStream& stream, Taker const& taker);
+    step_account (OfferStream& stream, Taker const& taker, Logs& logs);
 
     // True if the number of offers that have been crossed
     // exceeds the limit.
@@ -117,7 +124,9 @@ private:
 private:
     // What kind of offer we are placing
     CrossType cross_type_;
-    std::uint32_t deprecatedWrongOwnerCount_;
+
+    // The number of steps to take through order books while crossing
+    OfferStream::StepCounter stepCounter_;
 };
 
 }

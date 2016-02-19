@@ -26,35 +26,45 @@
 namespace ripple {
 
 std::uint64_t
-SetRegularKey::calculateBaseFee ()
+SetRegularKey::calculateBaseFee (
+    PreclaimContext const& ctx)
 {
-    auto const sle = view().peek(
-        keylet::account(account_));
+    auto const id = ctx.tx.getAccountID(sfAccount);
+    auto const pk =
+        RippleAddress::createAccountPublic(
+            ctx.tx.getSigningPubKey());
+
+    auto const sle = ctx.view.read(
+        keylet::account(id));
     if ( sle
             && (! (sle->getFlags () & lsfPasswordSpent))
-            && (calcAccountID(mSigningPubKey) == account_))
+            && (calcAccountID(pk) == id))
     {
         // flag is armed and they signed with the right account
         return 0;
     }
 
-    return Transactor::calculateBaseFee ();
+    return Transactor::calculateBaseFee (ctx);
 }
 
 TER
-SetRegularKey::preCheck ()
+SetRegularKey::preflight (PreflightContext const& ctx)
 {
-    std::uint32_t const uTxFlags = mTxn.getFlags ();
+    auto const ret = preflight1 (ctx);
+    if (!isTesSuccess (ret))
+        return ret;
+
+    std::uint32_t const uTxFlags = ctx.tx.getFlags ();
 
     if (uTxFlags & tfUniversalMask)
     {
-        if (j_.trace) j_.trace <<
+        JLOG(ctx.j.trace) <<
             "Malformed transaction: Invalid flags set.";
 
         return temINVALID_FLAG;
     }
 
-    return Transactor::preCheck ();
+    return preflight2(ctx);
 }
 
 TER
@@ -66,15 +76,18 @@ SetRegularKey::doApply ()
     if (mFeeDue == zero)
         sle->setFlag (lsfPasswordSpent);
 
-    if (mTxn.isFieldPresent (sfRegularKey))
+    if (ctx_.tx.isFieldPresent (sfRegularKey))
     {
         sle->setAccountID (sfRegularKey,
-            mTxn.getAccountID (sfRegularKey));
+            ctx_.tx.getAccountID (sfRegularKey));
     }
     else
     {
-        if (sle->isFlag (lsfDisableMaster))
-            return tecMASTER_DISABLED;
+        if (sle->isFlag (lsfDisableMaster) &&
+            !view().peek (keylet::signers (account_)))
+            // Account has disabled master key and no multi-signer signer list.
+            return tecNO_ALTERNATIVE_KEY;
+
         sle->makeFieldAbsent (sfRegularKey);
     }
 

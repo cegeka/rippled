@@ -19,10 +19,11 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/tx/impl/BookTip.h>
+#include <ripple/basics/Log.h>
 
 namespace ripple {
 
-BookTip::BookTip (ApplyView& view, BookRef book)
+BookTip::BookTip (ApplyView& view, Book const& book)
     : view_ (view)
     , m_valid (false)
     , m_book (getBookBase (book))
@@ -31,13 +32,14 @@ BookTip::BookTip (ApplyView& view, BookRef book)
 }
 
 bool
-BookTip::step ()
+BookTip::step (Logs& l)
 {
+    auto viewJ = l.journal ("View");
     if (m_valid)
     {
         if (m_entry)
         {
-            offerDelete (view_, m_entry);
+            offerDelete (view_, m_entry, viewJ);
             m_entry = nullptr;
         }
     }
@@ -56,7 +58,7 @@ BookTip::step ()
         unsigned int di = 0;
         std::shared_ptr<SLE> dir;
 
-        if (dirFirst (view_, *first_page, dir, di, m_index))
+        if (dirFirst (view_, *first_page, dir, di, m_index, viewJ))
         {
             m_dir = dir->key();
             m_entry = view_.peek(keylet::offer(m_index));

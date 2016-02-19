@@ -43,19 +43,26 @@ TER PathCursor::deliverNodeForward (
     // Zeroed in reverse pass.
     node().directory.restart(multiQuality_);
 
+    STAmountCalcSwitchovers amountCalcSwitchovers (
+        rippleCalc_.view.info ().parentCloseTime);
+
     saInAct.clear (saInReq);
     saInFees.clear (saInReq);
 
     int loopCount = 0;
+    auto viewJ = rippleCalc_.logs_.journal ("View");
 
     // XXX Perhaps make sure do not exceed node().saRevDeliver as another way to
     // stop?
     while (resultCode == tesSUCCESS && saInAct + saInFees < saInReq)
     {
         // Did not spend all inbound deliver funds.
-        if (++loopCount > CALC_NODE_DELIVER_MAX_LOOPS)
+        if (++loopCount >
+            (multiQuality_ ?
+                CALC_NODE_DELIVER_MAX_LOOPS_MQ :
+                CALC_NODE_DELIVER_MAX_LOOPS))
         {
-            WriteLog (lsWARNING, RippleCalc)
+            JLOG (j_.warning)
                 << "deliverNodeForward: max loops cndf";
             return telFAILED_PROCESSING;
         }
@@ -71,7 +78,7 @@ TER PathCursor::deliverNodeForward (
         }
         else if (!node().offerIndex_)
         {
-            WriteLog (lsWARNING, RippleCalc)
+            JLOG (j_.warning)
                 << "deliverNodeForward: INTERNAL ERROR: Ran out of offers.";
             return telFAILED_PROCESSING;
         }
@@ -83,7 +90,7 @@ TER PathCursor::deliverNodeForward (
             bool noFee = isXRP (previousNode().issue_)
                 || uInAccountID == previousNode().issue_.account
                 || node().offerOwnerAccount_ == previousNode().issue_.account;
-            const STAmount saInFeeRate = noFee ? saOne
+            const STAmount saInFeeRate = noFee ? STAmount::saOne
                 : previousNode().transferRate_;  // Transfer rate of issuer.
 
             // First calculate assuming no output fees: saInPassAct,
@@ -103,11 +110,11 @@ TER PathCursor::deliverNodeForward (
                 saOutPassFunded,
                 node().saOfrRate,
                 node().saTakerPays.issue (),
-                true);
+                true, amountCalcSwitchovers);
 
             // Offer maximum in with fees.
             auto saInTotal = mulRound (saInFunded, saInFeeRate,
-                saInFunded.issue (), true);
+                saInFunded.issue (), true, amountCalcSwitchovers);
             auto saInRemaining = saInReq - saInAct - saInFees;
 
             if (saInRemaining < zero)
@@ -119,11 +126,13 @@ TER PathCursor::deliverNodeForward (
             // In without fees.
             auto saInPassAct = std::min (
                 node().saTakerPays, divRound (
-                    saInSum, saInFeeRate, saInSum.issue (), true));
+                    saInSum, saInFeeRate, saInSum.issue (), true,
+                        amountCalcSwitchovers));
 
             // Out limited by in remaining.
             auto outPass = divRound (
-                saInPassAct, node().saOfrRate, node().saTakerGets.issue (), true);
+                saInPassAct, node().saOfrRate, node().saTakerGets.issue (), true,
+                amountCalcSwitchovers);
             STAmount saOutPassMax    = std::min (saOutPassFunded, outPass);
 
             STAmount saInPassFeesMax = saInSum - saInPassAct;
@@ -134,7 +143,7 @@ TER PathCursor::deliverNodeForward (
             // Will be determined by adjusted saInPassAct.
             STAmount saInPassFees;
 
-            WriteLog (lsTRACE, RippleCalc)
+            JLOG (j_.trace)
                 << "deliverNodeForward:"
                 << " nodeIndex_=" << nodeIndex_
                 << " saOutFunded=" << saOutFunded
@@ -153,7 +162,7 @@ TER PathCursor::deliverNodeForward (
             // FIXME: We remove an offer if WE didn't want anything out of it?
             if (!node().saTakerPays || saInSum <= zero)
             {
-                WriteLog (lsDEBUG, RippleCalc)
+                JLOG (j_.debug)
                     << "deliverNodeForward: Microscopic offer unfunded.";
 
                 // After math offer is effectively unfunded.
@@ -165,7 +174,7 @@ TER PathCursor::deliverNodeForward (
             if (!saInFunded)
             {
                 // Previous check should catch this.
-                WriteLog (lsWARNING, RippleCalc)
+                JLOG (j_.warning)
                     << "deliverNodeForward: UNREACHABLE REACHED";
 
                 // After math offer is effectively unfunded.
@@ -184,7 +193,7 @@ TER PathCursor::deliverNodeForward (
                 saOutPassAct = saOutPassMax;
                 saInPassFees = saInPassFeesMax;
 
-                WriteLog (lsTRACE, RippleCalc)
+                JLOG (j_.trace)
                     << "deliverNodeForward: ? --> OFFER --> account:"
                     << " offerOwnerAccount_="
                     << node().offerOwnerAccount_
@@ -198,7 +207,7 @@ TER PathCursor::deliverNodeForward (
                 resultCode = accountSend(view(),
                     node().offerOwnerAccount_,
                     nextNode().account_,
-                    saOutPassAct);
+                    saOutPassAct, viewJ);
 
                 if (resultCode != tesSUCCESS)
                     break;
@@ -239,10 +248,12 @@ TER PathCursor::deliverNodeForward (
 
                     assert (saOutPassAct < saOutPassMax);
                     auto inPassAct = mulRound (
-                        saOutPassAct, node().saOfrRate, saInReq.issue (), true);
+                        saOutPassAct, node().saOfrRate, saInReq.issue (), true,
+                        amountCalcSwitchovers);
                     saInPassAct = std::min (node().saTakerPays, inPassAct);
                     auto inPassFees = mulRound (
-                        saInPassAct, saInFeeRate, saInPassAct.issue (), true);
+                        saInPassAct, saInFeeRate, saInPassAct.issue (), true,
+                        amountCalcSwitchovers);
                     saInPassFees    = std::min (saInPassFeesMax, inPassFees);
                 }
 
@@ -255,15 +266,16 @@ TER PathCursor::deliverNodeForward (
                 accountSend(view(),
                     node().offerOwnerAccount_,
                     id,
-                    outPassTotal);
+                    outPassTotal,
+                    viewJ);
 
-                WriteLog (lsTRACE, RippleCalc)
+                JLOG (j_.trace)
                     << "deliverNodeForward: ? --> OFFER --> offer:"
                     << " saOutPassAct=" << saOutPassAct
                     << " saOutPassFees=" << saOutPassFees;
             }
 
-            WriteLog (lsTRACE, RippleCalc)
+            JLOG (j_.trace)
                 << "deliverNodeForward: "
                 << " nodeIndex_=" << nodeIndex_
                 << " node().saTakerGets=" << node().saTakerGets
@@ -289,7 +301,8 @@ TER PathCursor::deliverNodeForward (
                 resultCode = accountSend(view(),
                     id,
                     node().offerOwnerAccount_,
-                    saInPassAct);
+                    saInPassAct,
+                    viewJ);
 
                 if (resultCode != tesSUCCESS)
                     break;
@@ -304,7 +317,7 @@ TER PathCursor::deliverNodeForward (
 
             if (saTakerPaysNew < zero || saTakerGetsNew < zero)
             {
-                WriteLog (lsWARNING, RippleCalc)
+                JLOG (j_.warning)
                     << "deliverNodeForward: NEGATIVE:"
                     << " saTakerPaysNew=" << saTakerPaysNew
                     << " saTakerGetsNew=" << saTakerGetsNew;
@@ -322,7 +335,7 @@ TER PathCursor::deliverNodeForward (
             {
                 // Offer became unfunded.
 
-                WriteLog (lsDEBUG, RippleCalc)
+                JLOG (j_.debug)
                     << "deliverNodeForward: unfunded:"
                     << " saOutPassAct=" << saOutPassAct
                     << " saOutFunded=" << saOutFunded;
@@ -349,7 +362,7 @@ TER PathCursor::deliverNodeForward (
         }
     }
 
-    WriteLog (lsTRACE, RippleCalc)
+    JLOG (j_.trace)
         << "deliverNodeForward<"
         << " nodeIndex_=" << nodeIndex_
         << " saInAct=" << saInAct

@@ -22,12 +22,16 @@
 
 #include <ripple/app/ledger/LedgerConsensus.h>
 #include <ripple/app/ledger/LedgerMaster.h>
-#include <ripple/app/tx/InboundTransactions.h>
-#include <ripple/app/tx/LocalTxs.h>
+#include <ripple/app/ledger/InboundTransactions.h>
+#include <ripple/app/main/Application.h>
+#include <ripple/basics/Log.h>
+#include <ripple/core/Config.h>
 
-#include <beast/cxx14/memory.h> // <memory>
+#include <memory>
 
 namespace ripple {
+
+class LocalTxs;
 
 /** Implements the consensus process and provides inter-round state. */
 class Consensus
@@ -55,24 +59,31 @@ public:
 
     /** Returns the time (in milliseconds) that the last close took. */
     virtual
-    int
+    std::chrono::milliseconds
     getLastCloseDuration () const = 0;
+
+    /** Called to create a LedgerConsensus instance */
+    virtual
+    std::shared_ptr<LedgerConsensus>
+    makeLedgerConsensus (
+        Application& app,
+        InboundTransactions& inboundTransactions,
+        LedgerMaster& ledgerMaster,
+        LocalTxs& localTxs) = 0;
 
     /** Called when a new round of consensus is about to begin */
     virtual
-    std::shared_ptr<LedgerConsensus>
+    void
     startRound (
-        InboundTransactions& inboundTransactions,
-        LocalTxs& localtx,
-        LedgerMaster& ledgerMaster,
+        LedgerConsensus& consensus,
         LedgerHash const &prevLCLHash,
         Ledger::ref previousLedger,
-        std::uint32_t closeTime) = 0;
+        NetClock::time_point closeTime) = 0;
 
     /** Specified the network time when the last ledger closed */
     virtual
     void
-    setLastCloseTime (std::uint32_t t) = 0;
+    setLastCloseTime (NetClock::time_point t) = 0;
 
     virtual
     void
@@ -82,7 +93,7 @@ public:
 };
 
 std::unique_ptr<Consensus>
-make_Consensus ();
+make_Consensus (Config const& config, Logs& logs);
 
 }
 

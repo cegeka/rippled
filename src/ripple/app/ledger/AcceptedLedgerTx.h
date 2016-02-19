@@ -21,9 +21,12 @@
 #define RIPPLE_APP_LEDGER_ACCEPTEDLEDGERTX_H_INCLUDED
 
 #include <ripple/app/ledger/Ledger.h>
+#include <ripple/protocol/AccountID.h>
 #include <boost/container/flat_set.hpp>
 
 namespace ripple {
+
+class Logs;
 
 /**
     A transaction that is in a closed ledger.
@@ -51,20 +54,28 @@ public:
     using ref = const pointer&;
 
 public:
-    AcceptedLedgerTx (Ledger::ref ledger, SerialIter& sit);
-    AcceptedLedgerTx (Ledger::ref ledger, STTx::ref,
-        TxMeta::ref);
-    AcceptedLedgerTx (Ledger::ref ledger, STTx::ref, TER result);
+    AcceptedLedgerTx (
+        std::shared_ptr<ReadView const> const& ledger,
+        std::shared_ptr<STTx const> const&,
+        std::shared_ptr<STObject const> const&,
+        AccountIDCache const&,
+        Logs&);
+    AcceptedLedgerTx (
+        std::shared_ptr<ReadView const> const&,
+        std::shared_ptr<STTx const> const&,
+        TER,
+        AccountIDCache const&,
+        Logs&);
 
-    STTx::ref getTxn () const
+    std::shared_ptr <STTx const> const& getTxn () const
     {
         return mTxn;
     }
-    TxMeta::ref getMeta () const
+    std::shared_ptr <TxMeta> const& getMeta () const
     {
         return mMeta;
     }
-    
+
     boost::container::flat_set<AccountID> const&
     getAffected() const
     {
@@ -103,13 +114,15 @@ public:
     }
 
 private:
-    Ledger::pointer                 mLedger;
-    STTx::pointer  mTxn;
-    TxMeta::pointer     mMeta;
+    std::shared_ptr<ReadView const> mLedger;
+    std::shared_ptr<STTx const> mTxn;
+    std::shared_ptr<TxMeta> mMeta;
     TER                             mResult;
     boost::container::flat_set<AccountID> mAffected;
     Blob        mRawMeta;
     Json::Value                     mJson;
+    AccountIDCache const& accountCache_;
+    Logs& logs_;
 
     void buildJson ();
 };

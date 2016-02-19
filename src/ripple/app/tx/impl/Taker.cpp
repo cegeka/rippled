@@ -19,6 +19,7 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/tx/impl/Taker.h>
+#include <ripple/basics/contract.h>
 
 namespace ripple {
 
@@ -139,7 +140,7 @@ BasicTaker::done () const
 }
 
 Amounts
-BasicTaker::remaining_offer () const
+BasicTaker::remaining_offer (STAmountCalcSwitchovers const& amountCalcSwitchovers) const
 {
     // If the taker is done, then there's no offer to place.
     if (done ())
@@ -155,14 +156,16 @@ BasicTaker::remaining_offer () const
 
         // We scale the output based on the remaining input:
         return Amounts (remaining_.in, divRound (
-            remaining_.in, quality_.rate (), issue_out_, true));
+            remaining_.in, quality_.rate (), issue_out_, true,
+            amountCalcSwitchovers));
     }
 
     assert (remaining_.out > zero);
 
     // We scale the input based on the remaining output:
     return Amounts (mulRound (
-        remaining_.out, quality_.rate (), issue_in_, true), remaining_.out);
+        remaining_.out, quality_.rate (), issue_in_, true, amountCalcSwitchovers),
+        remaining_.out);
 }
 
 Amounts const&
@@ -401,7 +404,7 @@ BasicTaker::do_cross (Amounts offer, Quality quality, AccountID const& owner)
     }
 
     if (!result.sanity_check ())
-        throw std::logic_error ("Computed flow fails sanity check.");
+        Throw<std::logic_error> ("Computed flow fails sanity check.");
 
     remaining_.out -= result.order.out;
     remaining_.in -= result.order.in;
@@ -476,12 +479,12 @@ BasicTaker::do_cross (
     auto flow1 = flow_iou_to_xrp (offer1, quality1, xrp_funds, leg1_in_funds, leg1_rate);
 
     if (!flow1.sanity_check ())
-        throw std::logic_error ("Computed flow1 fails sanity check.");
+        Throw<std::logic_error> ("Computed flow1 fails sanity check.");
 
     auto flow2 = flow_xrp_to_iou (offer2, quality2, leg2_out_funds, xrp_funds, leg2_rate);
 
     if (!flow2.sanity_check ())
-        throw std::logic_error ("Computed flow2 fails sanity check.");
+        Throw<std::logic_error> ("Computed flow2 fails sanity check.");
 
     // We now have the maximal flows across each leg individually. We need to
     // equalize them, so that the amount of XRP that flows out of the first leg
@@ -505,7 +508,7 @@ BasicTaker::do_cross (
     }
 
     if (flow1.order.out != flow2.order.in)
-        throw std::logic_error ("Bridged flow is out of balance.");
+        Throw<std::logic_error> ("Bridged flow is out of balance.");
 
     remaining_.out -= flow2.order.out;
     remaining_.in -= flow1.order.in;
@@ -517,13 +520,12 @@ BasicTaker::do_cross (
 
 Taker::Taker (CrossType cross_type, ApplyView& view,
     AccountID const& account, Amounts const& offer,
-        std::uint32_t flags, Config const& config,
+        std::uint32_t flags,
             beast::Journal journal)
     : BasicTaker (cross_type, account, offer, Quality(offer), flags,
         calculateRate(view, offer.in.getIssuer(), account),
         calculateRate(view, offer.out.getIssuer(), account), journal)
     , view_ (view)
-    , config_ (config)
     , xrp_flow_ (0)
     , direct_crossings_ (0)
     , bridge_crossings_ (0)
@@ -556,10 +558,10 @@ void
 Taker::consume_offer (Offer const& offer, Amounts const& order)
 {
     if (order.in < zero)
-        throw std::logic_error ("flow with negative input.");
+        Throw<std::logic_error> ("flow with negative input.");
 
     if (order.out < zero)
-        throw std::logic_error ("flow with negative output.");
+        Throw<std::logic_error> ("flow with negative output.");
 
     if (journal_.debug) journal_.debug << "Consuming from offer " << offer;
 
@@ -574,12 +576,10 @@ Taker::consume_offer (Offer const& offer, Amounts const& order)
     offer.consume (view_, order);
 }
 
-// VFALCO This function should take a config parameter
 STAmount
 Taker::get_funds (AccountID const& account, STAmount const& amount) const
 {
-    return accountFunds(view_, account, amount, fhZERO_IF_FROZEN,
-        config_);
+    return accountFunds(view_, account, amount, fhZERO_IF_FROZEN, journal_);
 }
 
 TER Taker::transferXRP (
@@ -588,7 +588,7 @@ TER Taker::transferXRP (
     STAmount const& amount)
 {
     if (!isXRP (amount))
-        throw std::logic_error ("Using transferXRP with IOU");
+        Throw<std::logic_error> ("Using transferXRP with IOU");
 
     if (from == to)
         return tesSUCCESS;
@@ -597,7 +597,7 @@ TER Taker::transferXRP (
     if (amount == zero)
         return tesSUCCESS;
 
-    return ripple::transferXRP (view_, from, to, amount);
+    return ripple::transferXRP (view_, from, to, amount, journal_);
 }
 
 TER Taker::redeemIOU (
@@ -606,7 +606,7 @@ TER Taker::redeemIOU (
     Issue const& issue)
 {
     if (isXRP (amount))
-        throw std::logic_error ("Using redeemIOU with XRP");
+        Throw<std::logic_error> ("Using redeemIOU with XRP");
 
     if (account == issue.account)
         return tesSUCCESS;
@@ -618,12 +618,12 @@ TER Taker::redeemIOU (
     // If we are trying to redeem some amount, then the account
     // must have a credit balance.
     if (get_funds (account, amount) <= zero)
-        throw std::logic_error ("redeemIOU has no funds to redeem");
+        Throw<std::logic_error> ("redeemIOU has no funds to redeem");
 
-    auto ret = ripple::redeemIOU (view_, account, amount, issue);
+    auto ret = ripple::redeemIOU (view_, account, amount, issue, journal_);
 
     if (get_funds (account, amount) < zero)
-        throw std::logic_error ("redeemIOU redeemed more funds than available");
+        Throw<std::logic_error> ("redeemIOU redeemed more funds than available");
 
     return ret;
 }
@@ -634,7 +634,7 @@ TER Taker::issueIOU (
     Issue const& issue)
 {
     if (isXRP (amount))
-        throw std::logic_error ("Using issueIOU with XRP");
+        Throw<std::logic_error> ("Using issueIOU with XRP");
 
     if (account == issue.account)
         return tesSUCCESS;
@@ -643,7 +643,7 @@ TER Taker::issueIOU (
     if (amount == zero)
         return tesSUCCESS;
 
-    return ripple::issueIOU (view_, account, amount, issue);
+    return ripple::issueIOU (view_, account, amount, issue, journal_);
 }
 
 // Performs funds transfers to fill the given offer and adjusts offer.

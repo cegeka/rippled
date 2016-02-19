@@ -35,19 +35,19 @@ class InboundLedger;
 //             derived class. Why not just make the timer callback
 //             function pure virtual?
 //
-PeerSet::PeerSet (uint256 const& hash, int interval, bool txnData,
+PeerSet::PeerSet (Application& app, uint256 const& hash, int interval, bool txnData,
     clock_type& clock, beast::Journal journal)
-    : m_journal (journal)
+    : app_ (app)
+    , m_journal (journal)
     , m_clock (clock)
     , mHash (hash)
     , mTimerInterval (interval)
     , mTimeouts (0)
     , mComplete (false)
     , mFailed (false)
-    , mAggressive (false)
     , mTxnData (txnData)
     , mProgress (false)
-    , mTimer (getApp().getIOService ())
+    , mTimer (app_.getIOService ())
 {
     mLastAction = m_clock.now();
     assert ((mTimerInterval > 10) && (mTimerInterval < 30000));
@@ -71,7 +71,8 @@ bool PeerSet::insert (Peer::ptr const& ptr)
 void PeerSet::setTimer ()
 {
     mTimer.expires_from_now (boost::posix_time::milliseconds (mTimerInterval));
-    mTimer.async_wait (std::bind (&PeerSet::TimerEntry, pmDowncast (), beast::asio::placeholders::error));
+    mTimer.async_wait (std::bind (&PeerSet::timerEntry, pmDowncast (),
+                                  beast::asio::placeholders::error, m_journal));
 }
 
 void PeerSet::invokeOnTimer ()
@@ -84,7 +85,7 @@ void PeerSet::invokeOnTimer ()
     if (!isProgress())
     {
         ++mTimeouts;
-        WriteLog (lsDEBUG, InboundLedger) << "Timeout(" << mTimeouts
+        JLOG (m_journal.debug) << "Timeout(" << mTimeouts
             << ") pc=" << mPeers.size () << " acquiring " << mHash;
         onTimer (false, sl);
     }
@@ -98,7 +99,9 @@ void PeerSet::invokeOnTimer ()
         setTimer ();
 }
 
-void PeerSet::TimerEntry (std::weak_ptr<PeerSet> wptr, const boost::system::error_code& result)
+void PeerSet::timerEntry (
+    std::weak_ptr<PeerSet> wptr, const boost::system::error_code& result,
+    beast::Journal j)
 {
     if (result == boost::asio::error::operation_aborted)
         return;
@@ -113,28 +116,30 @@ void PeerSet::TimerEntry (std::weak_ptr<PeerSet> wptr, const boost::system::erro
         //
         if (ptr->mTxnData)
         {
-            getApp().getJobQueue ().addJob (jtTXN_DATA, "timerEntryTxn",
-                std::bind (&PeerSet::TimerJobEntry, std::placeholders::_1,
-                           ptr));
+            ptr->app_.getJobQueue ().addJob (
+                jtTXN_DATA, "timerEntryTxn", [ptr] (Job&) {
+                    timerJobEntry(ptr);
+                });
         }
         else
         {
-            int jc = getApp().getJobQueue ().getJobCountTotal (jtLEDGER_DATA);
+            int jc = ptr->app_.getJobQueue ().getJobCountTotal (jtLEDGER_DATA);
 
             if (jc > 4)
             {
-                WriteLog (lsDEBUG, InboundLedger) << "Deferring PeerSet timer due to load";
+                JLOG (j.debug) << "Deferring PeerSet timer due to load";
                 ptr->setTimer ();
             }
             else
-                getApp().getJobQueue ().addJob (jtLEDGER_DATA, "timerEntryLgr",
-                    std::bind (&PeerSet::TimerJobEntry, std::placeholders::_1,
-                               ptr));
+                ptr->app_.getJobQueue ().addJob (
+                    jtLEDGER_DATA, "timerEntryLgr", [ptr] (Job&) {
+                        timerJobEntry(ptr);
+                    });
         }
     }
 }
 
-void PeerSet::TimerJobEntry (Job&, std::shared_ptr<PeerSet> ptr)
+void PeerSet::timerJobEntry (std::shared_ptr<PeerSet> ptr)
 {
     ptr->invokeOnTimer ();
 }
@@ -165,7 +170,7 @@ void PeerSet::sendRequest (const protocol::TMGetLedger& tmGL)
 
     for (auto const& p : mPeers)
     {
-        Peer::ptr peer (getApp().overlay ().findPeerByShortID (p.first));
+        Peer::ptr peer (app_.overlay ().findPeerByShortID (p.first));
 
         if (peer)
             peer->send (packet);
@@ -178,7 +183,7 @@ std::size_t PeerSet::getPeerCount () const
 
     for (auto const& p : mPeers)
     {
-        if (getApp ().overlay ().findPeerByShortID (p.first))
+        if (app_.overlay ().findPeerByShortID (p.first))
             ++ret;
     }
 

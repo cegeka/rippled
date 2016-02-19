@@ -19,83 +19,106 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/tx/apply.h>
-#include <ripple/app/tx/impl/ApplyContext.h>
-
-#include <ripple/app/tx/impl/CancelOffer.h>
-#include <ripple/app/tx/impl/CancelTicket.h>
-#include <ripple/app/tx/impl/Change.h>
-#include <ripple/app/tx/impl/CreateOffer.h>
-#include <ripple/app/tx/impl/CreateTicket.h>
-#include <ripple/app/tx/impl/Payment.h>
-#include <ripple/app/tx/impl/SetAccount.h>
-#include <ripple/app/tx/impl/SetRegularKey.h>
-#include <ripple/app/tx/impl/SetSignerList.h>
-#include <ripple/app/tx/impl/SetTrust.h>
+#include <ripple/app/tx/applySteps.h>
+#include <ripple/app/misc/HashRouter.h>
+#include <ripple/protocol/Feature.h>
 
 namespace ripple {
 
-template <class Processor,
-    class... Args>
-static
-std::pair<TER, bool>
-do_apply (Args&&... args)
+// These are the same flags defined as SF_PRIVATE1-4 in HashRouter.h
+#define SF_SIGBAD      SF_PRIVATE1    // Signature is bad
+#define SF_SIGGOOD     SF_PRIVATE2    // Signature is good
+#define SF_LOCALBAD    SF_PRIVATE3    // Local checks failed
+#define SF_LOCALGOOD   SF_PRIVATE4    // Local checks passed
+
+//------------------------------------------------------------------------------
+
+std::pair<Validity, std::string>
+checkValidity(HashRouter& router, STTx const& tx, bool allowMultiSign)
 {
-    ApplyContext ctx (
-        std::forward<Args>(args)...);
-    Processor p(ctx);
-    return p();
+    auto const id = tx.getTransactionID();
+    auto const flags = router.getFlags(id);
+    if (flags & SF_SIGBAD)
+        // Signature is known bad
+        return std::make_pair(Validity::SigBad,
+            "Transaction has bad signature.");
+    if (!(flags & SF_SIGGOOD))
+    {
+        // Don't know signature state. Check it.
+        if (!tx.checkSign(allowMultiSign))
+        {
+            router.setFlags(id, SF_SIGBAD);
+            return std::make_pair(Validity::SigBad,
+                "Transaction has bad signature.");
+        }
+        router.setFlags(id, SF_SIGGOOD);
+    }
+
+    // Signature is now known good
+    if (flags & SF_LOCALBAD)
+        // ...but the local checks
+        // are known bad.
+        return std::make_pair(Validity::SigGoodOnly,
+            "Local checks failed.");
+    if (flags & SF_LOCALGOOD)
+        // ...and the local checks
+        // are known good.
+        return std::make_pair(Validity::Valid, "");
+
+    // Do the local checks
+    std::string reason;
+    if (!passesLocalChecks(tx, reason))
+    {
+        router.setFlags(id, SF_LOCALBAD);
+        return std::make_pair(Validity::SigGoodOnly, reason);
+    }
+    router.setFlags(id, SF_LOCALGOOD);
+    return std::make_pair(Validity::Valid, "");
 }
 
-template <class... Args>
-static
-std::pair<TER, bool>
-invoke (TxType type,
-    Args&&... args)
+std::pair<Validity, std::string>
+checkValidity(HashRouter& router,
+    STTx const& tx, Rules const& rules,
+        Config const& config,
+            ApplyFlags const& flags)
 {
-    switch(type)
-    {
-    case ttACCOUNT_SET:     return do_apply< SetAccount    >(std::forward<Args>(args)...);
-    case ttOFFER_CANCEL:    return do_apply< CancelOffer   >(std::forward<Args>(args)...);
-    case ttOFFER_CREATE:    return do_apply< CreateOffer   >(std::forward<Args>(args)...);
-    case ttPAYMENT:         return do_apply< Payment       >(std::forward<Args>(args)...);
-    case ttREGULAR_KEY_SET: return do_apply< SetRegularKey >(std::forward<Args>(args)...);
-    case ttSIGNER_LIST_SET: return do_apply< SetSignerList >(std::forward<Args>(args)...);
-    case ttTICKET_CANCEL:   return do_apply< CancelTicket  >(std::forward<Args>(args)...);
-    case ttTICKET_CREATE:   return do_apply< CreateTicket  >(std::forward<Args>(args)...);
-    case ttTRUST_SET:       return do_apply< SetTrust      >(std::forward<Args>(args)...);
+    auto const allowMultiSign =
+        rules.enabled(featureMultiSign,
+            config.features);
 
-    // VFALCO These are both the same?
-    case ttAMENDMENT:
-    case ttFEE:             return do_apply< Change        >(std::forward<Args>(args)...);
-    default:
+    return checkValidity(router, tx, allowMultiSign);
+}
+
+void
+forceValidity(HashRouter& router, uint256 const& txid,
+    Validity validity)
+{
+    int flags = 0;
+    switch (validity)
+    {
+    case Validity::Valid:
+        flags |= SF_LOCALGOOD;
+        // fall through
+    case Validity::SigGoodOnly:
+        flags |= SF_SIGGOOD;
+        // fall through
+    case Validity::SigBad:
+        // would be silly to call directly
         break;
     }
-    return { temUNKNOWN, false };
+    if (flags)
+        router.setFlags(txid, flags);
 }
 
 std::pair<TER, bool>
-apply (OpenView& view,
+apply (Application& app, OpenView& view,
     STTx const& tx, ApplyFlags flags,
-        Config const& config,
-            beast::Journal j)
+        beast::Journal j)
 {
-    try
-    {
-        return invoke (tx.getTxnType(),
-            view, tx, flags, config, j);
-    }
-    catch(std::exception const& e)
-    {
-        JLOG(j.fatal) <<
-            "Caught exception: " << e.what();
-        return { tefEXCEPTION, false };
-    }
-    catch(...)
-    {
-        JLOG(j.fatal) <<
-            "Caught unknown exception";
-        return { tefEXCEPTION, false };
-    }
+    auto pfresult = preflight(app, view.rules(),
+        tx, flags, j);
+    auto pcresult = preclaim(pfresult, app, view);
+    return doApply(pcresult, app, view);
 }
 
 } // ripple

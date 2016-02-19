@@ -37,11 +37,13 @@ class PathState : public CountedObject <PathState>
 
     PathState (PaymentSandbox const& parent,
             STAmount const& saSend,
-                STAmount const& saSendMax)
+               STAmount const& saSendMax,
+                   beast::Journal j)
         : mIndex (0)
         , uQuality (0)
         , saInReq (saSendMax)
         , saOutReq (saSend)
+        , j_ (j)
     {
         view_.emplace(&parent);
     }
@@ -91,9 +93,6 @@ class PathState : public CountedObject <PathState>
     std::uint64_t quality() const { return uQuality; }
     void setQuality (std::uint64_t q) { uQuality = q; }
 
-    bool allLiquidityConsumed() const { return allLiquidityConsumed_; }
-    void consumeAllLiquidity () { allLiquidityConsumed_ = true; }
-
     void setIndex (int i) { mIndex  = i; }
     int index() const { return mIndex; }
 
@@ -136,7 +135,7 @@ private:
         AccountID const& account,
         Currency const& currency,
         AccountID const& issuer);
-    
+
     Json::Value getJson () const;
 
 private:
@@ -153,11 +152,8 @@ private:
     STAmount                    saOutAct;  // --> Amount actually sent so far.
     STAmount                    saOutPass; // <-- Amount actually sent.
 
-    // If true, all liquidity on this path has been consumed.
-    bool allLiquidityConsumed_ = false;
-
     TER terStatus;
-    
+
     path::Node::List nodes_;
 
     // When processing, don't want to complicate directory walking with
@@ -172,6 +168,8 @@ private:
     // First time working in reverse a funding source was used.
     // Source may only be used there if not mentioned by an account.
     AccountIssueToNodeIndex umReverse;
+
+    beast::Journal j_;
 };
 
 } // ripple

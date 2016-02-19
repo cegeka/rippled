@@ -18,11 +18,11 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-#include <ripple/basics/make_SSLContext.h>
 #include <ripple/basics/chrono.h>
+#include <ripple/basics/contract.h>
+#include <ripple/basics/make_SSLContext.h>
 #include <beast/container/aged_unordered_set.h>
 #include <beast/module/core/diagnostic/FatalError.h>
-#include <beast/utility/static_initializer.h>
 #include <cstdint>
 #include <sstream>
 #include <stdexcept>
@@ -82,9 +82,7 @@ static rsa_ptr rsa_generate_key (int n_bits)
     RSA* rsa = RSA_generate_key (n_bits, RSA_F4, nullptr, nullptr);
 
     if (rsa == nullptr)
-    {
-        throw std::runtime_error ("RSA_generate_key failed");
-    }
+        Throw<std::runtime_error> ("RSA_generate_key failed");
 
     return rsa_ptr (rsa);
 }
@@ -98,9 +96,7 @@ static evp_pkey_ptr evp_pkey_new()
     EVP_PKEY* evp_pkey = EVP_PKEY_new();
 
     if (evp_pkey == nullptr)
-    {
-        throw std::runtime_error ("EVP_PKEY_new failed");
-    }
+        Throw<std::runtime_error> ("EVP_PKEY_new failed");
 
     return evp_pkey_ptr (evp_pkey);
 }
@@ -108,9 +104,7 @@ static evp_pkey_ptr evp_pkey_new()
 static void evp_pkey_assign_rsa (EVP_PKEY* evp_pkey, rsa_ptr&& rsa)
 {
     if (! EVP_PKEY_assign_RSA (evp_pkey, rsa.get()))
-    {
-        throw std::runtime_error ("EVP_PKEY_assign_RSA failed");
-    }
+        Throw<std::runtime_error> ("EVP_PKEY_assign_RSA failed");
 
     rsa.release();
 }
@@ -124,9 +118,7 @@ static x509_ptr x509_new()
     X509* x509 = X509_new();
 
     if (x509 == nullptr)
-    {
-        throw std::runtime_error ("X509_new failed");
-    }
+        Throw<std::runtime_error> ("X509_new failed");
 
     X509_set_version (x509, NID_X509);
 
@@ -147,25 +139,19 @@ static void x509_set_pubkey (X509* x509, EVP_PKEY* evp_pkey)
 static void x509_sign (X509* x509, EVP_PKEY* evp_pkey)
 {
     if (! X509_sign (x509, evp_pkey, EVP_sha1()))
-    {
-        throw std::runtime_error ("X509_sign failed");
-    }
+        Throw<std::runtime_error> ("X509_sign failed");
 }
 
 static void ssl_ctx_use_certificate (SSL_CTX* const ctx, x509_ptr& cert)
 {
     if (SSL_CTX_use_certificate (ctx, cert.release()) <= 0)
-    {
-        throw std::runtime_error ("SSL_CTX_use_certificate failed");
-    }
+        Throw<std::runtime_error> ("SSL_CTX_use_certificate failed");
 }
 
 static void ssl_ctx_use_privatekey (SSL_CTX* const ctx, evp_pkey_ptr& key)
 {
     if (SSL_CTX_use_PrivateKey (ctx, key.release()) <= 0)
-    {
-        throw std::runtime_error ("SSL_CTX_use_PrivateKey failed");
-    }
+        Throw<std::runtime_error> ("SSL_CTX_use_PrivateKey failed");
 }
 
 // track when SSL connections have last negotiated
@@ -323,9 +309,7 @@ disallowRenegotiation (SSL const* ssl, bool isNew)
     // Do not allow a connection to renegotiate
     // more than once every 4 minutes
 
-    static beast::static_initializer <StaticData> static_data;
-
-    auto& sd (static_data.get ());
+    static StaticData sd;
     std::lock_guard <std::mutex> lock (sd.lock);
     auto const expired (sd.set.clock().now() - std::chrono::minutes(4));
 
@@ -409,7 +393,7 @@ initAnonymous (
         context.native_handle (),
         cipherList.c_str ());
     if (result != 1)
-        throw std::invalid_argument("SSL_CTX_set_cipher_list failed");
+        Throw<std::invalid_argument> ("SSL_CTX_set_cipher_list failed");
 
     using namespace openssl;
 
@@ -493,7 +477,7 @@ initAuthenticated (boost::asio::ssl::context& context,
 
             fclose (f);
         }
-        catch (...)
+        catch (std::exception const&)
         {
             fclose (f);
             beast::FatalError ("Reading the SSL chain file generated an exception.",
@@ -530,15 +514,20 @@ initAuthenticated (boost::asio::ssl::context& context,
 std::shared_ptr<boost::asio::ssl::context>
 make_SSLContext()
 {
-    std::shared_ptr<boost::asio::ssl::context> context =
-        std::make_shared<boost::asio::ssl::context> (
-            boost::asio::ssl::context::sslv23);
-    // By default, allow anonymous DH.
-    openssl::detail::initAnonymous (
-        *context, "ALL:!LOW:!EXP:!MD5:@STRENGTH");
-    // VFALCO NOTE, It seems the WebSocket context never has
-    // set_verify_mode called, for either setting of WEBSOCKET_SECURE
-    context->set_verify_mode (boost::asio::ssl::verify_none);
+    static auto const context =
+        []()
+        {
+            auto const context = std::make_shared<
+                boost::asio::ssl::context>(
+                    boost::asio::ssl::context::sslv23);
+            // By default, allow anonymous DH.
+            openssl::detail::initAnonymous(
+                *context, "ALL:!LOW:!EXP:!MD5:@STRENGTH");
+            // VFALCO NOTE, It seems the WebSocket context never has
+            // set_verify_mode called, for either setting of WEBSOCKET_SECURE
+            context->set_verify_mode(boost::asio::ssl::verify_none);
+            return context;
+        }();
     return context;
 }
 

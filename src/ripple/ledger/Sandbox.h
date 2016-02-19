@@ -40,23 +40,15 @@ public:
     Sandbox& operator= (Sandbox&&) = delete;
     Sandbox& operator= (Sandbox const&) = delete;
 
-#ifdef _MSC_VER
-    Sandbox (Sandbox&& other)
-        : ApplyViewBase (std::move(other))
-    {
-    }
-#else
     Sandbox (Sandbox&&) = default;
-#endif
 
-    Sandbox (ReadView const* base,
-            ApplyFlags flags)
+    Sandbox (ReadView const* base, ApplyFlags flags)
         : ApplyViewBase (base, flags)
     {
     }
 
     Sandbox (ApplyView const* base)
-        : Sandbox (base, base->flags())
+        : Sandbox(base, base->flags())
     {
     }
 

@@ -21,21 +21,21 @@
 #include <ripple/app/ledger/LedgerTiming.h>
 #include <ripple/app/ledger/impl/ConsensusImp.h>
 #include <ripple/app/ledger/impl/LedgerConsensusImp.h>
-#include <ripple/basics/Log.h>
-#include <beast/utility/Journal.h>
 
 namespace ripple {
 
-ConsensusImp::ConsensusImp ()
-    : journal_ (deprecatedLogs().journal("Consensus"))
-    , feeVote_ (make_FeeVote (setup_FeeVote (getConfig().section ("voting")),
-        deprecatedLogs().journal("FeeVote")))
+ConsensusImp::ConsensusImp (
+        FeeVote::Setup const& voteSetup,
+        Logs& logs)
+    : journal_ (logs.journal("Consensus"))
+    , feeVote_ (make_FeeVote (voteSetup,
+        logs.journal("FeeVote")))
     , proposing_ (false)
     , validating_ (false)
     , lastCloseProposers_ (0)
-    , lastCloseConvergeTook_ (1000 * LEDGER_IDLE_INTERVAL)
-    , lastValidationTimestamp_ (0)
-    , lastCloseTime_ (0)
+    , lastCloseConvergeTook_ (LEDGER_IDLE_INTERVAL)
+    , lastValidationTimestamp_ (0s)
+    , lastCloseTime_ (0s)
 {
 }
 
@@ -57,26 +57,37 @@ ConsensusImp::getLastCloseProposers () const
     return lastCloseProposers_;
 }
 
-int
+std::chrono::milliseconds
 ConsensusImp::getLastCloseDuration () const
 {
     return lastCloseConvergeTook_;
 }
 
 std::shared_ptr<LedgerConsensus>
-ConsensusImp::startRound (
+ConsensusImp::makeLedgerConsensus (
+    Application& app,
     InboundTransactions& inboundTransactions,
-    LocalTxs& localtx,
     LedgerMaster& ledgerMaster,
-    LedgerHash const &prevLCLHash,
-    Ledger::ref previousLedger,
-    std::uint32_t closeTime)
+    LocalTxs& localTxs)
 {
-    return make_LedgerConsensus (*this, lastCloseProposers_,
-        lastCloseConvergeTook_, inboundTransactions, localtx, ledgerMaster,
-        prevLCLHash, previousLedger, closeTime, *feeVote_);
+    return make_LedgerConsensus (app, *this,
+        inboundTransactions, localTxs, ledgerMaster, *feeVote_);
 }
 
+void
+ConsensusImp::startRound (
+    LedgerConsensus& consensus,
+    LedgerHash const &prevLCLHash,
+    Ledger::ref previousLedger,
+    NetClock::time_point closeTime)
+{
+    consensus.startRound (
+        prevLCLHash,
+        previousLedger,
+        closeTime,
+        lastCloseProposers_,
+        lastCloseConvergeTook_);
+}
 
 void
 ConsensusImp::setProposing (bool p, bool v)
@@ -100,32 +111,30 @@ ConsensusImp::setLastValidation (STValidation::ref v)
 void
 ConsensusImp::newLCL (
     int proposers,
-    int convergeTime,
-    uint256 const& ledgerHash)
+    std::chrono::milliseconds convergeTime)
 {
     lastCloseProposers_ = proposers;
     lastCloseConvergeTook_ = convergeTime;
-    lastCloseHash_ = ledgerHash;
 }
 
-std::uint32_t
-ConsensusImp::validationTimestamp (std::uint32_t vt)
+NetClock::time_point
+ConsensusImp::validationTimestamp (NetClock::time_point vt)
 {
     if (vt <= lastValidationTimestamp_)
-        vt = lastValidationTimestamp_ + 1;
+        vt = lastValidationTimestamp_ + 1s;
 
     lastValidationTimestamp_ = vt;
     return vt;
 }
 
-std::uint32_t
+NetClock::time_point
 ConsensusImp::getLastCloseTime () const
 {
     return lastCloseTime_;
 }
 
 void
-ConsensusImp::setLastCloseTime (std::uint32_t t)
+ConsensusImp::setLastCloseTime (NetClock::time_point t)
 {
     lastCloseTime_ = t;
 }
@@ -135,9 +144,11 @@ ConsensusImp::storeProposal (
     LedgerProposal::ref proposal,
     RippleAddress const& peerPublic)
 {
+    std::lock_guard <std::mutex> _(lock_);
+
     auto& props = storedProposals_[peerPublic.getNodeID ()];
 
-    if (props.size () >= (unsigned) (getLastCloseProposers () + 10))
+    if (props.size () >= 10)
         props.pop_front ();
 
     props.push_back (proposal);
@@ -147,7 +158,9 @@ ConsensusImp::storeProposal (
 void
 ConsensusImp::takePosition (int seq, std::shared_ptr<SHAMap> const& position)
 {
-    recentPositions_[position->getHash ()] = std::make_pair (seq, position);
+    std::lock_guard <std::mutex> _(lock_);
+
+    recentPositions_[position->getHash ().as_uint256()] = std::make_pair (seq, position);
 
     if (recentPositions_.size () > 4)
     {
@@ -164,18 +177,25 @@ ConsensusImp::takePosition (int seq, std::shared_ptr<SHAMap> const& position)
     }
 }
 
-Consensus::Proposals&
-ConsensusImp::peekStoredProposals ()
+void
+ConsensusImp::visitStoredProposals (
+    std::function<void(LedgerProposal::ref)> const& f)
 {
-    return storedProposals_;
+    std::lock_guard <std::mutex> _(lock_);
+
+    for (auto const& it : storedProposals_)
+        for (auto const& prop : it.second)
+            f(prop);
 }
 
 //==============================================================================
 
 std::unique_ptr<Consensus>
-make_Consensus ()
+make_Consensus (Config const& config, Logs& logs)
 {
-    return std::make_unique<ConsensusImp> ();
+    return std::make_unique<ConsensusImp> (
+        setup_FeeVote (config.section ("voting")),
+        logs);
 }
 
 }

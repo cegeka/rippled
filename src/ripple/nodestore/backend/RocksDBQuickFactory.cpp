@@ -23,6 +23,7 @@
 
 #if RIPPLE_ROCKSDB_AVAILABLE
 
+#include <ripple/basics/contract.h>
 #include <ripple/core/Config.h> // VFALCO Bad dependency
 #include <ripple/nodestore/Factory.h>
 #include <ripple/nodestore/Manager.h>
@@ -30,7 +31,7 @@
 #include <ripple/nodestore/impl/EncodedBlob.h>
 #include <beast/threads/Thread.h>
 #include <atomic>
-#include <beast/cxx14/memory.h> // <memory>
+#include <memory>
 
 namespace ripple {
 namespace NodeStore {
@@ -103,7 +104,8 @@ public:
         , m_name (get<std::string>(keyValues, "path"))
     {
         if (m_name.empty())
-            throw std::runtime_error ("Missing path in RocksDBQuickFactory backend");
+            Throw<std::runtime_error> (
+                "Missing path in RocksDBQuickFactory backend");
 
         // Defaults
         std::uint64_t budget = 512 * 1024 * 1024;  // 512MB
@@ -167,8 +169,10 @@ public:
         rocksdb::DB* db = nullptr;
 
         rocksdb::Status status = rocksdb::DB::Open (options, m_name, &db);
-        if (!status.ok () || !db)
-            throw std::runtime_error (std::string("Unable to open/create RocksDBQuick: ") + status.ToString());
+        if (! status.ok () || ! db)
+            Throw<std::runtime_error> (
+                std::string("Unable to open/create RocksDBQuick: ") +
+                    status.ToString());
 
         m_db.reset (db);
     }
@@ -179,7 +183,7 @@ public:
     }
 
     std::string
-    getName()
+    getName() override
     {
         return m_name;
     }
@@ -201,7 +205,7 @@ public:
     //--------------------------------------------------------------------------
 
     Status
-    fetch (void const* key, std::shared_ptr<NodeObject>* pObject)
+    fetch (void const* key, std::shared_ptr<NodeObject>* pObject) override
     {
         pObject->reset ();
 
@@ -257,7 +261,7 @@ public:
     }
 
     void
-    store (std::shared_ptr<NodeObject> const& object)
+    store (std::shared_ptr<NodeObject> const& object) override
     {
         storeBatch(Batch{object});
     }
@@ -265,12 +269,12 @@ public:
     std::vector<std::shared_ptr<NodeObject>>
     fetchBatch (std::size_t n, void const* const* keys) override
     {
-        throw std::runtime_error("pure virtual called");
+        Throw<std::runtime_error> ("pure virtual called");
         return {};
     }
 
     void
-    storeBatch (Batch const& batch)
+    storeBatch (Batch const& batch) override
     {
         rocksdb::WriteBatch wb;
 
@@ -294,12 +298,12 @@ public:
 
         auto ret = m_db->Write (options, &wb);
 
-        if (!ret.ok ())
-            throw std::runtime_error ("storeBatch failed: " + ret.ToString());
+        if (! ret.ok ())
+            Throw<std::runtime_error> ("storeBatch failed: " + ret.ToString());
     }
 
     void
-    for_each (std::function <void(std::shared_ptr<NodeObject>)> f)
+    for_each (std::function <void(std::shared_ptr<NodeObject>)> f) override
     {
         rocksdb::ReadOptions const options;
 
@@ -336,7 +340,7 @@ public:
     }
 
     int
-    getWriteLoad ()
+    getWriteLoad () override
     {
         return 0;
     }

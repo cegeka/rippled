@@ -18,9 +18,10 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/basics/contract.h>
 #include <ripple/nodestore/Factory.h>
 #include <ripple/nodestore/Manager.h>
-#include <beast/cxx14/memory.h> // <memory>
+#include <memory>
 
 namespace ripple {
 namespace NodeStore {
@@ -37,7 +38,7 @@ public:
     }
 
     std::string
-    getName()
+    getName() override
     {
         return std::string ();
     }
@@ -48,7 +49,7 @@ public:
     }
 
     Status
-    fetch (void const*, std::shared_ptr<NodeObject>*)
+    fetch (void const*, std::shared_ptr<NodeObject>*) override
     {
         return notFound;
     }
@@ -62,27 +63,27 @@ public:
     std::vector<std::shared_ptr<NodeObject>>
     fetchBatch (std::size_t n, void const* const* keys) override
     {
-        throw std::runtime_error("pure virtual called");
+        Throw<std::runtime_error> ("pure virtual called");
         return {};
     }
 
     void
-    store (std::shared_ptr<NodeObject> const& object)
+    store (std::shared_ptr<NodeObject> const& object) override
     {
     }
 
     void
-    storeBatch (Batch const& batch)
+    storeBatch (Batch const& batch) override
     {
     }
 
     void
-    for_each (std::function <void(std::shared_ptr<NodeObject>)> f)
+    for_each (std::function <void(std::shared_ptr<NodeObject>)> f) override
     {
     }
 
     int
-    getWriteLoad ()
+    getWriteLoad () override
     {
         return 0;
     }

@@ -21,6 +21,7 @@
 #include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/NetworkOPs.h>
+#include <ripple/app/misc/Transaction.h>
 #include <ripple/ledger/ReadView.h>
 #include <ripple/net/RPCErr.h>
 #include <ripple/protocol/ErrorCodes.h>
@@ -28,6 +29,7 @@
 #include <ripple/resource/Fees.h>
 #include <ripple/rpc/Context.h>
 #include <ripple/rpc/impl/LookupLedger.h>
+#include <ripple/rpc/impl/Utilities.h>
 #include <ripple/server/Role.h>
 
 namespace ripple {
@@ -119,6 +121,13 @@ Json::Value doAccountTxOld (RPC::Context& context)
         if (!ledger)
             return ret;
 
+        if (! ret[jss::validated].asBool() ||
+            (ledger->info().seq > uValidatedMax) ||
+            (ledger->info().seq < uValidatedMin))
+        {
+            return rpcError (rpcLGR_NOT_VALIDATED);
+        }
+
         uLedgerMin = uLedgerMax = ledger->info().seq;
     }
 
@@ -132,14 +141,14 @@ Json::Value doAccountTxOld (RPC::Context& context)
 
         Json::Value ret (Json::objectValue);
 
-        ret[jss::account] = getApp().accountIDCache().toBase58(*raAccount);
+        ret[jss::account] = context.app.accountIDCache().toBase58(*raAccount);
         Json::Value& jvTxns = (ret[jss::transactions] = Json::arrayValue);
 
         if (bBinary)
         {
             auto txns = context.netOps.getAccountTxsB (
                 *raAccount, uLedgerMin, uLedgerMax, bDescending, offset, limit,
-                context.role == Role::ADMIN);
+                isUnlimited (context.role));
 
             for (auto it = txns.begin (), end = txns.end (); it != end; ++it)
             {
@@ -161,7 +170,7 @@ Json::Value doAccountTxOld (RPC::Context& context)
         {
             auto txns = context.netOps.getAccountTxs (
                 *raAccount, uLedgerMin, uLedgerMax, bDescending, offset, limit,
-                context.role == Role::ADMIN);
+                isUnlimited (context.role));
 
             for (auto it = txns.begin (), end = txns.end (); it != end; ++it)
             {
@@ -175,7 +184,10 @@ Json::Value doAccountTxOld (RPC::Context& context)
                 {
                     std::uint32_t uLedgerIndex = it->second->getLgrSeq ();
 
-                    jvObj[jss::meta]           = it->second->getJson (0);
+                    auto meta = it->second->getJson(0);
+                    addPaymentDeliveredAmount(meta, context, it->first, it->second);
+                    jvObj[jss::meta] = std::move(meta);
+
                     jvObj[jss::validated]
                             = bValidated
                             && uValidatedMin <= uLedgerIndex
@@ -207,7 +219,7 @@ Json::Value doAccountTxOld (RPC::Context& context)
         return ret;
 #ifndef BEAST_DEBUG
     }
-    catch (...)
+    catch (std::exception const&)
     {
         return rpcError (rpcINTERNAL);
     }

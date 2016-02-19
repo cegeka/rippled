@@ -25,10 +25,11 @@
 #include <ripple/test/jtx/tags.h>
 #include <ripple/protocol/Issue.h>
 #include <ripple/protocol/STAmount.h>
+#include <ripple/basics/contract.h>
 #include <cstdint>
 #include <ostream>
 #include <string>
-#include <beast/cxx14/type_traits.h> // <type_traits>
+#include <type_traits>
 
 namespace ripple {
 namespace test {
@@ -143,7 +144,21 @@ operator<< (std::ostream& os,
 
 //------------------------------------------------------------------------------
 
-namespace detail {
+// Specifies an order book
+struct BookSpec
+{
+    AccountID account;
+    ripple::Currency currency;
+
+    BookSpec(AccountID const& account_,
+        ripple::Currency const& currency_)
+        : account(account_)
+        , currency(currency_)
+    {
+    }
+};
+
+//------------------------------------------------------------------------------
 
 struct XRP_t
 {
@@ -183,14 +198,14 @@ struct XRP_t
             auto const d = std::uint64_t(
                 std::round(v * c));
             if (double(d) / c != v)
-                throw std::domain_error(
+                Throw<std::domain_error> (
                     "unrepresentable");
             return { d };
         }
         auto const d = std::int64_t(
             std::round(v * c));
         if (double(d) / c != v)
-            throw std::domain_error(
+            Throw<std::domain_error> (
                 "unrepresentable");
         return { d };
     }
@@ -202,9 +217,15 @@ struct XRP_t
     {
         return { xrpIssue() };
     }
-};
 
-} // detail
+    friend
+    BookSpec
+    operator~ (XRP_t const&)
+    {        
+        return BookSpec( xrpAccount(),
+            xrpCurrency() );
+    }
+};
 
 /** Converts to XRP Issue or STAmount.
 
@@ -212,7 +233,7 @@ struct XRP_t
         XRP         Converts to the XRP Issue
         XRP(10)     Returns STAmount of 10 XRP
 */
-extern detail::XRP_t const XRP;
+extern XRP_t const XRP;
 
 /** Returns an XRP STAmount.
 
@@ -264,28 +285,21 @@ static epsilon_t const epsilon;
 */
 class IOU
 {
-private:
-    Account account_;
-    ripple::Currency currency_;
-
 public:
-    IOU(Account const& account,
-            ripple::Currency const& currency)
-        : account_(account)
-        , currency_(currency)
-    {
-    }
+    Account account;
+    ripple::Currency currency;
 
-    Account
-    account() const
+    IOU(Account const& account_,
+            ripple::Currency const& currency_)
+        : account(account_)
+        , currency(currency_)
     {
-        return account_;
     }
 
     Issue
     issue() const
     {
-        return { currency_, account_.id() };
+        return { currency, account.id() };
     }
 
     /** Implicit conversion to Issue.
@@ -306,7 +320,7 @@ public:
         // VFALCO NOTE Should throw if the
         //             representation of v is not exact.
         return { amountFromString(issue(),
-            std::to_string(v)), account_.name() };
+            std::to_string(v)), account.name() };
     }
 
     PrettyAmount operator()(epsilon_t) const;
@@ -319,6 +333,13 @@ public:
     None operator()(none_t) const
     {
         return { issue() };
+    }
+
+    friend
+    BookSpec
+    operator~ (IOU const& iou)
+    {
+        return BookSpec(iou.account.id(), iou.currency);
     }
 };
 

@@ -20,9 +20,11 @@
 #ifndef RIPPLE_OVERLAY_OVERLAYIMPL_H_INCLUDED
 #define RIPPLE_OVERLAY_OVERLAYIMPL_H_INCLUDED
 
+#include <ripple/app/main/Application.h>
 #include <ripple/core/Job.h>
 #include <ripple/overlay/Overlay.h>
 #include <ripple/overlay/impl/Manifest.h>
+#include <ripple/overlay/impl/TrafficCount.h>
 #include <ripple/server/Handoff.h>
 #include <ripple/server/ServerHandler.h>
 #include <ripple/basics/Resolver.h>
@@ -39,7 +41,7 @@
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
-#include <beast/cxx14/memory.h> // <memory>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 
@@ -96,6 +98,7 @@ private:
         on_timer (error_code ec);
     };
 
+    Application& app_;
     boost::asio::io_service& io_service_;
     boost::optional<boost::asio::io_service::work> work_;
     boost::asio::io_service::strand strand_;
@@ -109,6 +112,7 @@ private:
     ServerHandler& serverHandler_;
     Resource::Manager& m_resourceManager;
     std::unique_ptr <PeerFinder::Manager> m_peerFinder;
+    TrafficCount m_traffic;
     hash_map <PeerFinder::Slot::ptr,
         std::weak_ptr <PeerImp>> m_peers;
     hash_map<RippleAddress, std::weak_ptr<PeerImp>> m_publicKeyMap;
@@ -121,7 +125,7 @@ private:
     //--------------------------------------------------------------------------
 
 public:
-    OverlayImpl (Setup const& setup, Stoppable& parent,
+    OverlayImpl (Application& app, Setup const& setup, Stoppable& parent,
         ServerHandler& serverHandler, Resource::Manager& resourceManager,
         Resolver& resolver, boost::asio::io_service& io_service,
         BasicConfig const& config);
@@ -253,7 +257,7 @@ public:
 
     // Called when TMManifests is received from a peer
     void
-    onManifests (Job&,
+    onManifests (
         std::shared_ptr<protocol::TMManifests> const& m,
             std::shared_ptr<PeerImp> const& from);
 
@@ -264,6 +268,12 @@ public:
     static
     std::string
     makePrefix (std::uint32_t id);
+
+    void
+    reportTraffic (
+        TrafficCount::category cat,
+        bool isInbound,
+        int bytes);
 
 private:
     std::shared_ptr<HTTP::Writer>
@@ -317,7 +327,7 @@ private:
     //
 
     void
-    onWrite (beast::PropertyStream::Map& stream);
+    onWrite (beast::PropertyStream::Map& stream) override;
 
     //--------------------------------------------------------------------------
 

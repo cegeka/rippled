@@ -27,7 +27,7 @@
 #include <cstdint>
 #include <iterator>
 #include <memory>
-#include <beast/cxx14/type_traits.h> // <type_traits>
+#include <type_traits>
 
 namespace ripple {
 
@@ -61,6 +61,13 @@ public:
     getBuffer () const
     {
         return mBuffer;
+    }
+
+    /** Get the traffic category */
+    int
+    getCategory () const
+    {
+        return mCategory;
     }
 
     /** Determine bytewise equality. */
@@ -148,10 +155,10 @@ private:
     void encodeHeader (unsigned size, int type);
 
     std::vector <uint8_t> mBuffer;
+
+    int mCategory;
 };
 
 }
 
 #endif
-
-

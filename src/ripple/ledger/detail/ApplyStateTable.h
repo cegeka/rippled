@@ -23,11 +23,11 @@
 #include <ripple/ledger/OpenView.h>
 #include <ripple/ledger/RawView.h>
 #include <ripple/ledger/ReadView.h>
+#include <ripple/ledger/TxMeta.h>
 #include <ripple/protocol/TER.h>
+#include <ripple/protocol/XRPAmount.h>
 #include <beast/utility/Journal.h>
 #include <memory>
-// VFALCO TODO Move TxMeta to ripple/ledger/
-#include <ripple/ledger/TxMeta.h>
 
 namespace ripple {
 namespace detail {
@@ -51,23 +51,15 @@ private:
         std::pair<Action, std::shared_ptr<SLE>>>;
 
     items_t items_;
-    std::uint64_t dropsDestroyed_ = 0;
+    XRPAmount dropsDestroyed_ = 0;
 
 public:
     ApplyStateTable() = default;
+    ApplyStateTable (ApplyStateTable&&) = default;
+
     ApplyStateTable (ApplyStateTable const&) = delete;
     ApplyStateTable& operator= (ApplyStateTable&&) = delete;
     ApplyStateTable& operator= (ApplyStateTable const&) = delete;
-
-#ifdef _MSC_VER
-    ApplyStateTable (ApplyStateTable&& other)
-        : items_ (std::move(other.items_))
-        , dropsDestroyed_ (std::move(other.dropsDestroyed_))
-    {
-    }
-#else
-    ApplyStateTable (ApplyStateTable&&) = default;
-#endif
 
     void
     apply (RawView& to) const;
@@ -99,6 +91,14 @@ public:
     size ();
 
     void
+    visit (ReadView const& base,
+        std::function <void (
+            uint256 const& key,
+            bool isDelete,
+            std::shared_ptr <SLE const> const& before,
+            std::shared_ptr <SLE const> const& after)> const& func);
+
+    void
     erase (ReadView const& base,
         std::shared_ptr<SLE> const& sle);
 
@@ -119,14 +119,14 @@ public:
         std::shared_ptr<SLE> const& sle);
 
     void
-    destroyXRP (std::uint64_t feeDrops);
+    destroyXRP (XRPAmount const& fee);
 
 private:
     using Mods = hash_map<key_type,
         std::shared_ptr<SLE>>;
 
     static
-    bool
+    void
     threadItem (TxMeta& meta,
         std::shared_ptr<SLE> const& to);
 
@@ -135,12 +135,12 @@ private:
         key_type const& key, Mods& mods,
             beast::Journal j);
 
-    bool
+    void
     threadTx (ReadView const& base, TxMeta& meta,
         AccountID const& to, Mods& mods,
             beast::Journal j);
 
-    bool
+    void
     threadOwners (ReadView const& base,
         TxMeta& meta, std::shared_ptr<
             SLE const> const& sle, Mods& mods,

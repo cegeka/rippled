@@ -18,8 +18,8 @@
 //==============================================================================
 
 #include <BeastConfig.h>
+#include <ripple/app/paths/Pathfinder.h>
 #include <ripple/test/jtx/paths.h>
-#include <ripple/app/paths/FindPaths.h>
 #include <ripple/protocol/JsonFields.h>
 
 namespace ripple {
@@ -27,7 +27,7 @@ namespace test {
 namespace jtx {
 
 void
-paths::operator()(Env const& env, JTx& jt) const
+paths::operator()(Env& env, JTx& jt) const
 {
     auto& jv = jt.jv;
     auto const from = env.lookup(
@@ -36,17 +36,59 @@ paths::operator()(Env const& env, JTx& jt) const
         jv[jss::Destination].asString());
     auto const amount = amountFromJson(
         sfAmount, jv[jss::Amount]);
+    Pathfinder pf (
+        std::make_shared<RippleLineCache>(env.current()),
+            from, to, in_.currency, in_.account,
+                amount, boost::none, env.app());
+    if (! pf.findPaths(depth_))
+        return;
+
     STPath fp;
-    STPathSet ps;
-    auto const found = findPathsForOneIssuer(
-        std::make_shared<RippleLineCache>(
-            env.open()), from, to,
-                in_, amount,
-                    depth_, limit_, ps, fp);
+    pf.computePathRanks (limit_);
+    auto const found = pf.getBestPaths(
+        limit_, fp, {}, in_.account);
+
     // VFALCO TODO API to allow caller to examine the STPathSet
     // VFALCO isDefault should be renamed to empty()
-    if (found && ! ps.isDefault())
-        jv[jss::Paths] = ps.getJson(0);
+    if (! found.isDefault())
+        jv[jss::Paths] = found.getJson(0);
+}
+
+//------------------------------------------------------------------------------
+
+Json::Value&
+path::create()
+{
+    return jv_.append(Json::objectValue);
+}
+
+void
+path::append_one(Account const& account)
+{
+    auto& jv = create();
+    jv["account"] = toBase58(account.id());
+}
+
+void
+path::append_one(IOU const& iou)
+{
+    auto& jv = create();
+    jv["currency"] = to_string(iou.issue().currency);
+    jv["account"] = toBase58(iou.issue().account);
+}
+
+void
+path::append_one(BookSpec const& book)
+{
+    auto& jv = create();
+    jv["currency"] = to_string(book.currency);
+    jv["issuer"] = toBase58(book.account);
+}
+
+void
+path::operator()(Env& env, JTx& jt) const
+{
+    jt.jv["Paths"].append(jv_);
 }
 
 } // jtx
