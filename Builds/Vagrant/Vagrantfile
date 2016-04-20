@@ -75,7 +75,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     # should work for all users
     #echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib' >> /etc/profile
     echo 'LD_LIBRARY_PATH="/usr/local/lib"' >> /etc/environment
-    # required
+    # required ?
     ldconfig
     echo === building ripple ===
     ####
