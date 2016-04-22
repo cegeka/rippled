@@ -44,8 +44,6 @@ class Family;
 class HashRouter;
 class Logs;
 class LoadFeeTrack;
-class LocalCredentials;
-class UniqueNodeList;
 class JobQueue;
 class InboundLedgers;
 class InboundTransactions;
@@ -64,6 +62,7 @@ class TimeKeeper;
 class TransactionMaster;
 class TxQ;
 class Validations;
+class ValidatorList;
 class Cluster;
 
 class DatabaseCon;
@@ -94,9 +93,12 @@ public:
     virtual ~Application () = default;
 
     virtual void setup() = 0;
+    virtual void doStart() = 0;
     virtual void run() = 0;
     virtual bool isShutdown () = 0;
     virtual void signalStop () = 0;
+    virtual bool checkSigs() const = 0;
+    virtual void checkSigs(bool) = 0;
 
     //
     // ---
@@ -117,7 +119,7 @@ public:
     virtual LoadManager&            getLoadManager () = 0;
     virtual Overlay&                overlay () = 0;
     virtual TxQ&                    getTxQ() = 0;
-    virtual UniqueNodeList&         getUNL () = 0;
+    virtual ValidatorList&          validators () = 0;
     virtual Cluster&                cluster () = 0;
     virtual Validations&            getValidations () = 0;
     virtual NodeStore::Database&    getNodeStore () = 0;
@@ -129,7 +131,11 @@ public:
     virtual NetworkOPs&             getOPs () = 0;
     virtual OrderBookDB&            getOrderBookDB () = 0;
     virtual TransactionMaster&      getMasterTransaction () = 0;
-    virtual LocalCredentials&       getLocalCredentials () = 0;
+
+    virtual
+    std::pair<PublicKey, SecretKey> const&
+    nodeIdentity () = 0;
+
     virtual Resource::Manager&      getResourceManager () = 0;
     virtual PathRequests&           getPathRequests () = 0;
     virtual SHAMapStore&            getSHAMapStore () = 0;
@@ -145,13 +151,11 @@ public:
     virtual bool serverOkay (std::string& reason) = 0;
 
     virtual beast::Journal journal (std::string const& name) = 0;
-    /** Retrieve the "wallet database"
 
-        It looks like this is used to store the unique node list.
-    */
-    // VFALCO TODO Rename, document this
-    //        NOTE This will be replaced by class Validators
-    //
+    /* Returns the number of file descriptors the application wants */
+    virtual int fdlimit () const = 0;
+
+    /** Retrieve the "wallet database" */
     virtual DatabaseCon& getWalletDB () = 0;
 };
 

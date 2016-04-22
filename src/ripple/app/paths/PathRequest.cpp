@@ -30,6 +30,7 @@
 #include <ripple/net/RPCErr.h>
 #include <ripple/protocol/ErrorCodes.h>
 #include <ripple/protocol/UintTypes.h>
+#include <ripple/rpc/impl/Tuning.h>
 #include <beast/module/core/text/LexicalCast.h>
 #include <boost/optional.hpp>
 #include <tuple>
@@ -52,10 +53,10 @@ PathRequest::PathRequest (
         , iLastLevel (0)
         , bLastSuccess (false)
         , iIdentifier (id)
+        , created_ (std::chrono::steady_clock::now())
 {
     if (m_journal.debug)
         m_journal.debug << iIdentifier << " created";
-    ptCreated = boost::posix_time::microsec_clock::universal_time ();
 }
 
 PathRequest::PathRequest (
@@ -74,45 +75,36 @@ PathRequest::PathRequest (
         , iLastLevel (0)
         , bLastSuccess (false)
         , iIdentifier (id)
+        , created_ (std::chrono::steady_clock::now())
 {
     if (m_journal.debug)
         m_journal.debug << iIdentifier << " created";
-    ptCreated = boost::posix_time::microsec_clock::universal_time ();
-}
-
-static std::string const get_milli_diff (
-    boost::posix_time::ptime const& after,
-    boost::posix_time::ptime
-    const& before)
-{
-    return beast::lexicalCastThrow <std::string> (
-        static_cast <unsigned> ((after - before).total_milliseconds()));
-}
-
-static std::string const get_milli_diff (boost::posix_time::ptime const& before)
-{
-    return get_milli_diff(
-        boost::posix_time::microsec_clock::universal_time(), before);
 }
 
 PathRequest::~PathRequest()
 {
+    using namespace std::chrono;
+    if (! m_journal.info)
+        return;
+
     std::string fast, full;
-    if (!ptQuickReply.is_not_a_date_time())
+    if (quick_reply_ != steady_clock::time_point{})
     {
         fast = " fast:";
-        fast += get_milli_diff (ptQuickReply, ptCreated);
+        fast += std::to_string(
+            duration_cast<milliseconds>(quick_reply_ - created_).count());
         fast += "ms";
     }
-    if (!ptFullReply.is_not_a_date_time())
+    if (full_reply_ != steady_clock::time_point{})
     {
         full = " full:";
-        full += get_milli_diff (ptFullReply, ptCreated);
+        full += std::to_string(
+            duration_cast<milliseconds>(full_reply_ - created_).count());
         full += "ms";
     }
-    if (m_journal.info)
-        m_journal.info << iIdentifier << " complete:" << fast << full <<
-        " total:" << get_milli_diff(ptCreated) << "ms";
+    m_journal.info << iIdentifier << " complete:" << fast << full <<
+    " total:" << duration_cast<milliseconds>(steady_clock::now() -
+        created_).count() << "ms";
 }
 
 bool PathRequest::isNew ()
@@ -167,9 +159,8 @@ void PathRequest::updateComplete ()
     }
 }
 
-bool PathRequest::isValid (RippleLineCache::ref crCache)
+bool PathRequest::isValid (std::shared_ptr<RippleLineCache> const& crCache)
 {
-    ScopedLockType sl (mLock);
     if (! raSrcAccount || ! raDstAccount)
         return false;
 
@@ -180,16 +171,16 @@ bool PathRequest::isValid (RippleLineCache::ref crCache)
         return false;
     }
 
-    if (! crCache->getLedger()->exists(
-        keylet::account(*raSrcAccount)))
+    auto const& lrLedger = crCache->getLedger();
+
+    if (! lrLedger->exists(keylet::account(*raSrcAccount)))
     {
         // Source account does not exist.
         jvStatus = rpcError (rpcSRC_ACT_NOT_FOUND);
         return false;
     }
 
-    auto const& lrLedger = crCache->getLedger();
-    auto const sleDest = crCache->getLedger()->read(
+    auto const sleDest = lrLedger->read(
         keylet::account(*raDstAccount));
 
     Json::Value& jvDestCur =
@@ -241,33 +232,28 @@ bool PathRequest::isValid (RippleLineCache::ref crCache)
     If there's an error, we need to be sure to return it to the caller
     in all cases.
 */
-Json::Value PathRequest::doCreate (
-    RippleLineCache::ref& cache,
-    Json::Value const& value,
-    bool& valid)
+std::pair<bool, Json::Value>
+PathRequest::doCreate (
+    std::shared_ptr<RippleLineCache> const& cache,
+    Json::Value const& value)
 {
-    Json::Value status;
+    bool valid = false;
 
     if (parseJson (value) != PFR_PJ_INVALID)
     {
         valid = isValid (cache);
-        if (! hasCompletion())
-            status = valid ? doUpdate(cache, true) : jvStatus;
-    }
-    else
-    {
-        valid = false;
-        status = jvStatus;
+        if (! hasCompletion() && valid)
+            doUpdate(cache, true);
     }
 
     if (m_journal.debug)
     {
         if (valid)
         {
-            m_journal.debug << iIdentifier
-                            << " valid: " << toBase58(*raSrcAccount);
-            m_journal.debug << iIdentifier
-                            << " Deliver: " << saDstAmount.getFullText ();
+            m_journal.debug << iIdentifier <<
+                " valid: " << toBase58(*raSrcAccount);
+            m_journal.debug << iIdentifier <<
+                " deliver: " << saDstAmount.getFullText ();
         }
         else
         {
@@ -275,7 +261,7 @@ Json::Value PathRequest::doCreate (
         }
     }
 
-    return status;
+    return { valid, jvStatus };
 }
 
 int PathRequest::parseJson (Json::Value const& jvParams)
@@ -359,7 +345,7 @@ int PathRequest::parseJson (Json::Value const& jvParams)
     {
         Json::Value const& jvSrcCur = jvParams[jss::source_currencies];
 
-        if (!jvSrcCur.isArray ())
+        if (! jvSrcCur.isArray() || jvSrcCur.size() > RPC::Tuning::max_src_cur)
         {
             jvStatus = rpcError (rpcSRC_CUR_MALFORMED);
             return PFR_PJ_INVALID;
@@ -371,8 +357,6 @@ int PathRequest::parseJson (Json::Value const& jvParams)
         {
             Json::Value const& jvCur = jvSrcCur[i];
             Currency uCur;
-            AccountID uIss;
-
             if (! jvCur.isObject() ||
                 ! jvCur.isMember (jss::currency) ||
                 ! to_currency (uCur, jvCur[jss::currency].asString ()))
@@ -381,6 +365,7 @@ int PathRequest::parseJson (Json::Value const& jvParams)
                 return PFR_PJ_INVALID;
             }
 
+            AccountID uIss;
             if (jvCur.isMember (jss::issuer) &&
                 !to_issuer (uIss, jvCur[jss::issuer].asString ()))
             {
@@ -449,14 +434,8 @@ Json::Value PathRequest::doStatus (Json::Value const&)
     return jvStatus;
 }
 
-void PathRequest::resetLevel (int l)
-{
-    if (iLastLevel > l)
-        iLastLevel = l;
-}
-
 std::unique_ptr<Pathfinder> const&
-PathRequest::getPathFinder(RippleLineCache::ref cache,
+PathRequest::getPathFinder(std::shared_ptr<RippleLineCache> const& cache,
     hash_map<Currency, std::unique_ptr<Pathfinder>>& currency_map,
         Currency const& currency, STAmount const& dst_amount,
             int const level)
@@ -474,20 +453,21 @@ PathRequest::getPathFinder(RippleLineCache::ref cache,
     return currency_map[currency] = std::move(pathfinder);
 }
 
-void
-PathRequest::findPaths (RippleLineCache::ref cache, int const level,
+bool
+PathRequest::findPaths (std::shared_ptr<RippleLineCache> const& cache, int const level,
     Json::Value& jvArray)
 {
     auto sourceCurrencies = sciSourceCurrencies;
     if (sourceCurrencies.empty ())
     {
-        auto usCurrencies =
-            accountSourceCurrencies(*raSrcAccount, cache, true);
-        bool sameAccount = *raSrcAccount == *raDstAccount;
+        auto usCurrencies = accountSourceCurrencies(*raSrcAccount, cache, true);
+        bool const sameAccount = *raSrcAccount == *raDstAccount;
         for (auto const& c : usCurrencies)
         {
-            if (!sameAccount || (c != saDstAmount.getCurrency()))
+            if (! sameAccount || c != saDstAmount.getCurrency())
             {
+                if (sourceCurrencies.size() >= RPC::Tuning::max_auto_src_cur)
+                    return false;
                 sourceCurrencies.insert(
                     {c, c.isZero() ? xrpAccount() : *raSrcAccount});
             }
@@ -604,34 +584,40 @@ PathRequest::findPaths (RippleLineCache::ref cache, int const level,
                 << transHuman(rc.result());
         }
     }
+
+    return true;
 }
 
-Json::Value PathRequest::doUpdate (RippleLineCache::ref cache, bool fast)
+Json::Value PathRequest::doUpdate (std::shared_ptr<RippleLineCache> const& cache, bool fast)
 {
+    using namespace std::chrono;
     m_journal.debug << iIdentifier << " update " << (fast ? "fast" : "normal");
 
-    ScopedLockType sl (mLock);
+    {
+        ScopedLockType sl (mLock);
 
-    if (!isValid (cache))
-        return jvStatus;
-    jvStatus = Json::objectValue;
+        if (!isValid (cache))
+            return jvStatus;
+    }
+
+    Json::Value newStatus = Json::objectValue;
 
     if (hasCompletion ())
     {
         // Old ripple_path_find API gives destination_currencies
-        auto& destCurrencies = (jvStatus[jss::destination_currencies] = Json::arrayValue);
+        auto& destCurrencies = (newStatus[jss::destination_currencies] = Json::arrayValue);
         auto usCurrencies = accountDestCurrencies (*raDstAccount, cache, true);
         for (auto const& c : usCurrencies)
             destCurrencies.append (to_string (c));
     }
 
-    jvStatus[jss::source_account] = app_.accountIDCache().toBase58(*raSrcAccount);
-    jvStatus[jss::destination_account] = app_.accountIDCache().toBase58(*raDstAccount);
-    jvStatus[jss::destination_amount] = saDstAmount.getJson (0);
-    jvStatus[jss::full_reply] = ! fast;
+    newStatus[jss::source_account] = app_.accountIDCache().toBase58(*raSrcAccount);
+    newStatus[jss::destination_account] = app_.accountIDCache().toBase58(*raDstAccount);
+    newStatus[jss::destination_amount] = saDstAmount.getJson (0);
+    newStatus[jss::full_reply] = ! fast;
 
     if (jvId)
-        jvStatus["id"] = jvId;
+        newStatus["id"] = jvId;
 
     int iLevel = iLastLevel;
     bool loaded = app_.getFeeTrack().isLoadedLocal();
@@ -669,24 +655,30 @@ Json::Value PathRequest::doUpdate (RippleLineCache::ref cache, bool fast)
 
     m_journal.debug << iIdentifier << " processing at level " << iLevel;
 
-    Json::Value jvArray = Json::arrayValue;
-    findPaths(cache, iLevel, jvArray);
+    Json::Value& jvArray = (newStatus[jss::alternatives] = Json::arrayValue);
+    if (! findPaths(cache, iLevel, jvArray))
+        newStatus = rpcError(rpcINTERNAL);
+
     bLastSuccess = jvArray.size();
     iLastLevel = iLevel;
 
-    if (fast && ptQuickReply.is_not_a_date_time())
+    if (fast && quick_reply_ == steady_clock::time_point{})
     {
-        ptQuickReply = boost::posix_time::microsec_clock::universal_time();
-        mOwner.reportFast ((ptQuickReply-ptCreated).total_milliseconds());
+        quick_reply_ = steady_clock::now();
+        mOwner.reportFast(duration_cast<milliseconds>(quick_reply_ - created_));
     }
-    else if (!fast && ptFullReply.is_not_a_date_time())
+    else if (! fast && full_reply_ == steady_clock::time_point{})
     {
-        ptFullReply = boost::posix_time::microsec_clock::universal_time();
-        mOwner.reportFull ((ptFullReply-ptCreated).total_milliseconds());
+        full_reply_ = steady_clock::now();
+        mOwner.reportFull(duration_cast<milliseconds>(full_reply_ - created_));
     }
 
-    jvStatus[jss::alternatives] = jvArray;
-    return jvStatus;
+    {
+        ScopedLockType sl(mLock);
+        jvStatus = newStatus;
+    }
+
+    return newStatus;
 }
 
 InfoSub::pointer PathRequest::getSubscriber ()

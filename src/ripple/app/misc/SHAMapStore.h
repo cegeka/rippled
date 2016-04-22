@@ -41,6 +41,7 @@ class SHAMapStore
 public:
     struct Setup
     {
+        bool standalone = false;
         std::uint32_t deleteInterval = 0;
         bool advisoryDelete = false;
         std::uint32_t ledgerHistory = 0;
@@ -54,7 +55,7 @@ public:
     SHAMapStore (Stoppable& parent) : Stoppable ("SHAMapStore", parent) {}
 
     /** Called by LedgerMaster every time a ledger validates. */
-    virtual void onLedgerClosed (Ledger::pointer validatedLedger) = 0;
+    virtual void onLedgerClosed(std::shared_ptr<Ledger const> const& ledger) = 0;
 
     virtual std::uint32_t clampFetchDepth (std::uint32_t fetch_depth) const = 0;
 
@@ -72,6 +73,9 @@ public:
 
     /** Highest ledger that may be deleted. */
     virtual LedgerIndex getCanDelete() = 0;
+
+    /** The number of files that are needed. */
+    virtual int fdlimit() const = 0;
 };
 
 //------------------------------------------------------------------------------

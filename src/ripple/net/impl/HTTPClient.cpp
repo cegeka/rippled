@@ -40,6 +40,7 @@ namespace ripple {
 class HTTPClientSSLContext
 {
 public:
+    explicit
     HTTPClientSSLContext (Config const& config)
         : m_context (boost::asio::ssl::context::sslv23)
         , verify_ (config.SSL_VERIFY)
@@ -105,7 +106,7 @@ public:
         const unsigned short port,
         std::size_t responseMax,
         Logs& l)
-        : mSocket (io_service, httpClientSSLContext->context (), l.journal ("AutoSocket"))
+        : mSocket (io_service, httpClientSSLContext->context ())
         , mResolver (io_service)
         , mHeader (maxClientHeaderBytes)
         , mPort (port)

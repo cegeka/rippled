@@ -18,13 +18,14 @@
 //==============================================================================
 
 #include <ripple/app/main/Application.h>
-#include <ripple/app/misc/UniqueNodeList.h>
 #include <ripple/basics/contract.h>
+#include <ripple/basics/Log.h>
+#include <ripple/app/misc/ValidatorList.h>
 #include <ripple/core/DatabaseCon.h>
 #include <ripple/overlay/impl/Manifest.h>
-#include <ripple/protocol/RippleAddress.h>
+#include <ripple/protocol/PublicKey.h>
 #include <ripple/protocol/Sign.h>
-#include <beast/http/rfc2616.h>
+#include <boost/regex.hpp>
 #include <stdexcept>
 
 namespace ripple {
@@ -118,47 +119,79 @@ bool Manifest::revoked () const
     return sequence == std::numeric_limits<std::uint32_t>::max ();
 }
 
-void
-ManifestCache::configValidatorKey(
-    std::string const& line, beast::Journal journal)
+Blob Manifest::getSignature () const
 {
-    auto const words = beast::rfc2616::split(line.begin(), line.end(), ' ');
+    STObject st (sfGeneric);
+    SerialIter sit (serialized.data (), serialized.size ());
+    st.set (sit);
+    return st.getFieldVL (sfSignature);
+}
 
-    if (words.size () != 2)
+bool
+ManifestCache::loadValidatorKeys(
+    Section const& keys,
+    beast::Journal journal)
+{
+    static boost::regex const re (
+        "[[:space:]]*"            // skip leading whitespace
+        "([[:alnum:]]+)"          // node identity
+        "(?:"                     // begin optional comment block
+        "[[:space:]]+"            // (skip all leading whitespace)
+        "(?:"                     // begin optional comment
+        "(.*[^[:space:]]+)"       // the comment
+        "[[:space:]]*"            // (skip all trailing whitespace)
+        ")?"                      // end optional comment
+        ")?"                      // end optional comment block
+    );
+
+    JLOG (journal.debug) <<
+        "Loading configured validator keys";
+
+    std::size_t count = 0;
+
+    for (auto const& line : keys.lines())
     {
-        Throw<std::runtime_error> ("[validator_keys] format is `<key> <comment>");
+        boost::smatch match;
+
+        if (!boost::regex_match (line, match, re))
+        {
+            JLOG (journal.error) <<
+                "Malformed entry: '" << line << "'";
+            return false;
+        }
+
+        auto const key = parseBase58<PublicKey>(
+            TokenType::TOKEN_NODE_PUBLIC, match[1]);
+
+        if (!key)
+        {
+            JLOG (journal.error) <<
+                "Error decoding validator key: " << match[1];
+            return false;
+        }
+
+        if (publicKeyType(*key) != KeyType::ed25519)
+        {
+            JLOG (journal.error) <<
+                "Validator key not using Ed25519: " << match[1];
+            return false;
+        }
+
+        JLOG (journal.debug) << "Loaded key: " << match[1];
+
+        addTrustedKey (*key, match[2]);
+        ++count;
     }
 
-    Blob key;
-    if (! Base58::decodeWithCheck (words[0], key))
-    {
-        Throw<std::runtime_error> ("Error decoding validator key");
-    }
-    if (key.size() != 34)
-    {
-        Throw<std::runtime_error> ("Expected 34-byte validator key");
-    }
-    if (key[0] != TOKEN_NODE_PUBLIC)
-    {
-        Throw<std::runtime_error> ("Expected TOKEN_NODE_PUBLIC (28)");
-    }
-    if (key[1] != 0xED)
-    {
-        Throw<std::runtime_error> ("Expected Ed25519 key (0xED)");
-    }
+    JLOG (journal.debug) <<
+        "Loaded " << count << " entries";
 
-    auto const masterKey = PublicKey (Slice(key.data() + 1, key.size() - 1));
-    std::string comment = std::move(words[1]);
-
-    if (journal.debug) journal.debug
-        << toBase58(TokenType::TOKEN_NODE_PUBLIC, masterKey) << " " << comment;
-
-    addTrustedKey (masterKey, std::move(comment));
+    return true;
 }
 
 void
 ManifestCache::configManifest (
-    Manifest m, UniqueNodeList& unl, beast::Journal journal)
+    Manifest m, ValidatorList& unl, beast::Journal journal)
 {
     if (! m.verify())
     {
@@ -228,7 +261,7 @@ ManifestCache::canApply (PublicKey const& pk, std::uint32_t seq,
 
 ManifestDisposition
 ManifestCache::applyManifest (
-    Manifest m, UniqueNodeList& unl, beast::Journal journal)
+    Manifest m, ValidatorList& unl, beast::Journal journal)
 {
     {
         std::lock_guard<std::mutex> lock (mutex_);
@@ -307,7 +340,7 @@ ManifestCache::applyManifest (
                           m.masterKey, m.sequence, old->sequence);
         }
 
-        unl.deleteEphemeralKey (old->signingKey);
+        unl.removeEphemeralKey (old->signingKey);
     }
 
     if (m.revoked ())
@@ -335,7 +368,7 @@ ManifestCache::applyManifest (
 }
 
 void ManifestCache::load (
-    DatabaseCon& dbCon, UniqueNodeList& unl, beast::Journal journal)
+    DatabaseCon& dbCon, ValidatorList& unl, beast::Journal journal)
 {
     static const char* const sql =
         "SELECT RawData FROM ValidatorManifests;";

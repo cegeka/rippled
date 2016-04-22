@@ -19,6 +19,7 @@
 
 #include <BeastConfig.h>
 #include <ripple/app/misc/HashRouter.h>
+#include <ripple/app/misc/NetworkOPs.h>
 #include <ripple/core/DatabaseCon.h>
 #include <ripple/basics/contract.h>
 #include <ripple/basics/Log.h>
@@ -107,8 +108,9 @@ OverlayImpl::Timer::on_timer (error_code ec)
     if (ec || overlay_.isStopping())
     {
         if (ec && ec != boost::asio::error::operation_aborted)
-            if (overlay_.journal_.error) overlay_.journal_.error <<
-                "on_timer: " << ec.message();
+        {
+            JLOG(overlay_.journal_.error) << "on_timer: " << ec.message();
+        }
         return;
     }
 
@@ -184,15 +186,13 @@ OverlayImpl::onHandoff (std::unique_ptr <beast::asio::ssl_bundle>&& ssl_bundle,
 
     handoff.moved = true;
 
-    if (journal.debug) journal.debug<<
-        "Peer connection upgrade from " << remote_endpoint;
+    JLOG(journal.debug) << "Peer connection upgrade from " << remote_endpoint;
 
     error_code ec;
     auto const local_endpoint (ssl_bundle->socket.local_endpoint(ec));
     if (ec)
     {
-        if (journal.debug) journal.debug <<
-            remote_endpoint << " failed: " << ec.message();
+        JLOG(journal.debug) << remote_endpoint << " failed: " << ec.message();
         return handoff;
     }
 
@@ -232,35 +232,30 @@ OverlayImpl::onHandoff (std::unique_ptr <beast::asio::ssl_bundle>&& ssl_bundle,
     }
 
     handoff.moved = true;
-    bool success = true;
 
-    protocol::TMHello hello;
-    std::tie(hello, success) = parseHello (request, journal);
-    if(! success)
+    auto hello = parseHello (request, journal);
+    if(! hello)
         return handoff;
 
-    uint256 sharedValue;
-    std::tie(sharedValue, success) = makeSharedValue(
+    auto sharedValue = makeSharedValue(
         ssl_bundle->stream.native_handle(), journal);
-    if(! success)
+    if(! sharedValue)
         return handoff;
 
-    RippleAddress publicKey;
-    std::tie(publicKey, success) = verifyHello (hello,
-        sharedValue,
+    auto publicKey = verifyHello (*hello,
+        *sharedValue,
         setup_.public_ip,
         beast::IPAddressConversion::from_asio(
             remote_endpoint), journal, app_);
-    if(! success)
+    if(! publicKey)
         return handoff;
 
-    auto const result = m_peerFinder->activate (slot,
-        publicKey.toPublicKey(),
-        static_cast<bool>(app_.cluster().member(publicKey)));
+    auto const result = m_peerFinder->activate (slot, *publicKey,
+        static_cast<bool>(app_.cluster().member(*publicKey)));
     if (result != PeerFinder::Result::success)
     {
         m_peerFinder->on_closed(slot);
-        if (journal.debug) journal.debug <<
+        JLOG(journal.debug) <<
             "Peer " << remote_endpoint << " redirected, slots full";
         handoff.moved = false;
         handoff.response = makeRedirectResponse(slot, request,
@@ -270,14 +265,21 @@ OverlayImpl::onHandoff (std::unique_ptr <beast::asio::ssl_bundle>&& ssl_bundle,
     }
 
     auto const peer = std::make_shared<PeerImp>(app_, id,
-        remote_endpoint, slot, std::move(request), hello, publicKey,
-            consumer, std::move(ssl_bundle), *this);
+        remote_endpoint, slot, std::move(request), *hello,
+            *publicKey, consumer, std::move(ssl_bundle), *this);
     {
         // As we are not on the strand, run() must be called
         // while holding the lock, otherwise new I/O can be
         // queued after a call to stop().
         std::lock_guard <decltype(mutex_)> lock (mutex_);
-        add(peer);
+        {
+            auto const result =
+                m_peers.emplace (peer->slot(), peer);
+            assert (result.second);
+            (void) result.second;
+        }
+        list_.emplace(peer.get(), peer);
+
         peer->run();
     }
     handoff.moved = true;
@@ -308,7 +310,7 @@ OverlayImpl::makePrefix (std::uint32_t id)
     return ss.str();
 }
 
-std::shared_ptr<HTTP::Writer>
+std::shared_ptr<Writer>
 OverlayImpl::makeRedirectResponse (PeerFinder::Slot::ptr const& slot,
     beast::http::message const& request, address_type remote_address)
 {
@@ -330,7 +332,7 @@ OverlayImpl::makeRedirectResponse (PeerFinder::Slot::ptr const& slot,
     {
         //?
     }
-    auto const response = HTTP::make_JsonWriter (m, json);
+    auto const response = make_JsonWriter (m, json);
     return response;
 }
 
@@ -344,16 +346,14 @@ OverlayImpl::connect (beast::IP::Endpoint const& remote_endpoint)
     auto usage = resourceManager().newOutboundEndpoint (remote_endpoint);
     if (usage.disconnect())
     {
-        if (journal_.info) journal_.info <<
-            "Over resource limit: " << remote_endpoint;
+        JLOG(journal_.info) << "Over resource limit: " << remote_endpoint;
         return;
     }
 
     auto const slot = peerFinder().new_outbound_slot(remote_endpoint);
     if (slot == nullptr)
     {
-        if (journal_.debug) journal_.debug <<
-            "Connect: No slot for " << remote_endpoint;
+        JLOG(journal_.debug) << "Connect: No slot for " << remote_endpoint;
         return;
     }
 
@@ -382,29 +382,23 @@ OverlayImpl::add_active (std::shared_ptr<PeerImp> const& peer)
         (void) result.second;
     }
 
-    // Now track this peer
     {
-        auto const result (m_shortIdMap.emplace (
+        auto const result = ids_.emplace (
             std::piecewise_construct,
                 std::make_tuple (peer->id()),
-                    std::make_tuple (peer)));
-        assert(result.second);
-        (void) result.second;
-    }
-
-    {
-        auto const result (m_publicKeyMap.emplace(
-            peer->getNodePublic(), peer));
+                    std::make_tuple (peer));
         assert(result.second);
         (void) result.second;
     }
 
     list_.emplace(peer.get(), peer);
 
-    journal_.debug <<
+    JLOG(journal_.debug) <<
         "activated " << peer->getRemoteAddress() <<
-        " (" << peer->id() <<
-        ":" << peer->getNodePublic().toPublicKey() << ")";
+        " (" << peer->id() << ":" <<
+        toBase58 (
+            TokenType::TOKEN_NODE_PUBLIC,
+            peer->getNodePublic()) << ")";
 
     // As we are not on the strand, run() must be called
     // while holding the lock, otherwise new I/O can be
@@ -439,21 +433,15 @@ void
 OverlayImpl::setupValidatorKeyManifests (BasicConfig const& config,
                                          DatabaseCon& db)
 {
-    auto const validator_keys = config.section ("validator_keys");
-    auto const validation_manifest = config.section ("validation_manifest");
+    auto const loaded = manifestCache_.loadValidatorKeys (
+        config.section ("validator_keys"),
+        journal_);
 
-    if (! validator_keys.lines().empty())
-    {
-        for (auto const& line : validator_keys.lines())
-        {
-            manifestCache_.configValidatorKey (line, journal_);
-        }
-    }
-    else
-    {
-        if (journal_.warning)
-            journal_.warning << "[validator_keys] is empty";
-    }
+    if (!loaded)
+        Throw<std::runtime_error> ("Unable to load validator keys");
+
+    auto const validation_manifest =
+        config.section ("validation_manifest");
 
     if (! validation_manifest.lines().empty())
     {
@@ -463,7 +451,10 @@ OverlayImpl::setupValidatorKeyManifests (BasicConfig const& config,
         s = beast::base64_decode(s);
         if (auto mo = make_Manifest (std::move (s)))
         {
-            manifestCache_.configManifest (std::move (*mo), app_.getUNL (), journal_);
+            manifestCache_.configManifest (
+                std::move (*mo),
+                app_.validators(),
+                journal_);
         }
         else
         {
@@ -472,11 +463,13 @@ OverlayImpl::setupValidatorKeyManifests (BasicConfig const& config,
     }
     else
     {
-        if (journal_.warning)
-            journal_.warning << "No [validation_manifest] section in config";
+        JLOG(journal_.debug) << "No [validation_manifest] section in config";
     }
 
-    manifestCache_.load (db, app_.getUNL(), journal_);
+    manifestCache_.load (
+        db,
+        app_.validators(),
+        journal_);
 }
 
 void
@@ -624,11 +617,10 @@ OverlayImpl::onWrite (beast::PropertyStream::Map& stream)
 void
 OverlayImpl::activate (std::shared_ptr<PeerImp> const& peer)
 {
-    std::lock_guard <decltype(mutex_)> lock (mutex_);
-
     // Now track this peer
     {
-        auto const result (m_shortIdMap.emplace (
+        std::lock_guard <decltype(mutex_)> lock (mutex_);
+        auto const result (ids_.emplace (
             std::piecewise_construct,
                 std::make_tuple (peer->id()),
                     std::make_tuple (peer)));
@@ -636,29 +628,22 @@ OverlayImpl::activate (std::shared_ptr<PeerImp> const& peer)
         (void) result.second;
     }
 
-    {
-        auto const result (m_publicKeyMap.emplace(
-            peer->getNodePublic(), peer));
-        assert(result.second);
-        (void) result.second;
-    }
-
-    journal_.debug <<
+    JLOG(journal_.debug) <<
         "activated " << peer->getRemoteAddress() <<
         " (" << peer->id() <<
-        ":" << peer->getNodePublic().toPublicKey() << ")";
+        ":" << toBase58 (
+            TokenType::TOKEN_NODE_PUBLIC,
+            peer->getNodePublic()) << ")";
 
     // We just accepted this peer so we have non-zero active peers
     assert(size() != 0);
 }
 
 void
-OverlayImpl::onPeerDeactivate (Peer::id_t id,
-    RippleAddress const& publicKey)
+OverlayImpl::onPeerDeactivate (Peer::id_t id)
 {
     std::lock_guard <decltype(mutex_)> lock (mutex_);
-    m_shortIdMap.erase(id);
-    m_publicKeyMap.erase(publicKey);
+    ids_.erase(id);
 }
 
 void
@@ -670,8 +655,7 @@ OverlayImpl::onManifests (
     auto const n = m->list_size();
     auto const& journal = from->pjournal();
 
-    if (journal.debug) journal.debug
-        << "TMManifest, " << n << (n == 1 ? " item" : " items");
+    JLOG(journal.debug) << "TMManifest, " << n << (n == 1 ? " item" : " items");
 
     bool const history = m->history ();
     for (std::size_t i = 0; i < n; ++i)
@@ -685,8 +669,14 @@ OverlayImpl::onManifests (
                 continue;
 
             auto const serialized = mo->serialized;
-            auto const result =
-                manifestCache_.applyManifest (std::move(*mo), app_.getUNL(), journal);
+            auto const result = manifestCache_.applyManifest (
+                std::move(*mo),
+                app_.validators(),
+                journal);
+
+            if (result == ManifestDisposition::accepted ||
+                    result == ManifestDisposition::untrusted)
+                app_.getOPs().pubManifest (*make_Manifest(serialized));
 
             if (result == ManifestDisposition::accepted)
             {
@@ -723,14 +713,12 @@ OverlayImpl::onManifests (
             }
             else
             {
-                if (journal.info)
-                    journal.info << "Bad manifest #" << i + 1;
+                JLOG(journal.info) << "Bad manifest #" << i + 1;
             }
         }
         else
         {
-            if (journal.warning)
-                journal.warning << "Malformed manifest #" << i + 1;
+            JLOG(journal.warning) << "Malformed manifest #" << i + 1;
             continue;
         }
     }
@@ -750,25 +738,28 @@ OverlayImpl::selectPeers (PeerSet& set, std::size_t limit,
     std::function<bool(std::shared_ptr<Peer> const&)> score)
 {
     using item = std::pair<int, std::shared_ptr<PeerImp>>;
+
     std::vector<item> v;
+    v.reserve(size());
+
+    for_each ([&](std::shared_ptr<PeerImp>&& e)
     {
-        std::lock_guard <decltype(mutex_)> lock (mutex_);
-        v.reserve(m_publicKeyMap.size());
-        for_each_unlocked ([&](std::shared_ptr<PeerImp> && e)
-        {
-            auto const s = e->getScore(score(e));
-            v.emplace_back(s, std::move(e));
-        });
-    }
-    std::sort(v.begin(), v.end(),
-    [](item const& lhs, item const&rhs)
-    {
-        return lhs.first > rhs.first;
+        auto const s = e->getScore(score(e));
+        v.emplace_back(s, std::move(e));
     });
+
+    std::sort(v.begin(), v.end(),
+        [](item const& lhs, item const&rhs)
+        {
+            return lhs.first > rhs.first;
+        });
+
     std::size_t accepted = 0;
     for (auto const& e : v)
+    {
         if (set.insert(e.second) && ++accepted >= limit)
             break;
+    }
     return accepted;
 }
 
@@ -780,7 +771,13 @@ std::size_t
 OverlayImpl::size()
 {
     std::lock_guard <decltype(mutex_)> lock (mutex_);
-    return m_publicKeyMap.size ();
+    return ids_.size ();
+}
+
+int
+OverlayImpl::limit()
+{
+    return m_peerFinder->config().maxPeers;
 }
 
 Json::Value
@@ -789,39 +786,37 @@ OverlayImpl::crawl()
     using namespace std::chrono;
     Json::Value jv;
     auto& av = jv["active"] = Json::Value(Json::arrayValue);
-    std::lock_guard <decltype(mutex_)> lock (mutex_);
-    for (auto const& e : m_publicKeyMap)
+
+    for_each ([&](std::shared_ptr<PeerImp>&& sp)
     {
-        if (auto const sp = e.second.lock())
+        auto& pv = av.append(Json::Value(Json::objectValue));
+        pv[jss::public_key] = beast::base64_encode(
+            sp->getNodePublic().data(),
+                sp->getNodePublic().size());
+        pv[jss::type] = sp->slot()->inbound() ?
+            "in" : "out";
+        pv[jss::uptime] =
+            static_cast<std::uint32_t>(duration_cast<seconds>(
+                sp->uptime()).count());
+        if (sp->crawl())
         {
-            auto& pv = av.append(Json::Value(Json::objectValue));
-            pv[jss::public_key] = beast::base64_encode(
-                sp->getNodePublic().getNodePublic().data(),
-                    sp->getNodePublic().getNodePublic().size());
-            pv[jss::type] = sp->slot()->inbound() ?
-                "in" : "out";
-            pv[jss::uptime] =
-                static_cast<std::uint32_t>(duration_cast<seconds>(
-                    sp->uptime()).count());
-            if (sp->crawl())
+            pv[jss::ip] = sp->getRemoteAddress().address().to_string();
+            if (sp->slot()->inbound())
             {
-                pv[jss::ip] = sp->getRemoteAddress().address().to_string();
-                if (sp->slot()->inbound())
-                {
-                    if (auto port = sp->slot()->listening_port())
-                        pv[jss::port] = *port;
-                }
-                else
-                {
-                    pv[jss::port] = std::to_string(
-                        sp->getRemoteAddress().port());
-                }
+                if (auto port = sp->slot()->listening_port())
+                    pv[jss::port] = *port;
             }
-            auto version = sp->getVersion ();
-            if (!version.empty ())
-                pv["version"] = version;
+            else
+            {
+                pv[jss::port] = std::to_string(
+                    sp->getRemoteAddress().port());
+            }
         }
-    }
+        auto version = sp->getVersion ();
+        if (!version.empty ())
+            pv["version"] = version;
+    });
+
     return jv;
 }
 
@@ -845,7 +840,7 @@ OverlayImpl::processRequest (beast::http::message const& req,
     resp.reason("OK");
     Json::Value v;
     v["overlay"] = crawl();
-    handoff.response = HTTP::make_JsonWriter(resp, v);
+    handoff.response = make_JsonWriter(resp, v);
     return true;
 }
 
@@ -853,14 +848,12 @@ Overlay::PeerSequence
 OverlayImpl::getActivePeers()
 {
     Overlay::PeerSequence ret;
-    std::lock_guard <decltype(mutex_)> lock (mutex_);
-    ret.reserve (m_publicKeyMap.size ());
-    for (auto const& e : m_publicKeyMap)
+    ret.reserve(size());
+
+    for_each ([&ret](std::shared_ptr<PeerImp>&& sp)
     {
-        auto const sp = e.second.lock();
-        if (sp)
-            ret.push_back(sp);
-    }
+        ret.emplace_back(std::move(sp));
+    });
 
     return ret;
 }
@@ -868,33 +861,27 @@ OverlayImpl::getActivePeers()
 void
 OverlayImpl::checkSanity (std::uint32_t index)
 {
-    std::lock_guard <decltype(mutex_)> lock (mutex_);
-
-    for (auto const& e : m_publicKeyMap)
+    for_each ([index](std::shared_ptr<PeerImp>&& sp)
     {
-        if (auto const sp = e.second.lock())
-            sp->checkSanity (index);
-    }
+        sp->checkSanity (index);
+    });
 }
 
 void
 OverlayImpl::check ()
 {
-    std::lock_guard <decltype(mutex_)> lock (mutex_);
-
-    for (auto const& e : m_publicKeyMap)
+    for_each ([](std::shared_ptr<PeerImp>&& sp)
     {
-        if (auto const sp = e.second.lock())
-            sp->check ();
-    }
+        sp->check ();
+    });
 }
 
 Peer::ptr
 OverlayImpl::findPeerByShortID (Peer::id_t const& id)
 {
     std::lock_guard <decltype(mutex_)> lock (mutex_);
-    auto const iter = m_shortIdMap.find (id);
-    if (iter != m_shortIdMap.end ())
+    auto const iter = ids_.find (id);
+    if (iter != ids_.end ())
         return iter->second.lock();
     return Peer::ptr();
 }
@@ -906,7 +893,7 @@ OverlayImpl::send (protocol::TMProposeSet& m)
         m.set_hops(0);
     auto const sm = std::make_shared<Message>(
         m, protocol::mtPROPOSE_LEDGER);
-    for_each([&](std::shared_ptr<PeerImp> const& p)
+    for_each([&](std::shared_ptr<PeerImp>&& p)
     {
         if (! m.has_hops() || p->hopsAware())
             p->send(sm);
@@ -919,7 +906,7 @@ OverlayImpl::send (protocol::TMValidation& m)
         m.set_hops(0);
     auto const sm = std::make_shared<Message>(
         m, protocol::mtVALIDATION);
-    for_each([&](std::shared_ptr<PeerImp> const& p)
+    for_each([&](std::shared_ptr<PeerImp>&& p)
     {
         if (! m.has_hops() || p->hopsAware())
             p->send(sm);
@@ -938,7 +925,7 @@ OverlayImpl::relay (protocol::TMProposeSet& m,
         return;
     auto const sm = std::make_shared<Message>(
         m, protocol::mtPROPOSE_LEDGER);
-    for_each([&](std::shared_ptr<PeerImp> const& p)
+    for_each([&](std::shared_ptr<PeerImp>&& p)
     {
         if (skip.find(p->id()) != skip.end())
             return;
@@ -959,7 +946,7 @@ OverlayImpl::relay (protocol::TMValidation& m,
         return;
     auto const sm = std::make_shared<Message>(
         m, protocol::mtVALIDATION);
-    for_each([&](std::shared_ptr<PeerImp> const& p)
+    for_each([&](std::shared_ptr<PeerImp>&& p)
     {
         if (skip.find(p->id()) != skip.end())
             return;
@@ -969,18 +956,6 @@ OverlayImpl::relay (protocol::TMValidation& m,
 }
 
 //------------------------------------------------------------------------------
-
-void
-OverlayImpl::add (std::shared_ptr<PeerImp> const& peer)
-{
-    {
-        auto const result =
-            m_peers.emplace (peer->slot(), peer);
-        assert (result.second);
-        (void) result.second;
-    }
-    list_.emplace(peer.get(), peer);
-}
 
 void
 OverlayImpl::remove (Child& child)
@@ -1060,7 +1035,7 @@ setup_Overlay (BasicConfig const& config)
 
     set (setup.ipLimit, "ip_limit", section);
     if (setup.ipLimit < 0)
-        throw std::runtime_error ("Configured IP limit is invalid");
+        Throw<std::runtime_error> ("Configured IP limit is invalid");
 
     std::string ip;
     set (ip, "public_ip", section);

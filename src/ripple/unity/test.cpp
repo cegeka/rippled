@@ -46,6 +46,9 @@
 #include <ripple/test/jtx/impl/utility.cpp>
 
 #include <ripple/test/mao/impl/Net.cpp>
-#include <ripple/test/mao/impl/Net_test.cpp>
 
+#include <ripple/test/impl/BasicNetwork_test.cpp>
+#include <ripple/test/impl/JSONRPCClient.cpp>
 #include <ripple/test/impl/ManualTimeKeeper.cpp>
+#include <ripple/test/impl/WSClient.cpp>
+#include <ripple/test/impl/WSClient_test.cpp>

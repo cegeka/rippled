@@ -29,7 +29,6 @@
 
 // Include this to get all the basic includes included, to prevent errors
 #include <beast/module/core/core.unity.cpp>
-#include <beast/module/asio/asio.unity.cpp>
 
 #include <beast/asio/Asio.unity.cpp>
 #include <beast/boost/Boost.unity.cpp>
@@ -41,7 +40,6 @@
 #include <beast/net/Net.unity.cpp>
 //#include <beast/nudb/nudb.cpp>
 #include <beast/streams/streams.unity.cpp>
-#include <beast/strings/Strings.unity.cpp>
 #include <beast/threads/Threads.unity.cpp>
 #include <beast/utility/Utility.unity.cpp>
 

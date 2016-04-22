@@ -1112,6 +1112,45 @@ R"({
 "Missing field 'tx_json.TransactionType'.",
 "Missing field 'tx_json.TransactionType'."}},
 
+{ "Invalid field 'tx_json': string instead of object",
+R"({
+    "command": "doesnt_matter",
+    "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+    "secret": "masterpassphrase",
+    "tx_json": ""
+})",
+{
+"Invalid field 'tx_json', not object.",
+"Invalid field 'tx_json', not object.",
+"Invalid field 'tx_json', not object.",
+"Invalid field 'tx_json', not object."}},
+
+{ "Invalid field 'tx_json': integer instead of object",
+R"({
+    "command": "doesnt_matter",
+    "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+    "secret": "masterpassphrase",
+    "tx_json": 20160331
+})",
+{
+"Invalid field 'tx_json', not object.",
+"Invalid field 'tx_json', not object.",
+"Invalid field 'tx_json', not object.",
+"Invalid field 'tx_json', not object."}},
+
+{ "Invalid field 'tx_json': array instead of object",
+R"({
+    "command": "doesnt_matter",
+    "account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+    "secret": "masterpassphrase",
+    "tx_json": [ "hello", "world" ]
+})",
+{
+"Invalid field 'tx_json', not object.",
+"Invalid field 'tx_json', not object.",
+"Invalid field 'tx_json', not object.",
+"Invalid field 'tx_json', not object."}},
+
 { "Minimal submit_multisigned.",
 R"({
     "command": "submit_multisigned",
@@ -1826,8 +1865,7 @@ public:
             Role role,
             std::chrono::seconds validatedLedgerAge,
             Application& app,
-            std::shared_ptr<ReadView const> ledger,
-            ApplyFlags flags);
+            std::shared_ptr<ReadView const> const& ledger);
 
         using submitFunc = Json::Value (*) (
             Json::Value params,
@@ -1835,9 +1873,8 @@ public:
             Role role,
             std::chrono::seconds validatedLedgerAge,
             Application& app,
-            std::shared_ptr<ReadView const> ledger,
-            ProcessTransactionFn const& processTransaction,
-            ApplyFlags flags);
+            std::shared_ptr<ReadView const> const& ledger,
+            ProcessTransactionFn const& processTransaction);
 
         using TestStuff =
             std::tuple <signFunc, submitFunc, char const*, unsigned int>;
@@ -1877,8 +1914,7 @@ public:
                             testRole,
                             1s,
                             env.app(),
-                            ledger,
-                            tapENABLE_TESTING);
+                            ledger);
                     }
                     else
                     {
@@ -1891,8 +1927,7 @@ public:
                             1s,
                             env.app(),
                             ledger,
-                            processTxn,
-                            tapENABLE_TESTING);
+                            processTxn);
                     }
 
                     std::string errStr;

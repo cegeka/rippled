@@ -19,22 +19,18 @@
 
 #include <BeastConfig.h>
 
-#include <ripple/crypto/impl/Base58.cpp>
-#include <ripple/crypto/impl/Base58Data.cpp>
 #include <ripple/crypto/impl/CBigNum.cpp>
 #include <ripple/crypto/impl/ec_key.cpp>
-#include <ripple/crypto/impl/ECDSA.cpp>
-#include <ripple/crypto/impl/ECDSACanonical.cpp>
 #include <ripple/crypto/impl/ECDSAKey.cpp>
 #include <ripple/crypto/impl/ECIES.cpp>
 #include <ripple/crypto/impl/GenerateDeterministicKey.cpp>
 #include <ripple/crypto/impl/KeyType.cpp>
 #include <ripple/crypto/impl/openssl.cpp>
-#include <ripple/crypto/impl/RandomNumbers.cpp>
+#include <ripple/crypto/impl/csprng.cpp>
 #include <ripple/crypto/impl/RFC1751.cpp>
 
+#include <ripple/crypto/tests/CBigNum_test.cpp>
 #include <ripple/crypto/tests/CKey.test.cpp>
-#include <ripple/crypto/tests/ECDSACanonical.test.cpp>
 
 #if DOXYGEN
 #include <ripple/crypto/README.md>

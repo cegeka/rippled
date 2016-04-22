@@ -115,8 +115,7 @@ private:
     TrafficCount m_traffic;
     hash_map <PeerFinder::Slot::ptr,
         std::weak_ptr <PeerImp>> m_peers;
-    hash_map<RippleAddress, std::weak_ptr<PeerImp>> m_publicKeyMap;
-    hash_map<Peer::id_t, std::weak_ptr<PeerImp>> m_shortIdMap;
+    hash_map<Peer::id_t, std::weak_ptr<PeerImp>> ids_;
     Resolver& m_resolver;
     std::atomic <Peer::id_t> next_id_;
     ManifestCache manifestCache_;
@@ -226,29 +225,21 @@ public:
 
     // Called when an active peer is destroyed.
     void
-    onPeerDeactivate (Peer::id_t id, RippleAddress const& publicKey);
+    onPeerDeactivate (Peer::id_t id);
 
     // UnaryFunc will be called as
     //  void(std::shared_ptr<PeerImp>&&)
     //
     template <class UnaryFunc>
     void
-    for_each_unlocked (UnaryFunc&& f)
-    {
-        for (auto const& e : m_publicKeyMap)
-        {
-            auto sp = e.second.lock();
-            if (sp)
-                f(std::move(sp));
-        }
-    }
-
-    template <class UnaryFunc>
-    void
     for_each (UnaryFunc&& f)
     {
         std::lock_guard <decltype(mutex_)> lock (mutex_);
-        for_each_unlocked(f);
+        for (auto const& e : ids_)
+        {
+            if (auto sp = e.second.lock())
+                f(std::move(sp));
+        }
     }
 
     std::size_t
@@ -275,27 +266,29 @@ public:
         bool isInbound,
         int bytes);
 
-private:
-    std::shared_ptr<HTTP::Writer>
-    makeRedirectResponse (PeerFinder::Slot::ptr const& slot,
-        beast::http::message const& request, address_type remote_address);
-
-    void
-    connect (beast::IP::Endpoint const& remote_endpoint) override;
-
     /*  The number of active peers on the network
         Active peers are only those peers that have completed the handshake
         and are running the Ripple protocol.
     */
-    // VFALCO Why private?
     std::size_t
     size() override;
+
+    int
+    limit () override;
 
     Json::Value
     crawl() override;
 
     Json::Value
     json() override;
+
+private:
+    std::shared_ptr<Writer>
+    makeRedirectResponse (PeerFinder::Slot::ptr const& slot,
+        beast::http::message const& request, address_type remote_address);
+
+    void
+    connect (beast::IP::Endpoint const& remote_endpoint) override;
 
     bool
     processRequest (beast::http::message const& req,
@@ -330,9 +323,6 @@ private:
     onWrite (beast::PropertyStream::Map& stream) override;
 
     //--------------------------------------------------------------------------
-
-    void
-    add (std::shared_ptr<PeerImp> const& peer);
 
     void
     remove (Child& child);

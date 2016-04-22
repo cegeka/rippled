@@ -19,6 +19,7 @@
 
 #include <BeastConfig.h>
 #include <ripple/core/Job.h>
+#include <cassert>
 
 namespace ripple {
 
@@ -57,7 +58,7 @@ JobType Job::getType () const
 
 Job::CancelCallback Job::getCancelCallback () const
 {
-    bassert (m_cancelCallback);
+    assert (m_cancelCallback);
     return m_cancelCallback;
 }
 
@@ -79,6 +80,10 @@ void Job::doJob ()
     m_loadEvent->reName (mName);
 
     mJob (*this);
+
+    // Destroy the lambda, otherwise we won't include
+    // its duration in the time measurement
+    mJob = std::function<void(Job&)>();
 }
 
 void Job::rename (std::string const& newName)

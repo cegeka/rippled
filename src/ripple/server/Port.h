@@ -20,6 +20,7 @@
 #ifndef RIPPLE_SERVER_PORT_H_INCLUDED
 #define RIPPLE_SERVER_PORT_H_INCLUDED
 
+#include <ripple/basics/BasicConfig.h>
 #include <beast/net/IPEndpoint.h>
 #include <beast/utility/ci_char_traits.h>
 #include <boost/asio/ip/address.hpp>
@@ -31,7 +32,6 @@
 namespace boost { namespace asio { namespace ssl { class context; } } }
 
 namespace ripple {
-namespace HTTP {
 
 /** Configuration information for a Server listening port. */
 struct Port
@@ -51,54 +51,47 @@ struct Port
     std::string ssl_chain;
     std::shared_ptr<boost::asio::ssl::context> context;
 
+    // How many incoming connections are allowed on this
+    // port in the range [0, 65535] where 0 means unlimited.
+    int limit = 0;
+
     // Returns `true` if any websocket protocols are specified
-    template <class = void>
-    bool
-    websockets() const;
+    bool websockets() const;
 
     // Returns `true` if any secure protocols are specified
-    template <class = void>
-    bool
-    secure() const;
+    bool secure() const;
 
     // Returns a string containing the list of protocols
-    template <class = void>
-    std::string
-    protocols() const;
+    std::string protocols() const;
 };
-
-//------------------------------------------------------------------------------
-
-template <class>
-bool
-Port::websockets() const
-{
-    return protocol.count("ws") > 0 || protocol.count("wss") > 0;
-}
-
-template <class>
-bool
-Port::secure() const
-{
-    return protocol.count("peer") > 0 ||
-        protocol.count("https") > 0 || protocol.count("wss") > 0;
-}
-
-template <class>
-std::string
-Port::protocols() const
-{
-    std::string s;
-    for (auto iter = protocol.cbegin();
-            iter != protocol.cend(); ++iter)
-        s += (iter != protocol.cbegin() ? "," : "") + *iter;
-    return s;
-}
 
 std::ostream&
 operator<< (std::ostream& os, Port const& p);
 
-} // HTTP
+//------------------------------------------------------------------------------
+
+struct ParsedPort
+{
+    std::string name;
+    std::set<std::string, beast::ci_less> protocol;
+    std::string user;
+    std::string password;
+    std::string admin_user;
+    std::string admin_password;
+    std::string ssl_key;
+    std::string ssl_cert;
+    std::string ssl_chain;
+    int limit = 0;
+
+    boost::optional<boost::asio::ip::address> ip;
+    boost::optional<std::uint16_t> port;
+    boost::optional<std::vector<beast::IP::Address>> admin_ip;
+    boost::optional<std::vector<beast::IP::Address>> secure_gateway_ip;
+};
+
+void
+parse_Port (ParsedPort& port, Section const& section, std::ostream& log);
+
 } // ripple
 
 #endif

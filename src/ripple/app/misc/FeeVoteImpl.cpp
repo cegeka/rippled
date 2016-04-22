@@ -98,11 +98,11 @@ public:
     FeeVoteImpl (Setup const& setup, beast::Journal journal);
 
     void
-    doValidation (Ledger::ref lastClosedLedger,
+    doValidation (std::shared_ptr<ReadView const> const& lastClosedLedger,
         STObject& baseValidation) override;
 
     void
-    doVoting (Ledger::ref lastClosedLedger,
+    doVoting (std::shared_ptr<ReadView const> const& lastClosedLedger,
         ValidationSet const& parentValidations,
         std::shared_ptr<SHAMap> const& initialPosition) override;
 };
@@ -116,8 +116,9 @@ FeeVoteImpl::FeeVoteImpl (Setup const& setup, beast::Journal journal)
 }
 
 void
-FeeVoteImpl::doValidation (Ledger::ref lastClosedLedger,
-    STObject& baseValidation)
+FeeVoteImpl::doValidation(
+    std::shared_ptr<ReadView const> const& lastClosedLedger,
+        STObject& baseValidation)
 {
     if (lastClosedLedger->fees().base != target_.reference_fee)
     {
@@ -146,9 +147,10 @@ FeeVoteImpl::doValidation (Ledger::ref lastClosedLedger,
 }
 
 void
-FeeVoteImpl::doVoting (Ledger::ref lastClosedLedger,
-    ValidationSet const& set,
-    std::shared_ptr<SHAMap> const& initialPosition)
+FeeVoteImpl::doVoting(
+    std::shared_ptr<ReadView const> const& lastClosedLedger,
+        ValidationSet const& set,
+            std::shared_ptr<SHAMap> const& initialPosition)
 {
     // LCL must be flag ledger
     assert ((lastClosedLedger->info().seq % 256) == 0);
@@ -202,6 +204,7 @@ FeeVoteImpl::doVoting (Ledger::ref lastClosedLedger,
     std::uint32_t const baseReserve = baseReserveVote.getVotes ();
     std::uint32_t const incReserve = incReserveVote.getVotes ();
     std::uint32_t const feeUnits = target_.reference_fee_units;
+    auto const seq = lastClosedLedger->info().seq + 1;
 
     // add transactions to our position
     if ((baseFee != lastClosedLedger->fees().base) ||
@@ -214,9 +217,10 @@ FeeVoteImpl::doVoting (Ledger::ref lastClosedLedger,
             "/" << incReserve;
 
         STTx feeTx (ttFEE,
-            [baseFee,baseReserve,incReserve,feeUnits](auto& obj)
+            [seq,baseFee,baseReserve,incReserve,feeUnits](auto& obj)
             {
                 obj[sfAccount] = AccountID();
+                obj[sfLedgerSequence] = seq;
                 obj[sfBaseFee] = baseFee;
                 obj[sfReserveBase] = baseReserve;
                 obj[sfReserveIncrement] = incReserve;

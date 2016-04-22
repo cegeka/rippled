@@ -142,7 +142,7 @@ std::string pathTypeToString (Pathfinder::PathType const& type)
 }  // namespace
 
 Pathfinder::Pathfinder (
-    RippleLineCache::ref cache,
+    std::shared_ptr<RippleLineCache> const& cache,
     AccountID const& uSrcAccount,
     AccountID const& uDstAccount,
     Currency const& uSrcCurrency,
@@ -831,9 +831,13 @@ STPathSet& Pathfinder::addPathsForType (PathType const& pathType)
         break;
     }
 
-    CondLog (mCompletePaths.size () != initialSize, lsDEBUG, Pathfinder)
-        << (mCompletePaths.size () - initialSize)
-        << " complete paths added";
+    if (mCompletePaths.size () != initialSize)
+    {
+        JLOG (j_.debug)
+            << (mCompletePaths.size () - initialSize)
+            << " complete paths added";
+    }
+
     JLOG (j_.debug)
         << "getPaths> " << pathsOut.size () << " partial paths found";
     return pathsOut;

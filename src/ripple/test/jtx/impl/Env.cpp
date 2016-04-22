@@ -28,6 +28,7 @@
 #include <ripple/test/jtx/seq.h>
 #include <ripple/test/jtx/sig.h>
 #include <ripple/test/jtx/utility.h>
+#include <ripple/test/JSONRPCClient.h>
 #include <ripple/app/ledger/LedgerMaster.h>
 #include <ripple/app/ledger/LedgerTiming.h>
 #include <ripple/app/misc/NetworkOPs.h>
@@ -36,6 +37,8 @@
 #include <ripple/basics/Slice.h>
 #include <ripple/core/ConfigSections.h>
 #include <ripple/json/to_string.h>
+#include <ripple/net/HTTPClient.h>
+#include <ripple/net/RPCCall.h>
 #include <ripple/protocol/ErrorCodes.h>
 #include <ripple/protocol/HashPrefix.h>
 #include <ripple/protocol/Indexes.h>
@@ -53,53 +56,137 @@ namespace ripple {
 namespace test {
 
 void
-setupConfigForUnitTests (Config& config)
+setupConfigForUnitTests (Config& cfg)
 {
-    config.overwrite (ConfigSection::nodeDatabase (), "type", "memory");
-    config.overwrite (ConfigSection::nodeDatabase (), "path", "main");
-
-    config.deprecatedClearSection (ConfigSection::importNodeDatabase ());
-    config.legacy("database_path", "");
-
-    config.RUN_STANDALONE = true;
-    config["server"].append("port_peer");
-    config["port_peer"].set("ip", "127.0.0.1");
-    config["port_peer"].set("port", "8080");
-    config["port_peer"].set("protocol", "peer");
-    config["server"].append("port_admin");
-    config["port_admin"].set("ip", "127.0.0.1");
-    config["port_admin"].set("port", "8081");
-    config["port_admin"].set("protocol", "http");
-    config["port_admin"].set("admin", "127.0.0.1");
+    cfg.overwrite (ConfigSection::nodeDatabase (), "type", "memory");
+    cfg.overwrite (ConfigSection::nodeDatabase (), "path", "main");
+    cfg.deprecatedClearSection (ConfigSection::importNodeDatabase ());
+    cfg.legacy("database_path", "");
+    cfg.RUN_STANDALONE = true;
+    cfg.QUIET = true;
+    cfg.SILENT = true;
+    cfg["server"].append("port_peer");
+    cfg["port_peer"].set("ip", "127.0.0.1");
+    cfg["port_peer"].set("port", "8080");
+    cfg["port_peer"].set("protocol", "peer");
+    cfg["server"].append("port_http");
+    cfg["port_http"].set("ip", "127.0.0.1");
+    cfg["port_http"].set("port", "8081");
+    cfg["port_http"].set("protocol", "http");
+    cfg["port_http"].set("admin", "127.0.0.1");
+    cfg["server"].append("port_ws");
+    cfg["port_ws"].set("ip", "127.0.0.1");
+    cfg["port_ws"].set("port", "8082");
+    cfg["port_ws"].set("protocol", "ws");
+    cfg["port_ws"].set("admin", "127.0.0.1");
 }
 
 //------------------------------------------------------------------------------
 
 namespace jtx {
 
-Env::AppBundle::AppBundle(Application* app_)
-    : app (app_)
+class SuiteSink : public beast::Journal::Sink
+{
+    std::string partition_;
+    beast::unit_test::suite& suite_;
+
+public:
+    SuiteSink(std::string const& partition,
+            beast::Journal::Severity threshold,
+            beast::unit_test::suite& suite)
+        : Sink (threshold, false)
+        , partition_(partition + " ")
+        , suite_ (suite)
+    {
+    }
+
+    // For unit testing, always generate logging text.
+    bool active(beast::Journal::Severity level) const override
+    {
+        return true;
+    }
+
+    void
+    write(beast::Journal::Severity level,
+        std::string const& text) override
+    {
+        std::string s;
+        switch(level)
+        {
+        case beast::Journal::kTrace:    s = "TRC:"; break;
+        case beast::Journal::kDebug:    s = "DBG:"; break;
+        case beast::Journal::kInfo:     s = "INF:"; break;
+        case beast::Journal::kWarning:  s = "WRN:"; break;
+        case beast::Journal::kError:    s = "ERR:"; break;
+        default:
+        case beast::Journal::kFatal:    s = "FTL:"; break;
+        }
+
+        // Only write the string if the level at least equals the threshold.
+        if (level >= threshold())
+            suite_.log << s << partition_ << text;
+    }
+};
+
+class SuiteLogs : public Logs
+{
+    beast::unit_test::suite& suite_;
+
+public:
+    explicit
+    SuiteLogs(beast::unit_test::suite& suite)
+        : Logs (beast::Journal::kError)
+        , suite_(suite)
+    {
+    }
+
+    ~SuiteLogs() override = default;
+
+    std::unique_ptr<beast::Journal::Sink>
+    makeSink(std::string const& partition,
+        beast::Journal::Severity threshold) override
+    {
+        return std::make_unique<SuiteSink>(partition, threshold, suite_);
+    }
+};
+
+//------------------------------------------------------------------------------
+
+Env::AppBundle::AppBundle(beast::unit_test::suite&,
+        Application* app_)
+    : app(app_)
 {
 }
 
-Env::AppBundle::AppBundle(std::unique_ptr<Config> config)
+Env::AppBundle::AppBundle(beast::unit_test::suite& suite,
+    std::unique_ptr<Config> config)
 {
-    auto logs = std::make_unique<Logs>();
+    auto logs = std::make_unique<SuiteLogs>(suite);
     auto timeKeeper_ =
         std::make_unique<ManualTimeKeeper>();
     timeKeeper = timeKeeper_.get();
+    // Hack so we don't have to call Config::setup
+    HTTPClient::initializeSSLContext(*config);
     owned = make_Application(std::move(config),
         std::move(logs), std::move(timeKeeper_));
     app = owned.get();
+    app->logs().threshold(beast::Journal::kError);
     app->setup();
     timeKeeper->set(
         app->getLedgerMaster().getClosedLedger()->info().closeTime);
+    app->doStart();
     thread = std::thread(
         [&](){ app->run(); });
+
+    client = makeJSONRPCClient(app->config());
 }
 
 Env::AppBundle::~AppBundle()
 {
+    client.reset();
+    // Make sure all jobs finish, otherwise tests
+    // might not get the coverage they expect.
+    app->getJobQueue().rendezvous();
     app->signalStop();
     thread.join();
 }
@@ -119,7 +206,15 @@ Env::close(NetClock::time_point closeTime,
     // Round up to next distinguishable value
     closeTime += closed()->info().closeTimeResolution - 1s;
     bundle_.timeKeeper->set(closeTime);
-    app().getOPs().acceptLedger(consensusDelay);
+    // Go through the rpc interface unless we need to simulate
+    // a specific consensus delay.
+    if (consensusDelay)
+        app().getOPs().acceptLedger(consensusDelay);
+    else
+    {
+        rpc("ledger_accept");
+        // VFALCO No error check?
+    }
     bundle_.timeKeeper->set(
         closed()->info().closeTime);
 }
@@ -258,14 +353,15 @@ Env::submit (JTx const& jt)
     if (jt.stx)
     {
         txid_ = jt.stx->getTransactionID();
-        app().openLedger().modify(
-            [&](OpenView& view, beast::Journal j)
-            {
-                std::tie(ter_, didApply) = app().getTxQ().apply(
-                    app(), view, jt.stx, applyFlags(),
-                        beast::Journal{});
-                return didApply;
-            });
+        Serializer s;
+        jt.stx->add(s);
+        auto const jr = rpc("submit", strHex(s.slice()));
+        if (jr["result"].isMember("engine_result_code"))
+            ter_ = static_cast<TER>(
+                jr["result"]["engine_result_code"].asInt());
+        else
+            ter_ = temINVALID;
+        didApply = isTesSuccess(ter_) || isTecClaim(ter_);
     }
     else
     {
@@ -282,7 +378,9 @@ Env::postconditions(JTx const& jt, TER ter, bool didApply)
 {
     if (jt.ter && ! test.expect(ter == *jt.ter,
         "apply: " + transToken(ter) +
-            " (" + transHuman(ter) + ")"))
+            " (" + transHuman(ter) + ") != " +
+                transToken(*jt.ter) + " (" +
+                    transHuman(*jt.ter) + ")"))
     {
         test.log << pretty(jt.jv);
         // Don't check postconditions if
@@ -317,7 +415,7 @@ Env::autofill_sig (JTx& jt)
         return;
     auto const account =
         lookup(jv[jss::Account].asString());
-    if (nosig_)
+    if (!app().checkSigs())
     {
         jv[jss::SigningPubKey] =
             strHex(account.pk().slice());
@@ -383,15 +481,12 @@ Env::st (JTx const& jt)
     return nullptr;
 }
 
-ApplyFlags
-Env::applyFlags() const
+Json::Value
+Env::do_rpc(std::vector<std::string> const& args)
 {
-    ApplyFlags flags = tapNONE;
-    if (testing_)
-        flags = flags | tapENABLE_TESTING;
-    if (nosig_)
-        flags = flags | tapNO_CHECK_SIGN;
-    return flags;
+    auto const jv = cmdLineToJSONRPC(args, journal);
+    return client().invoke(jv["method"].asString(),
+        jv["params"][0U]);
 }
 
 } // jtx

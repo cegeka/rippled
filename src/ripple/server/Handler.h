@@ -29,10 +29,9 @@
 #include <memory>
 
 namespace ripple {
-namespace HTTP {
 
-class Server;
 class Session;
+class Server;
 
 /** Processes all sessions.
     Thread safety:
@@ -40,10 +39,6 @@ class Session;
 */
 struct Handler
 {
-    /** Called when the connection is accepted and we know remoteAddress. */
-    // DEPRECATED
-    virtual void onAccept (Session& session) = 0;
-
     /** Called when a connection is accepted.
         @return `true` If we should keep the connection.
     */
@@ -91,7 +86,6 @@ struct Handler
     virtual void onStopped (Server& server) = 0;
 };
 
-} // HTTP
 } // ripple
 
 #endif

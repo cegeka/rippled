@@ -20,6 +20,7 @@
 #include <BeastConfig.h>
 #include <ripple/basics/contract.h>
 #include <ripple/protocol/ErrorCodes.h>
+#include <cassert>
 #include <unordered_map>
 #include <utility>
 
@@ -115,11 +116,13 @@ public:
         add (rpcTXN_NOT_FOUND,         "txnNotFound",       "Transaction not found.");
         add (rpcUNKNOWN_COMMAND,       "unknownCmd",        "Unknown method.");
         add (rpcWRONG_SEED,            "wrongSeed",         "The regular key does not point as the master key.");
+        add (rpcSENDMAX_MALFORMED,     "sendMaxMalformed",  "SendMax amount malformed.");
     }
 
     ErrorInfo const& get (error_code_i code) const
     {
         Map::const_iterator const iter (m_map.find (code));
+        assert (iter != m_map.end());
         if (iter != m_map.end())
             return iter->second;
         return m_unknown;

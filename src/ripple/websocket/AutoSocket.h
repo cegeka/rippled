@@ -38,7 +38,7 @@ class AutoSocket
 public:
     using ssl_socket   = boost::asio::ssl::stream<boost::asio::ip::tcp::socket>;
     using endpoint_type     = boost::asio::ip::tcp::socket::endpoint_type;
-    using socket_ptr        = std::shared_ptr<ssl_socket>;
+    using socket_ptr        = std::unique_ptr<ssl_socket>;
     using plain_socket      = ssl_socket::next_layer_type;
     using lowest_layer_type = ssl_socket::lowest_layer_type;
     using handshake_type    = ssl_socket::handshake_type;
@@ -46,31 +46,24 @@ public:
     using callback          = std::function <void (error_code)>;
 
 public:
-    AutoSocket (boost::asio::io_service& s, boost::asio::ssl::context& c, beast::Journal j)
-        : mSecure (false)
-        , mBuffer (4)
-        , j_ (j)
-    {
-        mSocket = std::make_shared<ssl_socket> (s, c);
-    }
-
     AutoSocket (
-        boost::asio::io_service& s, boost::asio::ssl::context& c,
-        bool secureOnly, bool plainOnly, beast::Journal j)
+            boost::asio::io_service& s,
+            boost::asio::ssl::context& c,
+            bool secureOnly,
+            bool plainOnly)
         : mSecure (secureOnly)
         , mBuffer ((plainOnly || secureOnly) ? 0 : 4)
-        , j_ (j)
+        , j_ (ripple::debugJournal())
     {
-        mSocket = std::make_shared<ssl_socket> (s, c);
+        mSocket = std::make_unique<ssl_socket> (s, c);
     }
 
-    // swd TBD try remove this constructor
-    // This needs to use `deprecatedLogs` or a change is needed
-    // in websocket_02 (which breaks leveling)
     AutoSocket (
-        boost::asio::io_service& s, boost::asio::ssl::context& c,
-        bool secureOnly, bool plainOnly)
-        : AutoSocket (s, c, secureOnly, plainOnly, ripple::deprecatedLogs().journal ("AutoSocket")){}
+            boost::asio::io_service& s,
+            boost::asio::ssl::context& c)
+        : AutoSocket (s, c, false, false)
+    {
+    }
 
     boost::asio::io_service& get_io_service () noexcept
     {

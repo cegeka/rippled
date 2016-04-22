@@ -30,6 +30,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <utility>
 
 namespace ripple {
 
@@ -79,32 +80,35 @@ public:
     void        updateComplete ();
     Json::Value getStatus ();
 
-    Json::Value doCreate (
-        const RippleLineCache::pointer&,
-        Json::Value const&,
-        bool&);
+    std::pair<bool, Json::Value> doCreate (
+        std::shared_ptr<RippleLineCache> const&,
+        Json::Value const&);
+
     Json::Value doClose (Json::Value const&);
     Json::Value doStatus (Json::Value const&);
 
     // update jvStatus
-    Json::Value doUpdate (const std::shared_ptr<RippleLineCache>&, bool fast);
+    Json::Value doUpdate (
+        std::shared_ptr<RippleLineCache> const&, bool fast);
     InfoSub::pointer getSubscriber ();
     bool hasCompletion ();
 
 private:
     using ScopedLockType = std::lock_guard <std::recursive_mutex>;
 
-    bool isValid (RippleLineCache::ref crCache);
+    bool isValid (std::shared_ptr<RippleLineCache> const& crCache);
     void setValid ();
-    void resetLevel (int level);
 
     std::unique_ptr<Pathfinder> const&
-    getPathFinder(RippleLineCache::ref,
+    getPathFinder(std::shared_ptr<RippleLineCache> const&,
         hash_map<Currency, std::unique_ptr<Pathfinder>>&, Currency const&,
             STAmount const&, int const);
 
-    void
-    findPaths (RippleLineCache::ref, int const, Json::Value&);
+    /** Finds and sets a PathSet in the JSON argument.
+        Returns false if the source currencies are inavlid.
+    */
+    bool
+    findPaths (std::shared_ptr<RippleLineCache> const&, int const, Json::Value&);
 
     int parseJson (Json::Value const&);
 
@@ -141,9 +145,9 @@ private:
 
     int iIdentifier;
 
-    boost::posix_time::ptime ptCreated;
-    boost::posix_time::ptime ptQuickReply;
-    boost::posix_time::ptime ptFullReply;
+    std::chrono::steady_clock::time_point const created_;
+    std::chrono::steady_clock::time_point quick_reply_;
+    std::chrono::steady_clock::time_point full_reply_;
 
     static unsigned int const max_paths_ = 4;
 };

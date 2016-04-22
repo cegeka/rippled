@@ -148,46 +148,6 @@ int Serializer::addFieldID (int type, int name)
     return ret;
 }
 
-bool Serializer::getFieldID (int& type, int& name, int offset) const
-{
-    if (!get8 (type, offset))
-    {
-        WriteLog (lsWARNING, Serializer) << "gFID: unable to get type";
-        return false;
-    }
-
-    name = type & 15;
-    type >>= 4;
-
-    if (type == 0)
-    {
-        // uncommon type
-        if (!get8 (type, ++offset))
-            return false;
-
-        if ((type == 0) || (type < 16))
-        {
-            WriteLog (lsWARNING, Serializer) << "gFID: uncommon type out of range " << type;
-            return false;
-        }
-    }
-
-    if (name == 0)
-    {
-        // uncommon name
-        if (!get8 (name, ++offset))
-            return false;
-
-        if ((name == 0) || (name < 16))
-        {
-            WriteLog (lsWARNING, Serializer) << "gFID: uncommon name out of range " << name;
-            return false;
-        }
-    }
-
-    return true;
-}
-
 int Serializer::add8 (unsigned char byte)
 {
     int ret = mData.size ();
@@ -239,6 +199,14 @@ int Serializer::addVL (Blob const& vector)
     int ret = addEncoded (vector.size ());
     addRaw (vector);
     assert (mData.size () == (ret + vector.size () + encodeLengthLength (vector.size ())));
+    return ret;
+}
+
+int Serializer::addVL (Slice const& slice)
+{
+    int ret = addEncoded (slice.size());
+    if (slice.size())
+        addRaw (slice.data(), slice.size());
     return ret;
 }
 
@@ -440,7 +408,7 @@ void
 SerialIter::skip (int length)
 {
     if (remain_ < length)
-        throw std::runtime_error(
+        Throw<std::runtime_error> (
             "invalid SerialIter skip");
     p_ += length;
     used_ += length;

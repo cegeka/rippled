@@ -24,12 +24,13 @@
 #include <ripple/app/ledger/LedgerTiming.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/misc/NetworkOPs.h>
-#include <ripple/app/misc/UniqueNodeList.h>
+#include <ripple/app/misc/ValidatorList.h>
 #include <ripple/basics/Log.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/basics/chrono.h>
 #include <ripple/core/JobQueue.h>
 #include <ripple/core/TimeKeeper.h>
+#include <beast/module/core/threads/ScopedLock.h>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -73,6 +74,7 @@ private:
     }
 
 public:
+    explicit
     ValidationsImp (Application& app)
         : app_ (app)
         , mValidations ("Validations", 4096, 600, stopwatch(),
@@ -86,23 +88,24 @@ public:
 private:
     bool addValidation (STValidation::ref val, std::string const& source) override
     {
-        RippleAddress signer = val->getSignerPublic ();
+        auto signer = val->getSignerPublic ();
         bool isCurrent = current (val);
 
-        if (! val->isTrusted() && app_.getUNL().nodeInUNL (signer))
+        if (!val->isTrusted() && app_.validators().trusted (signer))
             val->setTrusted();
 
         if (!val->isTrusted ())
         {
-            JLOG (j_.debug) << "Node " << signer.humanNodePublic ()
-                            << " not in UNL st="
-                            << val->getSignTime().time_since_epoch().count()
-                            << ", hash=" << val->getLedgerHash ()
-                            << ", shash=" << val->getSigningHash () << " src=" << source;
+            JLOG (j_.trace) <<
+                "Node " << toBase58 (TokenType::TOKEN_NODE_PUBLIC, signer) <<
+                " not in UNL st=" << val->getSignTime().time_since_epoch().count() <<
+                ", hash=" << val->getLedgerHash () <<
+                ", shash=" << val->getSigningHash () <<
+                " src=" << source;
         }
 
         auto hash = val->getLedgerHash ();
-        auto node = signer.getNodeID ();
+        auto node = val->getNodeID ();
 
         if (val->isTrusted () && isCurrent)
         {
@@ -138,9 +141,11 @@ private:
             }
         }
 
-        JLOG (j_.debug) << "Val for " << hash << " from " << signer.humanNodePublic ()
-            << " added " << (val->isTrusted () ? "trusted/" : "UNtrusted/")
-            << (isCurrent ? "current" : "stale");
+        JLOG (j_.debug) <<
+            "Val for " << hash <<
+            " from " << toBase58 (TokenType::TOKEN_NODE_PUBLIC, signer) <<
+            " added " << (val->isTrusted () ? "trusted/" : "UNtrusted/") <<
+            (isCurrent ? "current" : "stale");
 
         if (val->isTrusted () && isCurrent)
         {
@@ -238,7 +243,6 @@ private:
 
         JLOG (j_.trace) << "VC: " << ledger << "f:" << full << " p:" << partial;
     }
-
 
     int getTrustedValidationCount (uint256 const& ledger) override
     {
@@ -457,8 +461,10 @@ private:
     void doWrite ()
     {
         LoadEvent::autoptr event (app_.getJobQueue ().getLoadEventAP (jtDISK, "ValidationWrite"));
-        boost::format insVal ("INSERT INTO Validations "
-                              "(LedgerHash,NodePubKey,SignTime,RawData) VALUES ('%s','%s','%u',%s);");
+        std::string insVal ("INSERT INTO Validations "
+            "(InitialSeq, LedgerSeq, LedgerHash,NodePubKey,SignTime,RawData) "
+            "VALUES (:initialSeq, :ledgerSeq, :ledgerHash,:nodePubKey,:signTime,:rawData);");
+        std::string findSeq("SELECT LedgerSeq FROM Ledgers WHERE Ledgerhash=:ledgerHash;");
 
         ScopedLockType sl (mLock);
         assert (mWriting);
@@ -480,11 +486,34 @@ private:
                     {
                         s.erase ();
                         it->add (s);
-                        *db << boost::str (
-                            insVal % to_string (it->getLedgerHash ()) %
-                            it->getSignerPublic ().humanNodePublic () %
-                            it->getSignTime().time_since_epoch().count() %
-                            sqlEscape (s.peekData ()));
+
+                        auto const ledgerHash = to_string(it->getLedgerHash());
+
+                        boost::optional<std::uint64_t> ledgerSeq;
+                        *db << findSeq, soci::use(ledgerHash),
+                            soci::into(ledgerSeq);
+
+                        auto const initialSeq = ledgerSeq.value_or(
+                            app_.getLedgerMaster().getCurrentLedgerIndex());
+                        auto const nodePubKey = toBase58(
+                            TokenType::TOKEN_NODE_PUBLIC,
+                            it->getSignerPublic());
+                        auto const signTime =
+                            it->getSignTime().time_since_epoch().count();
+
+                        soci::blob rawData(*db);
+                        rawData.append(reinterpret_cast<const char*>(
+                            s.peekData().data()), s.peekData().size());
+                        assert(rawData.get_len() == s.peekData().size());
+
+                        *db <<
+                            insVal,
+                            soci::use(initialSeq),
+                            soci::use(ledgerSeq),
+                            soci::use(ledgerHash),
+                            soci::use(nodePubKey),
+                            soci::use(signTime),
+                            soci::use(rawData);
                     }
 
                     tr.commit ();

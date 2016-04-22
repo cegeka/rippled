@@ -53,19 +53,24 @@ void PathState::reset(STAmount const& in, STAmount const& out)
     saInAct = in;
     saOutAct = out;
 
-    CondLog (inReq() > zero && inAct() >= inReq(),
-             lsWARNING, RippleCalc)
-        << "rippleCalc: DONE:"
-        << " inAct()=" << inAct()
-        << " inReq()=" << inReq();
+    if (inReq() > zero && inAct() >= inReq())
+    {
+        JLOG (j_.warning)
+            <<  "rippleCalc: DONE:"
+            << " inAct()=" << inAct()
+            << " inReq()=" << inReq();
+    }
 
     assert (inReq() < zero || inAct() < inReq());
     // Error if done.
 
-    CondLog (outAct() >= outReq(), lsWARNING, RippleCalc)
-        << "rippleCalc: ALREADY DONE:"
-        << " saOutAct=" << outAct()
-        << " saOutReq=" << outReq();
+    if (outAct() >= outReq())
+    {
+        JLOG (j_.warning)
+            << "rippleCalc: ALREADY DONE:"
+            << " saOutAct=" << outAct()
+            << " saOutReq=" << outReq();
+    }
 
     assert(outAct() < outReq());
     assert (nodes().size () >= 2);
@@ -596,7 +601,7 @@ TER PathState::expandPath (
         }
     }
 
-    JLOG (j_.debug)
+    JLOG (j_.trace)
         << "expandPath:"
         << " in=" << uMaxCurrencyID
         << "/" << uMaxIssuerID

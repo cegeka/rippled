@@ -21,6 +21,7 @@
 #include <ripple/protocol/STTx.h>
 #include <ripple/protocol/HashPrefix.h>
 #include <ripple/protocol/JsonFields.h>
+#include <ripple/protocol/PublicKey.h>
 #include <ripple/protocol/Protocol.h>
 #include <ripple/protocol/Sign.h>
 #include <ripple/protocol/STAccount.h>
@@ -165,16 +166,24 @@ Blob STTx::getSignature () const
     }
 }
 
-void STTx::sign (RippleAddress const& private_key)
+void STTx::sign (
+    PublicKey const& publicKey,
+    SecretKey const& secretKey)
 {
-    Blob const signature = private_key.accountPrivateSign (getSigningData (*this));
-    setFieldVL (sfTxnSignature, signature);
+    auto const data = getSigningData (*this);
+
+    auto const sig = ripple::sign (
+        publicKey,
+        secretKey,
+        makeSlice(data));
+
+    setFieldVL (sfTxnSignature, sig);
     tid_ = getHash(HashPrefix::transactionID);
 }
 
-bool STTx::checkSign(bool allowMultiSign) const
+std::pair<bool, std::string> STTx::checkSign(bool allowMultiSign) const
 {
-    bool sigGood = false;
+    std::pair<bool, std::string> ret {false, ""};
     try
     {
         if (allowMultiSign)
@@ -183,18 +192,19 @@ bool STTx::checkSign(bool allowMultiSign) const
             // at the SigningPubKey.  It it's empty we must be
             // multi-signing.  Otherwise we're single-signing.
             Blob const& signingPubKey = getFieldVL (sfSigningPubKey);
-            sigGood = signingPubKey.empty () ?
+            ret = signingPubKey.empty () ?
                 checkMultiSign () : checkSingleSign ();
         }
         else
         {
-            sigGood = checkSingleSign ();
+            ret = checkSingleSign ();
         }
     }
     catch (std::exception const&)
     {
+        ret = {false, "Internal signature check failure."};
     }
-    return sigGood;
+    return ret;
 }
 
 Json::Value STTx::getJson (int) const
@@ -252,54 +262,60 @@ STTx::getMetaSQL (Serializer rawTxn,
                 % getSequence () % inLedger % status % rTxn % escapedMetaData);
 }
 
-bool
-STTx::checkSingleSign () const
+std::pair<bool, std::string> STTx::checkSingleSign () const
 {
     // We don't allow both a non-empty sfSigningPubKey and an sfSigners.
     // That would allow the transaction to be signed two ways.  So if both
     // fields are present the signature is invalid.
     if (isFieldPresent (sfSigners))
-        return false;
+        return {false, "Cannot both single- and multi-sign."};
 
-    bool ret = false;
+    bool validSig = false;
     try
     {
-        ECDSA const fullyCanonical = (getFlags() & tfFullyCanonicalSig)
-            ? ECDSA::strict
-            : ECDSA::not_strict;
+        bool const fullyCanonical = (getFlags() & tfFullyCanonicalSig);
+        auto const spk = getFieldVL (sfSigningPubKey);
 
-        RippleAddress n;
-        n.setAccountPublic (getFieldVL (sfSigningPubKey));
+        if (publicKeyType (makeSlice(spk)))
+        {
+            Blob const signature = getFieldVL (sfTxnSignature);
+            Blob const data = getSigningData (*this);
 
-        ret = n.accountPublicVerify (getSigningData (*this),
-            getFieldVL (sfTxnSignature), fullyCanonical);
+            validSig = verify (
+                PublicKey (makeSlice(spk)),
+                makeSlice(data),
+                makeSlice(signature),
+                fullyCanonical);
+        }
     }
     catch (std::exception const&)
     {
         // Assume it was a signature failure.
-        ret = false;
+        validSig = false;
     }
-    return ret;
+    if (validSig == false)
+        return {false, "Invalid signature."};
+
+    return {true, ""};
 }
 
-bool
-STTx::checkMultiSign () const
+std::pair<bool, std::string> STTx::checkMultiSign () const
 {
     // Make sure the MultiSigners are present.  Otherwise they are not
     // attempting multi-signing and we just have a bad SigningPubKey.
     if (!isFieldPresent (sfSigners))
-        return false;
+        return {false, "Empty SigningPubKey."};
 
     // We don't allow both an sfSigners and an sfTxnSignature.  Both fields
     // being present would indicate that the transaction is signed both ways.
     if (isFieldPresent (sfTxnSignature))
-        return false;
+        return {false, "Cannot both single- and multi-sign."};
 
     STArray const& signers {getFieldArray (sfSigners)};
 
     // There are well known bounds that the number of signers must be within.
     if (signers.size() < minMultiSigners || signers.size() > maxMultiSigners)
-        return false;
+        return {false, "Invalid Signers array size."};
 
     // We can ease the computational load inside the loop a bit by
     // pre-constructing part of the data that we hash.  Fill a Serializer
@@ -310,9 +326,7 @@ STTx::checkMultiSign () const
     auto const txnAccountID = getAccountID (sfAccount);
 
     // Determine whether signatures must be full canonical.
-    ECDSA const fullyCanonical = (getFlags() & tfFullyCanonicalSig)
-        ? ECDSA::strict
-        : ECDSA::not_strict;
+    bool const fullyCanonical = (getFlags() & tfFullyCanonicalSig);
 
     // Signers must be in sorted order by AccountID.
     AccountID lastAccountID (beast::zero);
@@ -323,11 +337,15 @@ STTx::checkMultiSign () const
 
         // The account owner may not multisign for themselves.
         if (accountID == txnAccountID)
-            return false;
+            return {false, "Invalid multisigner."};
+
+        // No duplicate signers allowed.
+        if (lastAccountID == accountID)
+            return {false, "Duplicate Signers not allowed."};
 
         // Accounts must be in order by account ID.  No duplicates allowed.
-        if (lastAccountID >= accountID)
-            return false;
+        if (lastAccountID > accountID)
+            return {false, "Unsorted Signers array."};
 
         // The next signature must be greater than this one.
         lastAccountID = accountID;
@@ -339,14 +357,19 @@ STTx::checkMultiSign () const
             Serializer s = dataStart;
             finishMultiSigningData (accountID, s);
 
-            RippleAddress const pubKey =
-                RippleAddress::createAccountPublic (
-                    signer.getFieldVL (sfSigningPubKey));
+            auto spk = signer.getFieldVL (sfSigningPubKey);
 
-            Blob const signature = signer.getFieldVL (sfTxnSignature);
+            if (publicKeyType (makeSlice(spk)))
+            {
+                Blob const signature =
+                    signer.getFieldVL (sfTxnSignature);
 
-            validSig = pubKey.accountPublicVerify (
-                s.getData(), signature, fullyCanonical);
+                validSig = verify (
+                    PublicKey (makeSlice(spk)),
+                    s.slice(),
+                    makeSlice(signature),
+                    fullyCanonical);
+            }
         }
         catch (std::exception const&)
         {
@@ -354,11 +377,12 @@ STTx::checkMultiSign () const
             validSig = false;
         }
         if (!validSig)
-            return false;
+            return {false, std::string("Invalid signature on account ") +
+                toBase58(accountID)  + "."};
     }
 
     // All signatures verified.
-    return true;
+    return {true, ""};
 }
 
 //------------------------------------------------------------------------------

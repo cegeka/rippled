@@ -25,6 +25,7 @@
 #include <beast/utility/Journal.h>
 #include <boost/filesystem.hpp>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <utility>
 
@@ -56,7 +57,7 @@ private:
 
     public:
         Sink (std::string const& partition,
-            beast::Journal::Severity severity, Logs& logs);
+            beast::Journal::Severity thresh, Logs& logs);
 
         Sink (Sink const&) = delete;
         Sink& operator= (Sink const&) = delete;
@@ -145,34 +146,38 @@ private:
     };
 
     std::mutex mutable mutex_;
-    std::map <std::string, Sink, beast::ci_less> sinks_;
-    beast::Journal::Severity level_;
+    std::map <std::string,
+        std::unique_ptr<beast::Journal::Sink>,
+            beast::ci_less> sinks_;
+    beast::Journal::Severity thresh_;
     File file_;
     bool silent_ = false;
 
 public:
-    Logs();
+    Logs(beast::Journal::Severity level);
 
     Logs (Logs const&) = delete;
     Logs& operator= (Logs const&) = delete;
 
+    virtual ~Logs() = default;
+
     bool
     open (boost::filesystem::path const& pathToLogFile);
 
-    Sink&
+    beast::Journal::Sink&
     get (std::string const& name);
 
-    Sink&
+    beast::Journal::Sink&
     operator[] (std::string const& name);
 
     beast::Journal
     journal (std::string const& name);
 
     beast::Journal::Severity
-    severity() const;
+    threshold() const;
 
     void
-    severity (beast::Journal::Severity level);
+    threshold (beast::Journal::Severity thresh);
 
     std::vector<std::pair<std::string, std::string>>
     partition_severities() const;
@@ -194,6 +199,11 @@ public:
     {
         silent_ = bSilent;
     }
+
+    virtual
+    std::unique_ptr<beast::Journal::Sink>
+    makeSink(std::string const& partition,
+        beast::Journal::Severity startingLevel);
 
 public:
     static
@@ -237,52 +247,20 @@ private:
 #endif
 
 //------------------------------------------------------------------------------
-// VFALCO DEPRECATED Temporary transition function until interfaces injected
-inline
-Logs&
-deprecatedLogs()
-{
-    static Logs logs;
-    return logs;
-}
+// Debug logging:
 
-class LogSquelcher
-{
-public:
-    LogSquelcher()
-        : severity_(deprecatedLogs().severity())
-    {
-        deprecatedLogs().severity(
-            beast::Journal::Severity::kNone);
-    }
+/** Returns the debug journal. The journal may drain to a null sink. */
+beast::Journal const&
+debugJournal();
 
-    ~LogSquelcher()
-    {
-        deprecatedLogs().severity(severity_);
-    }
+/** Set the sink for the debug journal
 
-private:
-    beast::Journal::Severity const severity_;
-};
-
-// VFALCO DEPRECATED Inject beast::Journal instead
-#define ShouldLog(s, k) \
-    ::ripple::deprecatedLogs()[#k].active(::ripple::Logs::toSeverity (s))
-
-// DEPRECATED
-#define WriteLog(s, k)                                              \
-    if (!ShouldLog(s, k))                                           \
-        do {} while (0);                                            \
-    else                                                            \
-        ::beast::Journal::Stream (::ripple::deprecatedLogs()[#k],   \
-                                  ::ripple::Logs::toSeverity(s))
-// DEPRECATED
-#define CondLog(c, s, k) \
-     if (!ShouldLog(s, k) || !(c))                                  \
-         do {} while(0);                                            \
-     else                                                           \
-         ::beast::Journal::Stream (::ripple::deprecatedLogs()[#k],  \
-                                  ::ripple::Logs::toSeverity(s))
+    This operation is not thread safe and should only be called
+    from a controlled context, when no other threads are in a
+    call to debugJournal.
+*/
+void
+setDebugJournalSink(beast::Journal::Sink& sink);
 
 } // ripple
 

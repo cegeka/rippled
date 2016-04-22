@@ -40,10 +40,12 @@ public:
 
     // VFALCO TODO Should this be called findOrAdd ?
     //
-    virtual Ledger::pointer acquire (uint256 const& hash,
+    virtual
+    std::shared_ptr<Ledger>
+    acquire (uint256 const& hash,
         std::uint32_t seq, InboundLedger::fcReason) = 0;
 
-    virtual InboundLedger::pointer find (LedgerHash const& hash) = 0;
+    virtual std::shared_ptr<InboundLedger> find (LedgerHash const& hash) = 0;
 
     virtual bool hasLedger (LedgerHash const& ledgerHash) = 0;
 

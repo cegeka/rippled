@@ -71,6 +71,9 @@ private:
         std::uint32_t mSeq;
     };
 
+    // Calculate the salted key for the given account
+    uint256 accountKey (AccountID const& account);
+
 public:
     using iterator = std::map <Key, std::shared_ptr<STTx const>>::iterator;
     using const_iterator = std::map <Key, std::shared_ptr<STTx const>>::const_iterator;
@@ -82,6 +85,9 @@ public:
     }
 
     void insert (std::shared_ptr<STTx const> const& txn);
+
+    std::vector<std::shared_ptr<STTx const>>
+    prune(AccountID const& account, std::uint32_t const seq);
 
     // VFALCO TODO remove this function
     void reset (LedgerHash const& saltHash)

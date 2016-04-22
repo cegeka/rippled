@@ -20,7 +20,7 @@
 #ifndef BEAST_UTILITY_DEBUG_H_INCLUDED
 #define BEAST_UTILITY_DEBUG_H_INCLUDED
 
-#include <beast/strings/String.h>
+#include <string>
 
 namespace beast {
 
@@ -28,23 +28,6 @@ namespace beast {
 
 namespace Debug
 {
-
-/** Break to debugger if a debugger is attached to a debug build.
-
-    Does nothing if no debugger is attached, or the build is not a debug build.
-*/
-extern void breakPoint ();
-
-/** Given a file and line number this formats a suitable string.
-    Usually you will pass __FILE__ and __LINE__ here.
-*/
-String getSourceLocation (char const* fileName, int lineNumber,
-                          int numberOfParents = 0);
-
-/** Retrieve the file name from a full path.
-    The nubmer of parents can be chosen
-*/
-String getFileNameFromPath (const char* sourceFileName, int numberOfParents = 0);
 
 //
 // These control the MSVC C Runtime Debug heap.

@@ -26,6 +26,7 @@
 #include <ripple/basics/CountedObject.h>
 #include <mutex>
 #include <set>
+#include <utility>
 
 namespace ripple {
 
@@ -65,33 +66,15 @@ public:
     {
         return mHaveHeader;
     }
-    bool isAcctStComplete () const
-    {
-        return mHaveState;
-    }
-    bool isTransComplete () const
-    {
-        return mHaveTransactions;
-    }
-    bool isDone () const
-    {
-        return mAborted || isComplete () || isFailed ();
-    }
-    Ledger::ref getLedger () const
+    std::shared_ptr<Ledger> const&
+    getLedger() const
     {
         return mLedger;
-    }
-    void abort ()
-    {
-        mAborted = true;
     }
     std::uint32_t getSeq () const
     {
         return mSeq;
     }
-
-    // VFALCO TODO Make this the Listener / Observer pattern
-    bool addOnComplete (std::function<void (InboundLedger::pointer)>);
 
     enum class TriggerReason { trAdded, trReply, trTimeout };
     void trigger (Peer::ptr const&, TriggerReason);
@@ -108,16 +91,15 @@ public:
 
     std::vector<neededHash_t> getNeededHashes ();
 
-    // VFALCO TODO Replace uint256 with something semanticallyh meaningful
-    void filterNodes (
-        std::vector<SHAMapNodeID>& nodeIDs, std::vector<uint256>& nodeHashes,
-        TriggerReason reason);
-
     /** Return a Json::objectValue. */
     Json::Value getJson (int);
     void runData ();
 
 private:
+    void filterNodes (
+        std::vector<std::pair<SHAMapNodeID, uint256>>& nodes,
+        TriggerReason reason);
+
     void done ();
 
     void onTimer (bool progress, ScopedLockType& peerSetLock);
@@ -150,11 +132,10 @@ private:
     bool takeAsRootNode (Blob const& data, SHAMapAddNode&);
 
 private:
-    Ledger::pointer    mLedger;
+    std::shared_ptr<Ledger> mLedger;
     bool               mHaveHeader;
     bool               mHaveState;
     bool               mHaveTransactions;
-    bool               mAborted;
     bool               mSignaled;
     bool               mByHash;
     std::uint32_t      mSeq;
@@ -168,8 +149,6 @@ private:
     std::recursive_mutex mReceivedDataLock;
     std::vector <PeerDataPairType> mReceivedData;
     bool mReceiveDispatched;
-
-    std::vector <std::function <void (InboundLedger::pointer)> > mOnComplete;
 };
 
 } // ripple

@@ -80,7 +80,9 @@ private:
     // check health/stop status as records are copied
     std::uint64_t const checkHealthInterval_ = 1000;
     // minimum # of ledgers to maintain for health of network
-    std::uint32_t minimumDeletionInterval_ = 256;
+    static std::uint32_t const minimumDeletionInterval_ = 256;
+    // minimum # of ledgers required for standalone mode.
+    static std::uint32_t const minimumDeletionIntervalSA_ = 8;
 
     Setup setup_;
     NodeStore::Scheduler& scheduler_;
@@ -93,8 +95,8 @@ private:
     bool healthy_ = true;
     mutable std::condition_variable cond_;
     mutable std::mutex mutex_;
-    Ledger::pointer newLedger_;
-    Ledger::pointer validatedLedger_;
+    std::shared_ptr<Ledger const> newLedger_;
+    std::atomic<bool> rotating_;
     TransactionMaster& transactionMaster_;
     std::atomic <LedgerIndex> canDelete_;
     // these do not exist upon SHAMapStore creation, but do exist
@@ -105,6 +107,13 @@ private:
     TreeNodeCache* treeNodeCache_ = nullptr;
     DatabaseCon* transactionDb_ = nullptr;
     DatabaseCon* ledgerDb_ = nullptr;
+    int fdlimit_ = 0;
+
+public:
+    bool rotating() const
+    {
+        return rotating_;
+    }
 
 public:
     SHAMapStoreImp (Application& app,
@@ -158,7 +167,9 @@ public:
         return canDelete_;
     }
 
-    void onLedgerClosed (Ledger::pointer validatedLedger) override;
+    void onLedgerClosed (std::shared_ptr<Ledger const> const& ledger) override;
+
+    int fdlimit() const override;
 
 private:
     // callback for visitNodes
@@ -203,8 +214,10 @@ private:
     /** delete from sqlite table in batches to not lock the db excessively
      *  pause briefly to extend access time to other users
      *  call with mutex object unlocked
+     *  @return true if any deletable rows were found (though not
+     *      necessarily deleted.
      */
-    void clearSql (DatabaseCon& database, LedgerIndex lastRotated,
+    bool clearSql (DatabaseCon& database, LedgerIndex lastRotated,
                    std::string const& minQuery, std::string const& deleteQuery);
     void clearCaches (LedgerIndex validatedSeq);
     void freshenCaches();

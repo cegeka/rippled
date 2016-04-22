@@ -96,7 +96,6 @@ public:
     void rcvMessage (message_ptr const&, bool& msgRejected, bool& runQueue);
     boost::optional <std::string>  getMessage ();
     bool checkMessage ();
-    void returnMessage (message_ptr const&);
     Json::Value invokeCommand (Json::Value const& jvRequest,
         std::shared_ptr<JobCoro> jobCoro);
 
@@ -105,7 +104,7 @@ public:
 
 private:
     Application& app_;
-    HTTP::Port const& m_port;
+    Port const& m_port;
     Resource::Manager& m_resourceManager;
     Resource::Consumer m_usage;
     beast::IP::Endpoint const m_remoteAddress;
@@ -176,8 +175,9 @@ template <class WebSocket>
 void ConnectionImpl <WebSocket>::rcvMessage (
     message_ptr const& msg, bool& msgRejected, bool& runQueue)
 {
-    JLOG (j_.warning)
-            << "WebSocket: rcvMessage";
+    JLOG(j_.debug) <<
+        "WebSocket: received " << msg->get_payload();
+
     ScopedLockType sl (m_receiveQueueMutex);
 
     if (m_isDead)
@@ -355,10 +355,9 @@ void ConnectionImpl <WebSocket>::preDestroy ()
 template <class WebSocket>
 void ConnectionImpl <WebSocket>::send (Json::Value const& jvObj, bool broadcast)
 {
-    JLOG (j_.warning)
-            << "WebSocket: sending '" << to_string (jvObj);
+    JLOG (j_.debug) <<
+        "WebSocket: sending " << to_string (jvObj);
     connection_ptr ptr = m_connection.lock ();
-
     if (ptr)
         m_handler.send (ptr, jvObj, broadcast);
 }
@@ -366,8 +365,8 @@ void ConnectionImpl <WebSocket>::send (Json::Value const& jvObj, bool broadcast)
 template <class WebSocket>
 void ConnectionImpl <WebSocket>::disconnect ()
 {
-    JLOG (j_.warning)
-            << "WebSocket: disconnecting";
+    JLOG (j_.debug) <<
+        "WebSocket: disconnecting";
     connection_ptr ptr = m_connection.lock ();
 
     if (ptr)

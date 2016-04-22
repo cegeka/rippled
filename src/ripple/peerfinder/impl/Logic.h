@@ -94,7 +94,7 @@ public:
     std::multiset <beast::IP::Address> connectedAddresses_;
 
     // Set of public keys belonging to active peers
-    std::set <RipplePublicKey> keys_;
+    std::set <PublicKey> keys_;
 
     // A list of dynamic sources to consult as a fallback
     std::vector <beast::SharedPtr <Source>> m_sources;
@@ -107,14 +107,12 @@ public:
 
     Logic (clock_type& clock, Store& store,
             Checker& checker, beast::Journal journal)
-        : m_journal (journal, Reporting::logic)
+        : m_journal (journal)
         , m_clock (clock)
         , m_store (store)
         , m_checker (checker)
-        , livecache_ (m_clock,
-            beast::Journal (journal, Reporting::livecache))
-        , bootcache_ (store, m_clock,
-            beast::Journal (journal, Reporting::bootcache))
+        , livecache_ (m_clock, journal)
+        , bootcache_ (store, m_clock, journal)
         , m_whenBroadcast (m_clock.now())
         , m_squelches (m_clock)
     {
@@ -371,7 +369,7 @@ public:
 
     Result
     activate (SlotImp::ptr const& slot,
-        RipplePublicKey const& key, bool cluster)
+        PublicKey const& key, bool cluster)
     {
         if (m_journal.debug) m_journal.debug << beast::leftw (18) <<
             "Logic handshake " << slot->remote_endpoint () <<

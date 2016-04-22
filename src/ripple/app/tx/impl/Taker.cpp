@@ -20,6 +20,7 @@
 #include <BeastConfig.h>
 #include <ripple/app/tx/impl/Taker.h>
 #include <ripple/basics/contract.h>
+#include <ripple/basics/Log.h>
 
 namespace ripple {
 
@@ -112,12 +113,22 @@ BasicTaker::effective_rate (
 }
 
 bool
+BasicTaker::unfunded () const
+{
+    if (get_funds (account(), remaining_.in) > zero)
+        return false;
+
+    JLOG(journal_.debug) << "Unfunded: taker is out of funds.";
+    return true;
+}
+
+bool
 BasicTaker::done () const
 {
     // We are done if we have consumed all the input currency
     if (remaining_.in <= zero)
     {
-        journal_.debug << "Done: all the input currency has been consumed.";
+        JLOG(journal_.debug) << "Done: all the input currency has been consumed.";
         return true;
     }
 
@@ -125,14 +136,14 @@ BasicTaker::done () const
     // desired amount of output currency
     if (!sell_ && (remaining_.out <= zero))
     {
-        journal_.debug << "Done: the desired amount has been received.";
+        JLOG(journal_.debug) << "Done: the desired amount has been received.";
         return true;
     }
 
     // We are done if the taker is out of funds
-    if (get_funds (account(), remaining_.in) <= zero)
+    if (unfunded ())
     {
-        journal_.debug << "Done: taker out of funds.";
+        JLOG(journal_.debug) << "Done: taker out of funds.";
         return true;
     }
 
@@ -140,14 +151,14 @@ BasicTaker::done () const
 }
 
 Amounts
-BasicTaker::remaining_offer (STAmountCalcSwitchovers const& amountCalcSwitchovers) const
+BasicTaker::remaining_offer () const
 {
     // If the taker is done, then there's no offer to place.
     if (done ())
         return Amounts (remaining_.in.zeroed(), remaining_.out.zeroed());
 
     // Avoid math altogether if we didn't cross.
-   if (original_ == remaining_)
+    if (original_ == remaining_)
        return original_;
 
     if (sell_)
@@ -156,15 +167,14 @@ BasicTaker::remaining_offer (STAmountCalcSwitchovers const& amountCalcSwitchover
 
         // We scale the output based on the remaining input:
         return Amounts (remaining_.in, divRound (
-            remaining_.in, quality_.rate (), issue_out_, true,
-            amountCalcSwitchovers));
+            remaining_.in, quality_.rate (), issue_out_, true));
     }
 
     assert (remaining_.out > zero);
 
     // We scale the input based on the remaining output:
     return Amounts (mulRound (
-        remaining_.out, quality_.rate (), issue_in_, true, amountCalcSwitchovers),
+        remaining_.out, quality_.rate (), issue_in_, true),
         remaining_.out);
 }
 
@@ -380,8 +390,6 @@ BasicTaker::flow_iou_to_iou (
 BasicTaker::Flow
 BasicTaker::do_cross (Amounts offer, Quality quality, AccountID const& owner)
 {
-    assert (!done ());
-
     auto const owner_funds = get_funds (owner, offer.out);
     auto const taker_funds = get_funds (account (), offer.in);
 
@@ -420,8 +428,6 @@ BasicTaker::do_cross (
     Amounts offer1, Quality quality1, AccountID const& owner1,
     Amounts offer2, Quality quality2, AccountID const& owner2)
 {
-    assert (!done ());
-
     assert (!offer1.in.native ());
     assert (offer1.out.native ());
     assert (offer2.in.native ());
@@ -433,7 +439,7 @@ BasicTaker::do_cross (
 
     if (account () == owner1)
     {
-        journal_.trace << "The taker owns the first leg of a bridge.";
+        JLOG(journal_.trace) << "The taker owns the first leg of a bridge.";
         leg1_in_funds = std::max (leg1_in_funds, offer1.in);
     }
 
@@ -443,7 +449,7 @@ BasicTaker::do_cross (
 
     if (account () == owner2)
     {
-        journal_.trace << "The taker owns the second leg of a bridge.";
+        JLOG(journal_.trace) << "The taker owns the second leg of a bridge.";
         leg2_out_funds = std::max (leg2_out_funds, offer2.out);
     }
 
@@ -459,7 +465,8 @@ BasicTaker::do_cross (
 
     if (owner1 == owner2)
     {
-        journal_.trace << "The bridge endpoints are owneb by the same account.";
+        JLOG(journal_.trace) <<
+            "The bridge endpoints are owned by the same account.";
         xrp_funds = std::max (offer1.out, offer2.in);
     }
 
@@ -563,7 +570,7 @@ Taker::consume_offer (Offer const& offer, Amounts const& order)
     if (order.out < zero)
         Throw<std::logic_error> ("flow with negative output.");
 
-    if (journal_.debug) journal_.debug << "Consuming from offer " << offer;
+    JLOG(journal_.debug) << "Consuming from offer " << offer;
 
     if (journal_.trace)
     {

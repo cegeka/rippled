@@ -276,15 +276,6 @@ Value::Value ( std::string const& value )
 
 }
 
-Value::Value (beast::String const& beastString)
-    : type_ ( stringValue )
-    , allocated_ ( true )
-{
-    value_.string_ = valueAllocator ()->duplicateStringValue ( beastString.toStdString ().c_str (),
-                     (unsigned int)beastString.length () );
-
-}
-
 Value::Value ( const StaticString& value )
     : type_ ( stringValue )
     , allocated_ ( false )
@@ -1011,6 +1002,9 @@ Value::removeMember ( std::string const& key )
 bool
 Value::isMember ( const char* key ) const
 {
+    if (type_ != objectValue)
+        return false;
+
     const Value* value = & ((*this)[key]);
     return value != &null;
 }

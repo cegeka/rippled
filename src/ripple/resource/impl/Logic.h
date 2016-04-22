@@ -24,12 +24,14 @@
 #include <ripple/resource/Gossip.h>
 #include <ripple/resource/impl/Import.h>
 #include <ripple/basics/chrono.h>
+#include <ripple/basics/Log.h>
 #include <ripple/basics/UnorderedContainers.h>
 #include <ripple/json/json_value.h>
 #include <ripple/protocol/JsonFields.h>
 #include <beast/chrono/abstract_clock.h>
 #include <beast/Insight.h>
 #include <beast/utility/PropertyStream.h>
+#include <cassert>
 #include <mutex>
 
 namespace ripple {
@@ -130,7 +132,7 @@ public:
             }
         }
 
-        m_journal.debug <<
+        JLOG(m_journal.debug) <<
             "New inbound endpoint " << *entry;
 
         return Consumer (*this, *entry);
@@ -159,7 +161,7 @@ public:
             }
         }
 
-        m_journal.debug <<
+        JLOG(m_journal.debug) <<
             "New outbound endpoint " << *entry;
 
         return Consumer (*this, *entry);
@@ -193,7 +195,7 @@ public:
             }
         }
 
-        m_journal.debug <<
+        JLOG(m_journal.debug) <<
             "New unlimited endpoint " << *entry;
 
         return Consumer (*this, *entry);
@@ -345,7 +347,7 @@ public:
         {
             if (iter->whenExpires <= elapsed)
             {
-                m_journal.debug << "Expired " << *iter;
+                JLOG(m_journal.debug) << "Expired " << *iter;
                 auto table_iter =
                     table_.find (*iter->key);
                 ++iter;
@@ -411,7 +413,7 @@ public:
         std::lock_guard<std::recursive_mutex> _(lock_);
         if (--entry.refcount == 0)
         {
-            m_journal.debug <<
+            JLOG(m_journal.debug) <<
                 "Inactive " << entry;
 
             switch (entry.key->kind)
@@ -429,7 +431,7 @@ public:
                     admin_.iterator_to (entry));
                 break;
             default:
-                bassertfalse;
+                assert(false);
                 break;
             }
             inactive_.push_back (entry);
@@ -442,7 +444,7 @@ public:
         std::lock_guard<std::recursive_mutex> _(lock_);
         clock_type::time_point const now (m_clock.now());
         int const balance (entry.add (fee.cost(), now));
-        m_journal.trace <<
+        JLOG(m_journal.trace) <<
             "Charging " << entry << " for " << fee;
         return disposition (balance);
     }
@@ -463,10 +465,10 @@ public:
             entry.lastWarningTime = elapsed;
         }
         if (notify)
-            m_journal.info <<
-                "Load warning: " << entry;
-        if (notify)
+        {
+            JLOG(m_journal.info) << "Load warning: " << entry;
             ++m_stats.warn;
+        }
         return notify;
     }
 
@@ -481,7 +483,7 @@ public:
         int const balance (entry.balance (now));
         if (balance >= dropThreshold)
         {
-            m_journal.warning <<
+            JLOG(m_journal.warning) <<
                 "Consumer entry " << entry <<
                 " dropped with balance " << balance <<
                 " at or above drop threshold " << dropThreshold;

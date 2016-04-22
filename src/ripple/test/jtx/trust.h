@@ -31,7 +31,15 @@ namespace jtx {
 /** Modify a trust line. */
 Json::Value
 trust (Account const& account,
-    STAmount const& amount);
+    STAmount const& amount,
+       std::uint32_t flags=0);
+
+/** Change flags on a trust line. */
+Json::Value
+trust (Account const& account,
+    STAmount const& amount,
+    Account const& peer,
+    std::uint32_t flags);
 
 } // jtx
 } // test

@@ -18,10 +18,34 @@
 //==============================================================================
 
 #include <ripple/server/Port.h>
+#include <beast/http/rfc2616.h>
+#include <beast/module/core/text/LexicalCast.h>
 
 namespace ripple {
-namespace HTTP {
-        
+
+bool
+Port::websockets() const
+{
+    return protocol.count("ws") > 0 || protocol.count("wss") > 0;
+}
+
+bool
+Port::secure() const
+{
+    return protocol.count("peer") > 0 ||
+        protocol.count("https") > 0 || protocol.count("wss") > 0;
+}
+
+std::string
+Port::protocols() const
+{
+    std::string s;
+    for (auto iter = protocol.cbegin();
+            iter != protocol.cend(); ++iter)
+        s += (iter != protocol.cbegin() ? "," : "") + *iter;
+    return s;
+}
+
 std::ostream&
 operator<< (std::ostream& os, Port const& p)
 {
@@ -45,5 +69,157 @@ operator<< (std::ostream& os, Port const& p)
     return os;
 }
 
-} // HTTP
+//------------------------------------------------------------------------------
+
+static
+void
+populate (Section const& section, std::string const& field, std::ostream& log,
+    boost::optional<std::vector<beast::IP::Address>>& ips,
+    bool allowAllIps, std::vector<beast::IP::Address> const& admin_ip)
+{
+    auto const result = section.find(field);
+    if (result.second)
+    {
+        std::stringstream ss (result.first);
+        std::string ip;
+        bool has_any (false);
+
+        ips.emplace();
+        while (std::getline (ss, ip, ','))
+        {
+            auto const addr = beast::IP::Endpoint::from_string_checked (ip);
+            if (! addr.second)
+            {
+                log << "Invalid value '" << ip << "' for key '" << field <<
+                    "' in [" << section.name () << "]\n";
+                Throw<std::exception> ();
+            }
+
+            if (is_unspecified (addr.first))
+            {
+                if (! allowAllIps)
+                {
+                    log << "0.0.0.0 not allowed'" <<
+                        "' for key '" << field << "' in [" <<
+                        section.name () << "]\n";
+                    throw std::exception ();
+                }
+                else
+                {
+                    has_any = true;
+                }
+            }
+
+            if (has_any && ! ips->empty ())
+            {
+                log << "IP specified along with 0.0.0.0 '" << ip <<
+                    "' for key '" << field << "' in [" <<
+                    section.name () << "]\n";
+                Throw<std::exception> ();
+            }
+
+            auto const& address = addr.first.address();
+            if (std::find_if (admin_ip.begin(), admin_ip.end(),
+                [&address] (beast::IP::Address const& ip)
+                {
+                    return address == ip;
+                }
+                ) != admin_ip.end())
+            {
+                log << "IP specified for " << field << " is also for " <<
+                    "admin: " << ip << " in [" << section.name() << "]\n";
+                throw std::exception();
+            }
+
+            ips->emplace_back (addr.first.address ());
+        }
+    }
+}
+
+void
+parse_Port (ParsedPort& port, Section const& section, std::ostream& log)
+{
+    {
+        auto result = section.find("ip");
+        if (result.second)
+        {
+            try
+            {
+                port.ip = boost::asio::ip::address::from_string(result.first);
+            }
+            catch (std::exception const&)
+            {
+                log << "Invalid value '" << result.first <<
+                    "' for key 'ip' in [" << section.name() << "]\n";
+                Throw();
+            }
+        }
+    }
+
+    {
+        auto const result = section.find("port");
+        if (result.second)
+        {
+            try
+            {
+                port.port =
+                    beast::lexicalCastThrow<std::uint16_t>(result.first);
+
+                // Port 0 is not supported
+                if (*port.port == 0)
+                    Throw<std::exception> ();
+            }
+            catch (std::exception const& ex)
+            {
+                log <<
+                    "Invalid value '" << result.first << "' for key " <<
+                    "'port' in [" << section.name() << "]\n";
+                Throw();
+            }
+        }
+    }
+
+    {
+        auto const result = section.find("protocol");
+        if (result.second)
+        {
+            for (auto const& s : beast::rfc2616::split_commas(
+                    result.first.begin(), result.first.end()))
+                port.protocol.insert(s);
+        }
+    }
+
+    {
+        auto const lim = get (section, "limit", "unlimited");
+
+        if (!beast::ci_equal (lim, "unlimited"))
+        {
+            try
+            {
+                port.limit = static_cast<int> (
+                    beast::lexicalCastThrow<std::uint16_t>(lim));
+            }
+            catch (std::exception const& ex)
+            {
+                log <<
+                    "Invalid value '" << lim << "' for key " <<
+                    "'limit' in [" << section.name() << "]\n";
+                Throw();
+            }
+        }
+    }
+
+    populate (section, "admin", log, port.admin_ip, true, {});
+    populate (section, "secure_gateway", log, port.secure_gateway_ip, false,
+        port.admin_ip.get_value_or({}));
+
+    set(port.user, "user", section);
+    set(port.password, "password", section);
+    set(port.admin_user, "admin_user", section);
+    set(port.admin_password, "admin_password", section);
+    set(port.ssl_key, "ssl_key", section);
+    set(port.ssl_cert, "ssl_cert", section);
+    set(port.ssl_chain, "ssl_chain", section);
+}
+
 } // ripple

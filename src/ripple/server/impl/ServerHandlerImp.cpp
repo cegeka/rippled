@@ -28,6 +28,7 @@
 #include <ripple/basics/Log.h>
 #include <ripple/basics/make_SSLContext.h>
 #include <ripple/core/JobQueue.h>
+#include <ripple/json/to_string.h>
 #include <ripple/server/make_Server.h>
 #include <ripple/overlay/Overlay.h>
 #include <ripple/resource/ResourceManager.h>
@@ -47,7 +48,6 @@ namespace ripple {
 
 ServerHandler::ServerHandler (Stoppable& parent)
     : Stoppable ("ServerHandler", parent)
-    , Source ("server")
 {
 }
 
@@ -62,7 +62,7 @@ ServerHandlerImp::ServerHandlerImp (Application& app, Stoppable& parent,
     , m_resourceManager (resourceManager)
     , m_journal (app_.journal("Server"))
     , m_networkOPs (networkOPs)
-    , m_server (HTTP::make_Server(
+    , m_server (make_Server(
         *this, io_service, app_.journal("Server")))
     , m_jobQueue (jobQueue)
 {
@@ -94,20 +94,27 @@ ServerHandlerImp::onStop()
 
 //------------------------------------------------------------------------------
 
-void
-ServerHandlerImp::onAccept (HTTP::Session& session)
-{
-}
-
 bool
-ServerHandlerImp::onAccept (HTTP::Session& session,
+ServerHandlerImp::onAccept (Session& session,
     boost::asio::ip::tcp::endpoint endpoint)
 {
+    std::lock_guard<std::mutex> l(countlock_);
+
+    auto const c = ++count_[session.port()];
+
+    if (session.port().limit && c >= session.port().limit)
+    {
+        JLOG (m_journal.trace) <<
+            session.port().name << " is full; dropping " <<
+            endpoint;
+        return false;
+    }
+
     return true;
 }
 
 auto
-ServerHandlerImp::onHandoff (HTTP::Session& session,
+ServerHandlerImp::onHandoff (Session& session,
     std::unique_ptr <beast::asio::ssl_bundle>&& bundle,
         beast::http::message&& request,
             boost::asio::ip::tcp::endpoint remote_address) ->
@@ -129,7 +136,7 @@ ServerHandlerImp::onHandoff (HTTP::Session& session,
 }
 
 auto
-ServerHandlerImp::onHandoff (HTTP::Session& session,
+ServerHandlerImp::onHandoff (Session& session,
     boost::asio::ip::tcp::socket&& socket,
         beast::http::message&& request,
             boost::asio::ip::tcp::endpoint remote_address) ->
@@ -148,7 +155,7 @@ ServerHandlerImp::onHandoff (HTTP::Session& session,
 }
 
 static inline
-Json::Output makeOutput (HTTP::Session& session)
+Json::Output makeOutput (Session& session)
 {
     return [&](boost::string_ref const& b)
     {
@@ -157,7 +164,7 @@ Json::Output makeOutput (HTTP::Session& session)
 }
 
 void
-ServerHandlerImp::onRequest (HTTP::Session& session)
+ServerHandlerImp::onRequest (Session& session)
 {
     // Make sure RPC is enabled on the port
     if (session.port().protocol.count("http") == 0 &&
@@ -185,13 +192,15 @@ ServerHandlerImp::onRequest (HTTP::Session& session)
 }
 
 void
-ServerHandlerImp::onClose (HTTP::Session& session,
+ServerHandlerImp::onClose (Session& session,
     boost::system::error_code const&)
 {
+    std::lock_guard<std::mutex> l(countlock_);
+    --count_[session.port()];
 }
 
 void
-ServerHandlerImp::onStopped (HTTP::Server&)
+ServerHandlerImp::onStopped (Server&)
 {
     stopped();
 }
@@ -200,12 +209,29 @@ ServerHandlerImp::onStopped (HTTP::Server&)
 
 // Run as a couroutine.
 void
-ServerHandlerImp::processSession (std::shared_ptr<HTTP::Session> const& session,
+ServerHandlerImp::processSession (std::shared_ptr<Session> const& session,
     std::shared_ptr<JobCoro> jobCoro)
 {
     processRequest (session->port(), to_string (session->body()),
         session->remoteAddress().at_port (0), makeOutput (*session), jobCoro,
-        session->forwarded_for(), session->user());
+        [&]
+        {
+            auto const iter =
+                session->request().headers.find(
+                    "X-Forwarded-For");
+            if(iter != session->request().headers.end())
+                return iter->second;
+            return std::string{};
+        }(),
+        [&]
+        {
+            auto const iter =
+                session->request().headers.find(
+                    "X-User");
+            if(iter != session->request().headers.end())
+                return iter->second;
+            return std::string{};
+        }());
 
     if (session->request().keep_alive())
         session->complete();
@@ -214,14 +240,12 @@ ServerHandlerImp::processSession (std::shared_ptr<HTTP::Session> const& session,
 }
 
 void
-ServerHandlerImp::processRequest (HTTP::Port const& port,
+ServerHandlerImp::processRequest (Port const& port,
     std::string const& request, beast::IP::Endpoint const& remoteIPAddress,
         Output&& output, std::shared_ptr<JobCoro> jobCoro,
         std::string forwardedFor, std::string user)
 {
     auto rpcJ = app_.journal ("RPC");
-    // Move off the webserver thread onto the JobQueue.
-    assert (app_.getJobQueue().getJobForThread());
 
     Json::Value jsonRPC;
     {
@@ -340,7 +364,7 @@ ServerHandlerImp::processRequest (HTTP::Port const& port,
 
     Resource::Charge loadType = Resource::feeReferenceRPC;
 
-    m_journal.debug << "Query: " << strMethod << params;
+    JLOG(m_journal.debug) << "Query: " << strMethod << params;
 
     // Provide the JSON-RPC method as the field "command" in the request.
     params[jss::command] = strMethod;
@@ -409,7 +433,7 @@ ServerHandlerImp::isWebsocketUpgrade (beast::http::message const& request)
 
 // VFALCO TODO Rewrite to use beast::http::headers
 bool
-ServerHandlerImp::authorized (HTTP::Port const& port,
+ServerHandlerImp::authorized (Port const& port,
     std::map<std::string, std::string> const& h)
 {
     if (port.user.empty() || port.password.empty())
@@ -427,14 +451,6 @@ ServerHandlerImp::authorized (HTTP::Port const& port,
     std::string strUser = strUserPass.substr (0, nColon);
     std::string strPassword = strUserPass.substr (nColon + 1);
     return strUser == port.user && strPassword == port.password;
-}
-
-//------------------------------------------------------------------------------
-
-void
-ServerHandlerImp::onWrite (beast::PropertyStream::Map& map)
-{
-    m_server->onWrite (map);
 }
 
 //------------------------------------------------------------------------------
@@ -469,159 +485,11 @@ ServerHandler::Setup::makeContexts()
     }
 }
 
-namespace detail {
-
-// Intermediate structure used for parsing
-struct ParsedPort
-{
-    std::string name;
-    std::set<std::string, beast::ci_less> protocol;
-    std::string user;
-    std::string password;
-    std::string admin_user;
-    std::string admin_password;
-    std::string ssl_key;
-    std::string ssl_cert;
-    std::string ssl_chain;
-
-    boost::optional<boost::asio::ip::address> ip;
-    boost::optional<std::uint16_t> port;
-    boost::optional<std::vector<beast::IP::Address>> admin_ip;
-    boost::optional<std::vector<beast::IP::Address>> secure_gateway_ip;
-};
-
-void
-populate (Section const& section, std::string const& field, std::ostream& log,
-    boost::optional<std::vector<beast::IP::Address>>& ips,
-    bool allowAllIps, std::vector<beast::IP::Address> const& admin_ip)
-{
-    auto const result = section.find(field);
-    if (result.second)
-    {
-        std::stringstream ss (result.first);
-        std::string ip;
-        bool has_any (false);
-
-        ips.emplace();
-        while (std::getline (ss, ip, ','))
-        {
-            auto const addr = beast::IP::Endpoint::from_string_checked (ip);
-            if (! addr.second)
-            {
-                log << "Invalid value '" << ip << "' for key '" << field <<
-                    "' in [" << section.name () << "]\n";
-                Throw<std::exception> ();
-            }
-
-            if (is_unspecified (addr.first))
-            {
-                if (! allowAllIps)
-                {
-                    log << "0.0.0.0 not allowed'" <<
-                        "' for key '" << field << "' in [" <<
-                        section.name () << "]\n";
-                    throw std::exception ();
-                }
-                else
-                {
-                    has_any = true;
-                }
-            }
-
-            if (has_any && ! ips->empty ())
-            {
-                log << "IP specified along with 0.0.0.0 '" << ip <<
-                    "' for key '" << field << "' in [" <<
-                    section.name () << "]\n";
-                Throw<std::exception> ();
-            }
-
-            auto const& address = addr.first.address();
-            if (std::find_if (admin_ip.begin(), admin_ip.end(),
-                [&address] (beast::IP::Address const& ip)
-                {
-                    return address == ip;
-                }
-                ) != admin_ip.end())
-            {
-                log << "IP specified for " << field << " is also for " <<
-                    "admin: " << ip << " in [" << section.name() << "]\n";
-                throw std::exception();
-            }
-
-            ips->emplace_back (addr.first.address ());
-        }
-    }
-}
-
-void
-parse_Port (ParsedPort& port, Section const& section, std::ostream& log)
-{
-    {
-        auto result = section.find("ip");
-        if (result.second)
-        {
-            try
-            {
-                port.ip = boost::asio::ip::address::from_string(result.first);
-            }
-            catch (std::exception const&)
-            {
-                log << "Invalid value '" << result.first <<
-                    "' for key 'ip' in [" << section.name() << "]\n";
-                Throw();
-            }
-        }
-    }
-
-    {
-        auto const result = section.find("port");
-        if (result.second)
-        {
-            auto const ul = std::stoul(result.first);
-            if (ul > std::numeric_limits<std::uint16_t>::max())
-            {
-                log << "Value '" << result.first
-                    << "' for key 'port' is out of range\n";
-                Throw<std::exception> ();
-            }
-            if (ul == 0)
-            {
-                log <<
-                    "Value '0' for key 'port' is invalid\n";
-                Throw<std::exception> ();
-            }
-            port.port = static_cast<std::uint16_t>(ul);
-        }
-    }
-
-    {
-        auto const result = section.find("protocol");
-        if (result.second)
-        {
-            for (auto const& s : beast::rfc2616::split_commas(
-                    result.first.begin(), result.first.end()))
-                port.protocol.insert(s);
-        }
-    }
-
-    populate (section, "admin", log, port.admin_ip, true, {});
-    populate (section, "secure_gateway", log, port.secure_gateway_ip, false,
-        port.admin_ip.get_value_or({}));
-
-    set(port.user, "user", section);
-    set(port.password, "password", section);
-    set(port.admin_user, "admin_user", section);
-    set(port.admin_password, "admin_password", section);
-    set(port.ssl_key, "ssl_key", section);
-    set(port.ssl_cert, "ssl_cert", section);
-    set(port.ssl_chain, "ssl_chain", section);
-}
-
-HTTP::Port
+static
+Port
 to_Port(ParsedPort const& parsed, std::ostream& log)
 {
-    HTTP::Port p;
+    Port p;
     p.name = parsed.name;
 
     if (! parsed.ip)
@@ -673,12 +541,13 @@ to_Port(ParsedPort const& parsed, std::ostream& log)
     return p;
 }
 
-std::vector<HTTP::Port>
+static
+std::vector<Port>
 parse_Ports (
     Config const& config,
     std::ostream& log)
 {
-    std::vector<HTTP::Port> result;
+    std::vector<Port> result;
 
     if (! config.exists("server"))
     {
@@ -726,7 +595,7 @@ parse_Ports (
     {
         auto const count = std::count_if (
             result.cbegin(), result.cend(),
-            [](HTTP::Port const& p)
+            [](Port const& p)
             {
                 return p.protocol.count("peer") != 0;
             });
@@ -745,6 +614,7 @@ parse_Ports (
 }
 
 // Fill out the client portion of the Setup
+static
 void
 setup_Client (ServerHandler::Setup& setup)
 {
@@ -770,12 +640,13 @@ setup_Client (ServerHandler::Setup& setup)
 }
 
 // Fill out the overlay portion of the Setup
+static
 void
 setup_Overlay (ServerHandler::Setup& setup)
 {
     auto const iter = std::find_if(
         setup.ports.cbegin(), setup.ports.cend(),
-        [](HTTP::Port const& port)
+        [](Port const& port)
         {
             return port.protocol.count("peer") != 0;
         });
@@ -788,18 +659,16 @@ setup_Overlay (ServerHandler::Setup& setup)
     setup.overlay.port = iter->port;
 }
 
-}
-
 ServerHandler::Setup
 setup_ServerHandler(
     Config const& config,
     std::ostream& log)
 {
     ServerHandler::Setup setup;
-    setup.ports = detail::parse_Ports(config, log);
+    setup.ports = parse_Ports(config, log);
 
-    detail::setup_Client(setup);
-    detail::setup_Overlay(setup);
+    setup_Client(setup);
+    setup_Overlay(setup);
 
     return setup;
 }
@@ -814,4 +683,4 @@ make_ServerHandler (Application& app, beast::Stoppable& parent,
         io_service, jobQueue, networkOPs, resourceManager, cm);
 }
 
-}
+} // ripple

@@ -75,9 +75,10 @@ JSS ( action );
 JSS ( acquiring );                  // out: LedgerRequest
 JSS ( address );                    // out: PeerImp
 JSS ( affected );                   // out: AcceptedLedgerTx
-JSS ( age );                        // out: UniqueNodeList, NetworkOPs, Peers
+JSS ( age );                        // out: NetworkOPs, Peers
 JSS ( alternatives );               // out: PathRequest, RipplePathFind
 JSS ( amendment_blocked );          // out: NetworkOPs
+JSS ( amendments );                 // in: AccountObjects
 JSS ( asks );                       // out: Subscribe
 JSS ( assets );                     // out: GatewayBalances
 JSS ( authorized );                 // out: AccountLines
@@ -145,6 +146,7 @@ JSS ( enabled );                    // out: AmendmentTable
 JSS ( engine_result );              // out: NetworkOPs, TransactionSign, Submit
 JSS ( engine_result_code );         // out: NetworkOPs, TransactionSign, Submit
 JSS ( engine_result_message );      // out: NetworkOPs, TransactionSign, Submit
+JSS ( ephemeral );                  // out: UnlList
 JSS ( error );                      // out: error
 JSS ( error_code );                 // out: error
 JSS ( error_exception );            // out: Submit
@@ -175,6 +177,7 @@ JSS ( generator );                  // in: LedgerEntry
 JSS ( good );                       // out: RPCVersion
 JSS ( hash );                       // out: NetworkOPs, InboundLedger,
                                     //      LedgerToJson, STTx; field
+JSS ( hashes );                     // in: AccountObjects
 JSS ( have_header );                // out: InboundLedger
 JSS ( have_state );                 // out: InboundLedger
 JSS ( have_transactions );          // out: InboundLedger
@@ -233,6 +236,7 @@ JSS ( load_factor_net );            // out: NetworkOPs
 JSS ( load_fee );                   // out: LoadFeeTrackImp
 JSS ( local );                      // out: resource/Logic.h
 JSS ( local_txs );                  // out: GetCounts
+JSS ( majority );                   // out: RPC feature
 JSS ( marker );                     // in/out: AccountTx, AccountOffers,
                                     //         AccountLines, AccountObjects,
                                     //         LedgerData
@@ -338,6 +342,9 @@ JSS ( server_state );               // out: NetworkOPs
 JSS ( server_status );              // out: NetworkOPs
 JSS ( severity );                   // in: LogLevel
 JSS ( signature );                  // out: NetworkOPs
+JSS ( signing_key );                // out: NetworkOPs
+JSS ( signer_list );                // in: AccountObjects
+JSS ( signer_lists );               // in/out: AccountInfo
 JSS ( snapshot );                   // in: Subscribe
 JSS ( source_account );             // in: PathRequest, RipplePathFind
 JSS ( source_amount );              // in: PathRequest, RipplePathFind
@@ -363,6 +370,7 @@ JSS ( taker_gets_funded );          // out: NetworkOPs
 JSS ( taker_pays );                 // in: Subscribe, Unsubscribe, BookOffers
 JSS ( taker_pays_funded );          // out: NetworkOPs
 JSS ( threshold );                  // in: Blacklist
+JSS ( ticket );                     // in: AccountObjects
 JSS ( timeouts );                   // out: InboundLedger
 JSS ( traffic );                    // out: Overlay
 JSS ( totalCoins );                 // out: LedgerToJson
@@ -406,6 +414,7 @@ JSS ( validation_key );             // out: ValidationCreate, ValidationSeed
 JSS ( validation_public_key );      // out: ValidationCreate, ValidationSeed
 JSS ( validation_quorum );          // out: NetworkOPs
 JSS ( validation_seed );            // out: ValidationCreate, ValidationSeed
+JSS ( validations );                // out: AmendmentTableImpl
 JSS ( value );                      // out: STAmount
 JSS ( version );                    // out: RPCVersion
 JSS ( vetoed );                     // out: AmendmentTableImpl

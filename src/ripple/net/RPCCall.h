@@ -25,6 +25,7 @@
 #include <boost/asio/io_service.hpp>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ripple {
@@ -52,6 +53,17 @@ void fromNetwork (
     Logs& logs,
     std::function<void (Json::Value const& jvInput)> callbackFuncP = std::function<void (Json::Value const& jvInput)> ());
 }
+
+/** Given a rippled command line, return the corresponding JSON.
+*/
+Json::Value
+cmdLineToJSONRPC (std::vector<std::string> const& args, beast::Journal j);
+
+/** Internal invocation of RPC client.
+*/
+std::pair<int, Json::Value>
+rpcClient(std::vector<std::string> const& args,
+    Config const& config, Logs& logs);
 
 } // ripple
 

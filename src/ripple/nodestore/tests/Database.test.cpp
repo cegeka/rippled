@@ -22,6 +22,7 @@
 #include <ripple/nodestore/DummyScheduler.h>
 #include <ripple/nodestore/Manager.h>
 #include <beast/module/core/diagnostic/UnitTestUtilities.h>
+#include <algorithm>
 
 namespace ripple {
 namespace NodeStore {
@@ -34,14 +35,14 @@ public:
     {
         DummyScheduler scheduler;
 
-        beast::UnitTestUtilities::TempDirectory node_db ("node_db");
+        beast::UnitTestUtilities::TempDirectory node_db;
         Section srcParams;
         srcParams.set ("type", srcBackendType);
-        srcParams.set ("path", node_db.getFullPathName ().toStdString ());
+        srcParams.set ("path", node_db.path());
 
         // Create a batch
-        Batch batch;
-        createPredictableBatch (batch, numObjectsToTest, seedValue);
+        auto batch = createPredictableBatch (
+            numObjectsToTest, seedValue);
 
         beast::Journal j;
 
@@ -60,10 +61,10 @@ public:
                 "test", scheduler, j, 2, srcParams);
 
             // Set up the destination database
-            beast::UnitTestUtilities::TempDirectory dest_db ("dest_db");
+            beast::UnitTestUtilities::TempDirectory dest_db;
             Section destParams;
             destParams.set ("type", destBackendType);
-            destParams.set ("path", dest_db.getFullPathName ().toStdString ());
+            destParams.set ("path", dest_db.path());
 
             std::unique_ptr <Database> dest = Manager::instance().make_Database (
                 "test", scheduler, j, 2, destParams);
@@ -97,14 +98,16 @@ public:
 
         testcase (s);
 
-        beast::UnitTestUtilities::TempDirectory node_db ("node_db");
+        beast::UnitTestUtilities::TempDirectory node_db;
         Section nodeParams;
         nodeParams.set ("type", type);
-        nodeParams.set ("path", node_db.getFullPathName ().toStdString ());
+        nodeParams.set ("path", node_db.path());
+
+        beast::xor_shift_engine rng (seedValue);
 
         // Create a batch
-        Batch batch;
-        createPredictableBatch (batch, numObjectsToTest, seedValue);
+        auto batch = createPredictableBatch (
+            numObjectsToTest, rng());
 
         beast::Journal j;
 
@@ -125,8 +128,11 @@ public:
 
             {
                 // Reorder and read the copy again
+                std::shuffle (
+                    batch.begin(),
+                    batch.end(),
+                    rng);
                 Batch copy;
-                beast::UnitTestUtilities::repeatableShuffle (batch.size (), batch, seedValue);
                 fetchCopyOfBatch (*db, &copy, batch);
                 expect (areBatchesEqual (batch, copy), "Should be equal");
             }

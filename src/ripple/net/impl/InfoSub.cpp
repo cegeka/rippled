@@ -56,6 +56,7 @@ InfoSub::~InfoSub ()
     m_source.unsubTransactions (mSeq);
     m_source.unsubRTTransactions (mSeq);
     m_source.unsubLedger (mSeq);
+    m_source.unsubManifests (mSeq);
     m_source.unsubServer (mSeq);
     m_source.unsubValidations (mSeq);
     m_source.unsubPeerStatus (mSeq);
@@ -74,12 +75,6 @@ InfoSub::~InfoSub ()
 Resource::Consumer& InfoSub::getConsumer()
 {
     return m_consumer;
-}
-
-void InfoSub::send (
-    Json::Value const& jvObj, std::string const& sObj, bool broadcast)
-{
-    send (jvObj, broadcast);
 }
 
 std::uint64_t InfoSub::getSeq ()

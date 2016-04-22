@@ -24,9 +24,9 @@
 #ifndef BEAST_THREADS_THREAD_H_INCLUDED
 #define BEAST_THREADS_THREAD_H_INCLUDED
 
-#include <beast/threads/RecursiveMutex.h>
 #include <beast/threads/WaitableEvent.h>
 
+#include <mutex>
 #include <string>
 
 namespace beast {
@@ -39,7 +39,7 @@ namespace beast {
     do their business. The thread can then be started with the startThread() method
     and controlled with various other methods.
 
-    @see CriticalSection, WaitableEvent, Process, ThreadWithProgressWindow,
+    @see WaitableEvent, Process, ThreadWithProgressWindow,
          MessageManagerLock
 */
 class Thread
@@ -168,7 +168,7 @@ private:
     //==============================================================================
     std::string const threadName;
     void* volatile threadHandle;
-    RecursiveMutex startStopLock;
+    std::recursive_mutex startStopLock;
     WaitableEvent startSuspensionEvent, defaultEvent;
     bool volatile shouldExit;
 

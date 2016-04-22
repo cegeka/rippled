@@ -43,7 +43,9 @@
 #include <boost/scoped_ptr.hpp>
 #include <boost/thread/recursive_mutex.hpp>
 
+#include <condition_variable>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 
@@ -244,6 +246,9 @@ public:
        m_state(IDLE),
        m_timer(m,boost::posix_time::seconds(0)) {}
 
+    // Block until listening
+    void wait_for_listen();
+
     void start_listen(uint16_t port, size_t num_threads = 1);
     void start_listen(const boost::asio::ip::tcp::endpoint& e, size_t num_threads = 1);
     // uses internal resolver
@@ -307,7 +312,18 @@ private:
     boost::asio::deadline_timer     m_timer;
 
     std::vector< boost::shared_ptr<std::thread> > m_listening_threads;
+
+    bool listened_ = false;
+    std::mutex m_;
+    std::condition_variable cv_;
 };
+
+template <class endpoint>
+void server<endpoint>::wait_for_listen()
+{
+    std::unique_lock<std::mutex> lock(m_);
+    cv_.wait(lock, [&]{ return listened_; });
+}
 
 template <class endpoint>
 void server<endpoint>::start_listen(const boost::asio::ip::tcp::endpoint& e,size_t num_threads) {
@@ -322,6 +338,12 @@ void server<endpoint>::start_listen(const boost::asio::ip::tcp::endpoint& e,size
         m_acceptor.set_option(boost::asio::socket_base::reuse_address(true));
         m_acceptor.bind(e);
         m_acceptor.listen();
+
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            listened_ = true;
+            cv_.notify_all();
+        }
 
         this->start_accept();
     }
@@ -365,7 +387,7 @@ void server<endpoint>::stop_listen(bool join) {
 			throw exception("stop_listen called from invalid state");
 		}
 
-		m_acceptor.close();
+        m_acceptor.close();
 	}
 
     if(join) {
@@ -892,7 +914,8 @@ void server<endpoint>::connection<connection_type>::handle_write_response(
         return;
     }
 
-    if (m_response.get_status_code() != http::status_code::SWITCHING_PROTOCOLS) {
+    if (m_response.get_status_code() != http::status_code::SWITCHING_PROTOCOLS ||
+        m_connection.m_state == session::state::CLOSED) {
         if (m_version == -1) {
             // if this was not a websocket connection, we have written
             // the expected response and the connection can be closed.

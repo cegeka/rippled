@@ -26,6 +26,7 @@
 #include <ripple/core/Job.h>
 #include <atomic>
 #include <mutex>
+#include <vector>
 
 namespace ripple {
 
@@ -45,7 +46,7 @@ public:
     void updateAll (std::shared_ptr<ReadView const> const& ledger,
                     Job::CancelCallback shouldCancel);
 
-    RippleLineCache::pointer getLineCache (
+    std::shared_ptr<RippleLineCache> getLineCache (
         std::shared_ptr <ReadView const> const& ledger, bool authoritative);
 
     Json::Value makePathRequest (
@@ -59,14 +60,14 @@ public:
         std::shared_ptr<ReadView const> const& inLedger,
         Json::Value const& request);
 
-    void reportFast (int milliseconds)
+    void reportFast (std::chrono::milliseconds ms)
     {
-        mFast.notify (static_cast < beast::insight::Event::value_type> (milliseconds));
+        mFast.notify (ms);
     }
 
-    void reportFull (int milliseconds)
+    void reportFull (std::chrono::milliseconds ms)
     {
-        mFull.notify (static_cast < beast::insight::Event::value_type> (milliseconds));
+        mFull.notify (ms);
     }
 
 private:
@@ -79,10 +80,10 @@ private:
     beast::insight::Event            mFull;
 
     // Track all requests
-    std::vector<PathRequest::wptr>   mRequests;
+    std::vector<PathRequest::wptr> requests_;
 
     // Use a RippleLineCache
-    RippleLineCache::pointer         mLineCache;
+    std::shared_ptr<RippleLineCache>         mLineCache;
 
     std::atomic<int>                 mLastIdentifier;
 

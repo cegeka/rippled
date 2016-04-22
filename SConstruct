@@ -61,10 +61,16 @@ The following environment variables modify the build environment:
       Path to the boost directory.
     OPENSSL_ROOT
       Path to the openssl directory.
-    PROTOBUF_DIR
-      Path to the protobuf directory. This is usually only needed when
-      the installed protobuf library uses a different ABI than clang
-      (as with ubuntu 15.10).
+    PROTOBUF_ROOT
+      Path to the protobuf directory.
+    CLANG_PROTOBUF_ROOT
+      Override the path to the protobuf directory for the clang toolset. This is
+      usually only needed when the installed protobuf library uses a different
+      ABI than clang (as with ubuntu 15.10).
+    CLANG_BOOST_ROOT
+      Override the path to the boost directory for the clang toolset. This is
+      usually only needed when the installed protobuf library uses a different
+      ABI than clang (as with ubuntu 15.10).
 
 The following extra options may be used:
     --ninja         Generate a `build.ninja` build file for the specified target
@@ -72,6 +78,8 @@ The following extra options may be used:
                      are supported.
 
     --static        On linux, link protobuf, openssl, libc++, and boost statically
+
+    --sanitize=[address, thread]  On gcc & clang, add sanitizer instrumentation
 
 GCC 5: If the gcc toolchain is used, gcc version 5 or better is required. On
     linux distros that ship with gcc 4 (ubuntu < 15.10), rippled will force gcc
@@ -121,6 +129,9 @@ import scons_to_ninja
 
 AddOption('--ninja', dest='ninja', action='store_true',
           help='generate ninja build file build.ninja')
+
+AddOption('--sanitize', dest='sanitize', choices=['address', 'thread'],
+          help='Build with sanitizer support (gcc and clang only).')
 
 AddOption('--static', dest='static', action='store_true',
           help='On linux, link protobuf, openssl, libc++, and boost statically')
@@ -348,23 +359,8 @@ def config_base(env):
         ,{'HAVE_USLEEP' : '1'}
         ,{'SOCI_CXX_C11' : '1'}
         ,'_SILENCE_STDEXT_HASH_DEPRECATION_WARNINGS'
-        ,'-DBOOST_NO_AUTO_PTR'
+        ,'BOOST_NO_AUTO_PTR'
         ])
-
-    try:
-        BOOST_ROOT = os.path.normpath(os.environ['BOOST_ROOT'])
-        env.Append(LIBPATH=[
-            os.path.join(BOOST_ROOT, 'stage', 'lib'),
-            ])
-        env['BOOST_ROOT'] = BOOST_ROOT
-    except KeyError:
-        pass
-
-    try:
-        protobuf_dir = os.environ['PROTOBUF_DIR']
-        env.Append(LIBPATH=[protobuf_dir])
-    except KeyError:
-        pass
 
     if Beast.system.windows:
         try:
@@ -400,7 +396,7 @@ def add_static_libs(env, static_libs, dyn_libs=None):
     for k,l in [('STATICLIBS', static_libs or []), ('DYNAMICLIBS', dyn_libs or [])]:
         c = env.get(k, '')
         for f in l:
-            c += ' -l' + f 
+            c += ' -l' + f
         env[k] = c
 
 def get_libs(lib, static):
@@ -425,33 +421,77 @@ def get_libs(lib, static):
             else:
                 static_libs.append(l)
         return (static_libs, dynamic_libs)
-    except:
-        raise Exception('pkg-config failed for ' + lib)
+    except Exception as e:
+        raise Exception('pkg-config failed for ' + lib + '; Exception: ' + str(e))
 
-# Set toolchain and variant specific construction variables
-def config_env(toolchain, variant, env):
-    if is_debug_variant(variant):
-        env.Append(CPPDEFINES=['DEBUG', '_DEBUG'])
+def add_sanitizer (toolchain, env):
+    san = GetOption('sanitize')
+    if not san: return
+    san_to_lib = {'address': 'asan', 'thread': 'tsan'}
+    if toolchain not in Split('clang gcc'):
+        raise Exception("Sanitizers are only supported for gcc and clang")
+    env.Append(CCFLAGS=['-fsanitize='+san, '-fno-omit-frame-pointer'])
+    env.Append(LINKFLAGS=['-fsanitize='+san])
+    add_static_libs(env, [san_to_lib[san]])
+    env.Append(CPPDEFINES=['SANITIZER='+san_to_lib[san].upper()])
 
-    elif variant == 'release' or variant == 'profile':
-        env.Append(CPPDEFINES=['NDEBUG'])
+def add_boost_and_protobuf(toolchain, env):
+    def get_environ_value(candidates):
+        for c in candidates:
+            try:
+                return os.environ[c]
+            except KeyError:
+                pass
+        raise KeyError('Environment variable not set')
 
-    if 'BOOST_ROOT' in env:
+    try:
+        br_cands = ['CLANG_BOOST_ROOT'] if toolchain == 'clang' else []
+        br_cands.append('BOOST_ROOT')
+        BOOST_ROOT = os.path.normpath(get_environ_value(br_cands))
+        env.Append(LIBPATH=[
+            os.path.join(BOOST_ROOT, 'stage', 'lib'),
+            ])
+        env['BOOST_ROOT'] = BOOST_ROOT
         if toolchain == 'gcc':
             env.Append(CCFLAGS=['-isystem' + env['BOOST_ROOT']])
         else:
             env.Append(CPPPATH=[
                 env['BOOST_ROOT'],
                 ])
+    except KeyError:
+        pass
+
+    try:
+        pb_cands = ['CLANG_PROTOBUF_ROOT'] if toolchain == 'clang' else []
+        pb_cands.append('PROTOBUF_ROOT')
+        PROTOBUF_ROOT = os.path.normpath(get_environ_value(pb_cands))
+        env.Append(LIBPATH=[PROTOBUF_ROOT + '/src/.libs'])
+        if not should_link_static() and toolchain in['clang', 'gcc']:
+            env.Append(LINKFLAGS=['-Wl,-rpath,' + PROTOBUF_ROOT + '/src/.libs'])
+        env['PROTOBUF_ROOT'] = PROTOBUF_ROOT
+        env.Append(CPPPATH=[env['PROTOBUF_ROOT'] + '/src',])
+    except KeyError:
+        pass
+
+# Set toolchain and variant specific construction variables
+def config_env(toolchain, variant, env):
+    add_boost_and_protobuf(toolchain, env)
+    if is_debug_variant(variant):
+        env.Append(CPPDEFINES=['DEBUG', '_DEBUG'])
+
+    elif variant == 'release' or variant == 'profile':
+        env.Append(CPPDEFINES=['NDEBUG'])
 
     if should_link_static() and not Beast.system.linux:
         raise Exception("Static linking is only implemented for linux.")
+
+    add_sanitizer(toolchain, env)
 
     if toolchain in Split('clang gcc'):
         if Beast.system.linux:
             link_static = should_link_static()
             for l in ['openssl', 'protobuf']:
-                static, dynamic = get_libs(l, link_static) 
+                static, dynamic = get_libs(l, link_static)
                 if link_static:
                     add_static_libs(env, static, dynamic)
                 else:
@@ -643,6 +683,7 @@ def config_env(toolchain, variant, env):
             '_SCL_SECURE_NO_WARNINGS',
             '_CRT_SECURE_NO_WARNINGS',
             'WIN32_CONSOLE',
+            'NOMINMAX'
             ])
         if variant == 'debug':
             env.Append(LIBS=[
@@ -864,8 +905,8 @@ def get_classic_sources(toolchain):
     append_sources(result, *list_sources('src/ripple/protocol', '.cpp'))
     append_sources(result, *list_sources('src/ripple/rpc', '.cpp'))
     append_sources(result, *list_sources('src/ripple/shamap', '.cpp'))
+    append_sources(result, *list_sources('src/ripple/server', '.cpp'))
     append_sources(result, *list_sources('src/ripple/test', '.cpp'))
-    append_sources(result, *list_sources('src/ripple/unl', '.cpp'))
 
     if use_shp(toolchain):
         cc_flags = {'CCFLAGS': ['--system-header-prefix=rocksdb2']}
@@ -908,8 +949,8 @@ def get_unity_sources(toolchain):
         'src/ripple/unity/protocol.cpp',
         'src/ripple/unity/rpcx.cpp',
         'src/ripple/unity/shamap.cpp',
+        'src/ripple/unity/server.cpp',
         'src/ripple/unity/test.cpp',
-        'src/ripple/unity/unl.cpp',
     )
 
     if use_shp(toolchain):
@@ -1054,7 +1095,6 @@ for tu_style in ['classic', 'unity']:
                 'src/ripple/unity/protobuf.cpp',
                 'src/ripple/unity/ripple.proto.cpp',
                 'src/ripple/unity/resource.cpp',
-                'src/ripple/unity/server.cpp',
                 'src/ripple/unity/websocket02.cpp',
                 **cc_flags
             )
@@ -1095,11 +1135,6 @@ for tu_style in ['classic', 'unity']:
                     'src/snappy/snappy',
                     'src/snappy/config',
                 ]
-            )
-
-            object_builder.add_source_files(
-                'src/ripple/unity/websocket04.cpp',
-                CPPPATH='src/websocketpp',
             )
 
             if toolchain == "clang" and Beast.system.osx:

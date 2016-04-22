@@ -63,7 +63,7 @@ public:
     startRound (
         LedgerConsensus& ledgerConsensus,
         LedgerHash const& prevLCLHash,
-        Ledger::ref previousLedger,
+        std::shared_ptr<Ledger const> const& previousLedger,
         NetClock::time_point closeTime) override;
 
     void
@@ -72,7 +72,7 @@ public:
     void
     storeProposal (
         LedgerProposal::ref proposal,
-        RippleAddress const& peerPublic) override;
+        NodeID const& nodeID) override;
 
     void
     setProposing (bool p, bool v);

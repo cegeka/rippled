@@ -26,6 +26,7 @@
 #include <ripple/core/Config.h>
 #include <ripple/json/json_reader.h>
 #include <ripple/json/to_string.h>
+#include <ripple/json/Object.h>
 #include <ripple/net/HTTPClient.h>
 #include <ripple/protocol/JsonFields.h>
 #include <ripple/protocol/ErrorCodes.h>
@@ -34,6 +35,7 @@
 #include <ripple/protocol/types.h>
 #include <ripple/server/ServerHandler.h>
 #include <beast/module/core/text/LexicalCast.h>
+#include <beast/utility/ci_char_traits.h>
 #include <boost/asio/streambuf.hpp>
 #include <boost/regex.hpp>
 #include <iostream>
@@ -405,16 +407,28 @@ private:
         return rpcError (rpcNO_EVENTS);
     }
 
-    // feature [<feature>] [true|false]
+    // feature [<feature>] [accept|reject]
     Json::Value parseFeature (Json::Value const& jvParams)
     {
         Json::Value     jvRequest (Json::objectValue);
 
         if (jvParams.size () > 0)
-            jvRequest[jss::feature]    = jvParams[0u].asString ();
+            jvRequest[jss::feature] = jvParams[0u].asString ();
 
         if (jvParams.size () > 1)
-            jvRequest[jss::vote]       = beast::lexicalCastThrow <bool> (jvParams[1u].asString ());
+        {
+            auto const action = jvParams[1u].asString ();
+
+            // This may look reversed, but it's intentional: jss::vetoed
+            // determines whether an amendment is vetoed - so "reject" means
+            // that jss::vetoed is true.
+            if (beast::ci_equal(action, "reject"))
+                jvRequest[jss::vetoed] = Json::Value (true);
+            else if (beast::ci_equal(action, "accept"))
+                jvRequest[jss::vetoed] = Json::Value (false);
+            else
+                return rpcError (rpcINVALID_PARAMS);
+        }
 
         return jvRequest;
     }
@@ -585,11 +599,9 @@ private:
         if (bPeer && iCursor >= 2)
             strPeer = jvParams[iCursor].asString ();
 
-        RippleAddress   raAddress;
-
-        if (! raAddress.setAccountPublic (strIdent) &&
+        if (! parseBase58<PublicKey>(TokenType::TOKEN_ACCOUNT_PUBLIC, strIdent) &&
             ! parseBase58<AccountID>(strIdent) &&
-                ! raAddress.setSeedGeneric (strIdent))
+            ! parseGenericSeed(strIdent))
             return rpcError (rpcACT_MALFORMED);
 
         // Get info on account.
@@ -602,11 +614,9 @@ private:
 
         if (!strPeer.empty ())
         {
-            RippleAddress   raPeer;
-
-            if (! raPeer.setAccountPublic (strPeer) &&
+            if (! parseBase58<PublicKey>(TokenType::TOKEN_ACCOUNT_PUBLIC, strPeer) &&
                 ! parseBase58<AccountID>(strPeer) &&
-                    ! raPeer.setSeedGeneric (strPeer))
+                ! parseGenericSeed (strPeer))
                 return rpcError (rpcACT_MALFORMED);
 
             jvRequest["peer"]   = strPeer;
@@ -729,8 +739,6 @@ private:
     {
         std::string strNode     = jvParams[0u].asString ();
         std::string strComment  = (jvParams.size () == 2) ? jvParams[1u].asString () : "";
-
-        RippleAddress   naNodePublic;
 
         if (strNode.length ())
         {
@@ -885,10 +893,10 @@ public:
     // <-- { method: xyz, params: [... ] } or { error: ..., ... }
     Json::Value parseCommand (std::string strMethod, Json::Value jvParams, bool allowAnyCommand)
     {
-        if (ShouldLog (lsTRACE, RPCParser))
+        if (j_.trace)
         {
-            JLOG (j_.trace) << "RPC method:" << strMethod;
-            JLOG (j_.trace) << "RPC params:" << jvParams;
+            j_.trace << "Method: '" << strMethod << "'";
+            j_.trace << "Params: " << jvParams;
         }
 
         struct Command
@@ -953,10 +961,6 @@ public:
             {   "unl_add",              &RPCParser::parseUnlAdd,                1,  2   },
             {   "unl_delete",           &RPCParser::parseUnlDelete,             1,  1   },
             {   "unl_list",             &RPCParser::parseAsIs,                  0,  0   },
-            {   "unl_load",             &RPCParser::parseAsIs,                  0,  0   },
-            {   "unl_network",          &RPCParser::parseAsIs,                  0,  0   },
-            {   "unl_reset",            &RPCParser::parseAsIs,                  0,  0   },
-            {   "unl_score",            &RPCParser::parseAsIs,                  0,  0   },
             {   "validation_create",    &RPCParser::parseValidationCreate,      0,  1   },
             {   "validation_seed",      &RPCParser::parseValidationSeed,        0,  1   },
             {   "version",              &RPCParser::parseAsIs,                  0,  0   },
@@ -1089,37 +1093,73 @@ struct RPCCallImp
 };
 
 //------------------------------------------------------------------------------
-namespace RPCCall {
 
-int fromCommandLine (
-    Config const& config,
-    const std::vector<std::string>& vCmd,
-    Logs& logs)
+// Used internally by rpcClient.
+static Json::Value
+rpcCmdLineToJson (std::vector<std::string> const& args,
+    Json::Value& retParams, beast::Journal j)
 {
-    if (vCmd.empty ())
-        return 1;      // 1 = print usage.
-
-    Json::Value jvOutput;
-    int         nRet = 0;
     Json::Value jvRequest (Json::objectValue);
 
-    auto rpcJ = logs.journal ("RPCParser");
+    RPCParser   rpParser (j);
+    Json::Value jvRpcParams (Json::arrayValue);
+
+    for (int i = 1; i != args.size (); i++)
+        jvRpcParams.append (args[i]);
+
+    retParams = Json::Value (Json::objectValue);
+
+    retParams["method"] = args[0];
+    retParams[jss::params] = jvRpcParams;
+
+    jvRequest   = rpParser.parseCommand (args[0], jvRpcParams, true);
+
+    JLOG (j.trace) << "RPC Request: " << jvRequest << std::endl;
+
+    return jvRequest;
+}
+
+Json::Value
+cmdLineToJSONRPC (std::vector<std::string> const& args, beast::Journal j)
+{
+    Json::Value jv = Json::Value (Json::objectValue);
+    auto const paramsObj = rpcCmdLineToJson (args, jv, j);
+
+    // Re-use jv to return our formatted result.
+    jv.clear();
+
+    // Allow parser to rewrite method.
+    jv[jss::method] = paramsObj.isMember (jss::method) ?
+        paramsObj[jss::method].asString() : args[0];
+
+    // If paramsObj is not empty, put it in a [params] array.
+    if (paramsObj.begin() != paramsObj.end())
+    {
+        auto& paramsArray = Json::setArray (jv, jss::params);
+        paramsArray.append (paramsObj);
+    }
+    return jv;
+}
+
+//------------------------------------------------------------------------------
+
+std::pair<int, Json::Value>
+rpcClient(std::vector<std::string> const& args,
+    Config const& config, Logs& logs)
+{
+    static_assert(rpcBAD_SYNTAX == 1 && rpcSUCCESS == 0,
+        "Expect specific rpc enum values.");
+    if (args.empty ())
+        return { rpcBAD_SYNTAX, {} }; // rpcBAD_SYNTAX = print usage
+
+    int         nRet = rpcSUCCESS;
+    Json::Value jvOutput;
+    Json::Value jvRequest (Json::objectValue);
+
     try
     {
-        RPCParser   rpParser (rpcJ);
-        Json::Value jvRpcParams (Json::arrayValue);
-
-        for (int i = 1; i != vCmd.size (); i++)
-            jvRpcParams.append (vCmd[i]);
-
         Json::Value jvRpc   = Json::Value (Json::objectValue);
-
-        jvRpc["method"] = vCmd[0];
-        jvRpc[jss::params] = jvRpcParams;
-
-        jvRequest   = rpParser.parseCommand (vCmd[0], jvRpcParams, true);
-
-        JLOG (rpcJ.trace) << "RPC Request: " << jvRequest << std::endl;
+        jvRequest = rpcCmdLineToJson (args, jvRpc, logs.journal ("RPCParser"));
 
         if (jvRequest.isMember (jss::error))
         {
@@ -1157,7 +1197,7 @@ int fromCommandLine (
 
             {
                 boost::asio::io_service isService;
-                fromNetwork (
+                RPCCall::fromNetwork (
                     isService,
                     setup.client.ip,
                     setup.client.port,
@@ -1165,7 +1205,7 @@ int fromCommandLine (
                     setup.client.password,
                     "",
                     jvRequest.isMember ("method")           // Allow parser to rewrite method.
-                        ? jvRequest["method"].asString () : vCmd[0],
+                        ? jvRequest["method"].asString () : args[0],
                     jvParams,                               // Parsed, execute.
                     setup.client.secure != 0,                // Use SSL
                     config.QUIET,
@@ -1192,7 +1232,7 @@ int fromCommandLine (
                 jvOutput["result"]  = jvRpcError;
             }
 
-            // If had an error, supply invokation in result.
+            // If had an error, supply invocation in result.
             if (jvOutput.isMember (jss::error))
             {
                 jvOutput["rpc"]             = jvRpc;            // How the command was seen as method + params.
@@ -1206,7 +1246,7 @@ int fromCommandLine (
 
             nRet    = jvOutput.isMember (jss::error_code)
                       ? beast::lexicalCast <int> (jvOutput[jss::error_code].asString ())
-                      : 1;
+                      : rpcBAD_SYNTAX;
         }
 
         // YYY We could have a command line flag for single line output for scripts.
@@ -1219,9 +1259,24 @@ int fromCommandLine (
         nRet                    = rpcINTERNAL;
     }
 
-    std::cout << jvOutput.toStyledString ();
+    return { nRet, std::move(jvOutput) };
+}
 
-    return nRet;
+//------------------------------------------------------------------------------
+
+namespace RPCCall {
+
+int fromCommandLine (
+    Config const& config,
+    const std::vector<std::string>& vCmd,
+    Logs& logs)
+{
+    auto const result = rpcClient(vCmd, config, logs);
+
+    if (result.first != rpcBAD_SYNTAX)
+        std::cout << result.second.toStyledString ();
+
+    return result.first;
 }
 
 //------------------------------------------------------------------------------
@@ -1275,6 +1330,6 @@ void fromNetwork (
         logs);
 }
 
-}
+} // RPCCall
 
 } // ripple

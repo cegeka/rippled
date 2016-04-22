@@ -20,111 +20,51 @@
 #ifndef BEAST_MODULE_CORE_DIAGNOSTIC_UNITTESTUTILITIES_H_INCLUDED
 #define BEAST_MODULE_CORE_DIAGNOSTIC_UNITTESTUTILITIES_H_INCLUDED
 
-#include <beast/module/core/files/File.h>
-#include <beast/module/core/maths/Random.h>
+#include <boost/filesystem.hpp>
+#include <string>
 
 namespace beast {
 namespace UnitTestUtilities {
 
-/** Fairly shuffle an array pseudo-randomly.
-*/
-template <class T>
-void repeatableShuffle (int const numberOfItems, T& arrayOfItems, Random& r)
-{
-    for (int i = numberOfItems - 1; i > 0; --i)
-    {
-        int const choice = r.nextInt (i + 1);
-        std::swap (arrayOfItems [i], arrayOfItems [choice]);
-    }
-}
-
-template <class T>
-void repeatableShuffle (int const numberOfItems, T& arrayOfItems, std::int64_t seedValue)
-{
-    Random r (seedValue);
-    repeatableShuffle (numberOfItems, arrayOfItems, r);
-}
-
-//------------------------------------------------------------------------------
-
-/** A block of memory used for test data.
-*/
-struct Payload
-{
-    /** Construct a payload with a buffer of the specified maximum size.
-
-        @param maximumBytes The size of the buffer, in bytes.
-    */
-    explicit Payload (int maxBufferSize)
-        : bufferSize (maxBufferSize)
-        , data (maxBufferSize)
-    {
-    }
-
-    /** Generate a random block of data within a certain size range.
-
-        @param minimumBytes The smallest number of bytes in the resulting payload.
-        @param maximumBytes The largest number of bytes in the resulting payload.
-        @param seedValue The value to seed the random number generator with.
-    */
-    void repeatableRandomFill (int minimumBytes, int maximumBytes, std::int64_t seedValue) noexcept
-    {
-        bassert (minimumBytes >=0 && maximumBytes <= bufferSize);
-
-        Random r (seedValue);
-
-        bytes = minimumBytes + r.nextInt (1 + maximumBytes - minimumBytes);
-
-        bassert (bytes >= minimumBytes && bytes <= bufferSize);
-
-        for (int i = 0; i < bytes; ++i)
-            data [i] = static_cast <unsigned char> (r.nextInt ());
-    }
-
-    /** Compare two payloads for equality.
-    */
-    bool operator== (Payload const& other) const noexcept
-    {
-        if (bytes == other.bytes)
-        {
-            return memcmp (data.getData (), other.data.getData (), bytes) == 0;
-        }
-        else
-        {
-            return false;
-        }
-    }
-
-public:
-    int const bufferSize;
-
-    int bytes;
-    HeapBlock <char> data;
-};
-
 class TempDirectory
 {
 public:
-    explicit TempDirectory (std::string const& root)
-            : directory (File::createTempFile (root))
+    TempDirectory ()
     {
+        auto const tempDir =
+            boost::filesystem::temp_directory_path();
+
+        do
+        {
+            tempPath =
+                tempDir / boost::filesystem::unique_path();
+        } while (boost::filesystem::exists(tempPath));
+
+        boost::filesystem::create_directory (tempPath);
     }
 
     ~TempDirectory()
     {
-        directory.deleteRecursively();
+        boost::filesystem::remove_all (tempPath);
     }
 
-    String const& getFullPathName() const
+    /** Returns the native path for the temporary folder */
+    std::string path() const
     {
-        return directory.getFullPathName();
+        return tempPath.string();
+    }
+
+    /** Returns the native for the given file */
+    std::string file (std::string const& name) const
+    {
+        return (tempPath / name).string();
     }
 
     TempDirectory(const TempDirectory&) = delete;
     TempDirectory& operator=(const TempDirectory&) = delete;
 
 private:
-    File const directory;
+    boost::filesystem::path tempPath;
 };
 
 } // UnitTestUtilities

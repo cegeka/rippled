@@ -35,15 +35,27 @@ char const* getRawVersionString ()
     //
     //  The build version number (edit this for each release)
     //
-        "0.30.1-hf2"
+        "0.31.0"
     //
     //  Must follow the format described here:
     //
     //  http://semver.org/
     //
+
+#if defined(DEBUG) || defined(SANITIZER)
+       "+"
 #ifdef DEBUG
-        "+DEBUG"
+        "DEBUG"
+#ifdef SANITIZER
+        "."
 #endif
+#endif
+
+#ifdef SANITIZER
+        BEAST_PP_STR1_(SANITIZER)
+#endif
+#endif
+
     //--------------------------------------------------------------------------
     ;
 
@@ -120,10 +132,7 @@ std::string const& getFullVersionString ()
 {
     struct PrettyPrinter
     {
-        PrettyPrinter ()
-        {
-            fullVersionString = "rippled-" + getVersionString ();
-        }
+        PrettyPrinter () : fullVersionString ("rippled-" + getVersionString ()){}
 
         std::string fullVersionString;
     };

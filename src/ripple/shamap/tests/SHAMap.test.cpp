@@ -48,7 +48,16 @@ public:
 
     void run ()
     {
-        testcase ("add/traverse");
+        run (true);
+        run (false);
+    }
+
+    void run (bool backed)
+    {
+        if (backed)
+            testcase ("add/traverse backed");
+        else
+            testcase ("add/traverse unbacked");
 
         beast::Journal const j;                            // debug journal
         tests::TestFamily f(j);
@@ -62,9 +71,12 @@ public:
         h5.SetHex ("a92891fe4ef6cee585fdc6fda0e09eb4d386363158ec3321b8123e5a772c6ca7");
 
         SHAMap sMap (SHAMapType::FREE, f);
+        if (! backed)
+            sMap.setUnbacked ();
+
         SHAMapItem i1 (h1, IntToVUC (1)), i2 (h2, IntToVUC (2)), i3 (h3, IntToVUC (3)), i4 (h4, IntToVUC (4)), i5 (h5, IntToVUC (5));
-        unexpected (!sMap.addItem (i2, true, false), "no add");
-        unexpected (!sMap.addItem (i1, true, false), "no add");
+        unexpected (!sMap.addItem (SHAMapItem{i2}, true, false), "no add");
+        unexpected (!sMap.addItem (SHAMapItem{i1}, true, false), "no add");
 
         auto i = sMap.begin();
         auto e = sMap.end();
@@ -73,9 +85,9 @@ public:
         unexpected (i == e || (*i != i2), "bad traverse");
         ++i;
         unexpected (i != e, "bad traverse");
-        sMap.addItem (i4, true, false);
+        sMap.addItem (SHAMapItem{i4}, true, false);
         sMap.delItem (i2.key());
-        sMap.addItem (i3, true, false);
+        sMap.addItem (SHAMapItem{i3}, true, false);
         i = sMap.begin();
         e = sMap.end();
         unexpected (i == e || (*i != i1), "bad traverse");
@@ -86,7 +98,11 @@ public:
         ++i;
         unexpected (i != e, "bad traverse");
 
-        testcase ("snapshot");
+        if (backed)
+            testcase ("snapshot backed");
+        else
+            testcase ("snapshot unbacked");
+
         SHAMapHash mapHash = sMap.getHash ();
         std::shared_ptr<SHAMap> map2 = sMap.snapShot (false);
         unexpected (sMap.getHash () != mapHash, "bad snapshot");
@@ -94,8 +110,12 @@ public:
         unexpected (!sMap.delItem (sMap.begin()->key()), "bad mod");
         unexpected (sMap.getHash () == mapHash, "bad snapshot");
         unexpected (map2->getHash () != mapHash, "bad snapshot");
+        sMap.dump();
 
-        testcase ("build/tear");
+        if (backed)
+            testcase ("build/tear backed");
+        else
+            testcase ("build/tear unbacked");
         {
             std::vector<uint256> keys(8);
             keys[0].SetHex ("b92891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8");
@@ -118,23 +138,29 @@ public:
             hashes[7].SetHex ("DF4220E93ADC6F5569063A01B4DC79F8DB9553B6A3222ADE23DEA02BBE7230E5");
 
             SHAMap map (SHAMapType::FREE, f);
+            if (! backed)
+                map.setUnbacked ();
 
             expect (map.getHash() == zero, "bad initial empty map hash");
             for (int i = 0; i < keys.size(); ++i)
             {
                 SHAMapItem item (keys[i], IntToVUC (i));
-                map.addItem (item, true, false);
+                expect (map.addItem (std::move(item), true, false), "unable to add item");
                 expect (map.getHash().as_uint256() == hashes[i], "bad buildup map hash");
             }
             for (int i = keys.size() - 1; i >= 0; --i)
             {
                 expect (map.getHash().as_uint256() == hashes[i], "bad teardown hash");
-                map.delItem (keys[i]);
+                expect (map.delItem (keys[i]), "unable to remove item");
             }
             expect (map.getHash() == zero, "bad final empty map hash");
         }
 
-        testcase ("iterate");
+        if (backed)
+            testcase ("iterate backed");
+        else
+            testcase ("iterate unbacked");
+
         {
             std::vector<uint256> keys(8);
             keys[0].SetHex ("f22891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8");
@@ -148,6 +174,8 @@ public:
 
             tests::TestFamily f{beast::Journal{}};
             SHAMap map{SHAMapType::FREE, f};
+            if (! backed)
+                map.setUnbacked ();
             for (auto const& k : keys)
                 map.addItem(SHAMapItem{k, IntToVUC(0)}, true, false);
 

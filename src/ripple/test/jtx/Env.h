@@ -25,6 +25,7 @@
 #include <ripple/test/jtx/JTx.h>
 #include <ripple/test/jtx/require.h>
 #include <ripple/test/jtx/tags.h>
+#include <ripple/test/AbstractClient.h>
 #include <ripple/test/ManualTimeKeeper.h>
 #include <ripple/app/main/Application.h>
 #include <ripple/app/ledger/Ledger.h>
@@ -44,10 +45,12 @@
 #include <beast/is_call_possible.h>
 #include <beast/unit_test/suite.h>
 #include <functional>
+#include <string>
 #include <tuple>
 #include <type_traits>
 #include <utility>
 #include <unordered_map>
+#include <vector>
 
 namespace ripple {
 namespace test {
@@ -96,14 +99,16 @@ private:
         std::unique_ptr<Application> owned;
         ManualTimeKeeper* timeKeeper;
         std::thread thread;
+        std::unique_ptr<AbstractClient> client;
 
-        AppBundle (std::unique_ptr<Config> config);
-        AppBundle (Application* app_);
+        AppBundle (beast::unit_test::suite& suite,
+            std::unique_ptr<Config> config);
+        AppBundle (beast::unit_test::suite& suite,
+            Application* app_);
         ~AppBundle();
     };
 
     AppBundle bundle_;
-    LogSquelcher logSquelcher_;
 
     inline
     void
@@ -135,11 +140,11 @@ public:
 
     // VFALCO Could wrap the suite::log in a Journal here
     template <class... Args>
-    Env (beast::unit_test::suite& test_,
+    Env (beast::unit_test::suite& suite_,
         std::unique_ptr<Config> config,
             Args&&... args)
-        : test (test_)
-        , bundle_ (std::move(config))
+        : test (suite_)
+        , bundle_ (suite_, std::move(config))
     {
         memoize(Account::master);
         Pathfinder::initPathTable();
@@ -147,9 +152,9 @@ public:
     }
 
     template <class... Args>
-    Env (beast::unit_test::suite& test_,
+    Env (beast::unit_test::suite& suite_,
             Args&&... args)
-        : Env(test_, []()
+        : Env(suite_, []()
             {
                 auto p = std::make_unique<Config>();
                 setupConfigForUnitTests(*p);
@@ -157,7 +162,6 @@ public:
             }(), std::forward<Args>(args)...)
     {
     }
-
 
     Application&
     app()
@@ -181,6 +185,22 @@ public:
     {
         return app().timeKeeper().now();
     }
+
+    /** Returns the connected client. */
+    AbstractClient&
+    client()
+    {
+        return *bundle_.client;
+    }
+
+    /** Execute an RPC command.
+
+        The command is examined and used to build
+        the correct JSON as per the arguments.
+    */
+    template<class... Args>
+    Json::Value
+    rpc(std::string const& cmd, Args&&... args);
 
     /** Returns the current ledger.
 
@@ -280,7 +300,7 @@ public:
     void
     disable_sigs()
     {
-        nosig_ = true;
+        app().checkSigs(false);
     }
 
     /** Associate AccountID with account. */
@@ -521,10 +541,12 @@ public:
 protected:
     int trace_ = 0;
     bool testing_ = true;
-    bool nosig_ = false;
     TestStopwatch stopwatch_;
     uint256 txid_;
     TER ter_ = tesSUCCESS;
+
+    Json::Value
+    do_rpc(std::vector<std::string> const& args);
 
     void
     autofill_sig (JTx& jt);
@@ -542,9 +564,6 @@ protected:
     */
     std::shared_ptr<STTx const>
     st (JTx const& jt);
-
-    ApplyFlags
-    applyFlags() const;
 
     inline
     void
@@ -619,6 +638,15 @@ protected:
     std::unordered_map<
         AccountID, Account> map_;
 };
+
+template<class... Args>
+Json::Value
+Env::rpc(std::string const& cmd, Args&&... args)
+{
+    std::vector<std::string> vs{cmd,
+        std::forward<Args>(args)...};
+    return do_rpc(vs);
+}
 
 } // jtx
 } // test

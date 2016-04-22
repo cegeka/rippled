@@ -22,7 +22,6 @@
 
 #include <ripple/peerfinder/Slot.h>
 #include <beast/chrono/abstract_clock.h>
-#include <beast/module/core/files/File.h>
 #include <beast/threads/Stoppable.h>
 #include <beast/utility/PropertyStream.h>
 #include <boost/asio/ip/tcp.hpp>
@@ -226,7 +225,7 @@ public:
     virtual
     Result
     activate (Slot::ptr const& slot,
-        RipplePublicKey const& key, bool cluster) = 0;
+        PublicKey const& key, bool cluster) = 0;
 
     /** Returns a set of endpoints suitable for redirection. */
     virtual

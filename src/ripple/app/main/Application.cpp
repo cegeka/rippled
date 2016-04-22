@@ -34,7 +34,7 @@
 #include <ripple/app/ledger/TransactionMaster.h>
 #include <ripple/app/main/CollectorManager.h>
 #include <ripple/app/main/LoadManager.h>
-#include <ripple/app/main/LocalCredentials.h>
+#include <ripple/app/main/NodeIdentity.h>
 #include <ripple/app/main/NodeStoreScheduler.h>
 #include <ripple/app/misc/AmendmentTable.h>
 #include <ripple/app/misc/HashRouter.h>
@@ -42,9 +42,9 @@
 #include <ripple/app/misc/SHAMapStore.h>
 #include <ripple/app/misc/TxQ.h>
 #include <ripple/app/misc/Validations.h>
+#include <ripple/app/misc/ValidatorList.h>
 #include <ripple/app/paths/Pathfinder.h>
 #include <ripple/app/paths/PathRequests.h>
-#include <ripple/app/misc/UniqueNodeList.h>
 #include <ripple/app/tx/apply.h>
 #include <ripple/basics/contract.h>
 #include <ripple/basics/Log.h>
@@ -70,7 +70,7 @@
 #include <ripple/shamap/Family.h>
 #include <ripple/unity/git_id.h>
 #include <ripple/websocket/MakeServer.h>
-#include <ripple/crypto/RandomNumbers.h>
+#include <ripple/crypto/csprng.h>
 #include <beast/asio/io_latency_probe.h>
 #include <beast/module/core/text/LexicalCast.h>
 #include <beast/module/core/thread/DeadlineTimer.h>
@@ -99,6 +99,22 @@ private:
     // missing node handler
     std::uint32_t maxSeq = 0;
     std::mutex maxSeqLock;
+
+    void acquire (
+        uint256 const& hash,
+        std::uint32_t seq)
+    {
+        if (hash.isNonZero())
+        {
+            auto j = app_.journal ("Ledger");
+
+            JLOG (j.error) <<
+                "Missing node in " << to_string (hash);
+
+            app_.getInboundLedgers ().acquire (
+                hash, seq, InboundLedger::fcGENERIC);
+        }
+    }
 
 public:
     AppFamily (AppFamily const&) = delete;
@@ -162,7 +178,10 @@ public:
     void
     missing_node (std::uint32_t seq) override
     {
-        WriteLog (lsERROR, Ledger) << "Missing node in " << seq;
+        auto j = app_.journal ("Ledger");
+
+        JLOG (j.error) <<
+            "Missing node in " << seq;
 
         // prevent recursive invocation
         std::unique_lock <std::mutex> lock (maxSeqLock);
@@ -179,11 +198,9 @@ public:
                 lock.unlock();
 
                 // This can invoke the missing node handler
-                uint256 hash = app_.getLedgerMaster().getHashBySeq (seq);
-
-                if (hash.isNonZero())
-                    app_.getInboundLedgers().acquire (
-                        hash, seq, InboundLedger::fcGENERIC);
+                acquire (
+                    app_.getLedgerMaster().getHashBySeq (seq),
+                    seq);
 
                 lock.lock();
             }
@@ -191,7 +208,8 @@ public:
         }
         else if (maxSeq < seq)
         {
-            // We found a more recent ledger with a missing node
+            // We found a more recent ledger with a
+            // missing node
             maxSeq = seq;
         }
     }
@@ -199,16 +217,18 @@ public:
     void
     missing_node (uint256 const& hash) override
     {
-        if (hash.isNonZero())
-        {
-            WriteLog (lsERROR, Ledger) << "Missing node in "
-                << to_string (hash);
-
-            app_.getInboundLedgers ().acquire (
-                hash, 0, InboundLedger::fcGENERIC);
-        }
+        acquire (hash, 0);
     }
 };
+
+
+/** Amendments that this server supports and enables by default */
+std::vector<std::string>
+preEnabledAmendments ();
+
+/** Amendments that this server supports, but doesn't enable by default */
+std::vector<std::string>
+supportedAmendments ();
 
 } // detail
 
@@ -252,6 +272,7 @@ private:
         template <class Duration>
         void operator() (Duration const& elapsed)
         {
+            using namespace std::chrono;
             auto const ms (ceil <std::chrono::milliseconds> (elapsed));
 
             {
@@ -262,8 +283,10 @@ private:
             if (ms.count() >= 10)
                 m_event.notify (ms);
             if (ms.count() >= 500)
-                m_journal.warning <<
-                    "io_service latency = " << ms;
+            {
+                JLOG(m_journal.warning) <<
+                    "io_service latency = " << ms.count();
+            }
         }
 
         std::chrono::milliseconds
@@ -308,7 +331,7 @@ public:
     std::unique_ptr <CollectorManager> m_collectorManager;
     detail::AppFamily family_;
     CachedSLEs cachedSLEs_;
-    LocalCredentials m_localCredentials;
+    std::pair<PublicKey, SecretKey> nodeIdentity_;
 
     std::unique_ptr <Resource::Manager> m_resourceManager;
 
@@ -323,7 +346,7 @@ public:
     TaggedCache <uint256, AcceptedLedger> m_acceptedLedgerCache;
     std::unique_ptr <NetworkOPs> m_networkOPs;
     std::unique_ptr <Cluster> cluster_;
-    std::unique_ptr <UniqueNodeList> m_deprecatedUNL;
+    std::unique_ptr <ValidatorList> validators_;
     std::unique_ptr <ServerHandler> serverHandler_;
     std::unique_ptr <AmendmentTable> m_amendmentTable;
     std::unique_ptr <LoadFeeTrack> mFeeTrack;
@@ -342,6 +365,8 @@ public:
 
     boost::asio::signal_set m_signals;
     beast::WaitableEvent m_stop;
+
+    std::atomic<bool> checkSigs_;
 
     std::unique_ptr <ResolverAsio> m_resolver;
 
@@ -397,8 +422,6 @@ public:
 
         , cachedSLEs_ (std::chrono::minutes(1), stopwatch())
 
-        , m_localCredentials (*this)
-
         , m_resourceManager (Resource::make_Manager (
             m_collectorManager->collector(), logs_->journal("Resource")))
 
@@ -418,7 +441,7 @@ public:
         , m_pathRequests (std::make_unique<PathRequests> (
             *this, logs_->journal("PathRequest"), m_collectorManager->collector ()))
 
-        , m_ledgerMaster (make_LedgerMaster (*this, stopwatch (),
+        , m_ledgerMaster (std::make_unique<LedgerMaster> (*this, stopwatch (),
             *m_jobQueue, m_collectorManager->collector (),
             logs_->journal("LedgerMaster")))
 
@@ -446,15 +469,14 @@ public:
             *m_jobQueue, *m_ledgerMaster, *m_jobQueue,
             logs_->journal("NetworkOPs")))
 
-        // VFALCO NOTE LocalCredentials starts the deprecated UNL service
-        , m_deprecatedUNL (make_UniqueNodeList (*this, *m_jobQueue))
+        , cluster_ (std::make_unique<Cluster> (
+            logs_->journal("Overlay")))
+
+        , validators_ (std::make_unique<ValidatorList> (
+            logs_->journal("UniqueNodeList")))
 
         , serverHandler_ (make_ServerHandler (*this, *m_networkOPs, get_io_service (),
             *m_jobQueue, *m_networkOPs, *m_resourceManager, *m_collectorManager))
-
-        , m_amendmentTable (make_AmendmentTable
-                            (weeks(2), MAJORITY_FRACTION,
-                             logs_->journal("AmendmentTable")))
 
         , mFeeTrack (std::make_unique<LoadFeeTrack>(logs_->journal("LoadManager")))
 
@@ -472,6 +494,8 @@ public:
         , m_entropyTimer (this)
 
         , m_signals (get_io_service())
+
+        , checkSigs_(true)
 
         , m_resolver (ResolverAsio::New (get_io_service(), logs_->journal("Resolver")))
 
@@ -499,15 +523,18 @@ public:
         m_nodeStoreScheduler.setJobQueue (*m_jobQueue);
 
         add (m_ledgerMaster->getPropertySource ());
-        add (*serverHandler_);
     }
 
     //--------------------------------------------------------------------------
 
     void setup() override;
+    void doStart() override;
     void run() override;
     bool isShutdown() override;
     void signalStop() override;
+    bool checkSigs() const override;
+    void checkSigs(bool) override;
+    int fdlimit () const override;
 
     //--------------------------------------------------------------------------
 
@@ -545,9 +572,10 @@ public:
         return *m_jobQueue;
     }
 
-    LocalCredentials& getLocalCredentials () override
+    std::pair<PublicKey, SecretKey> const&
+    nodeIdentity () override
     {
-        return m_localCredentials ;
+        return nodeIdentity_;
     }
 
     NetworkOPs& getOPs () override
@@ -658,9 +686,9 @@ public:
         return *mValidations;
     }
 
-    UniqueNodeList& getUNL () override
+    ValidatorList& validators () override
     {
-        return *m_deprecatedUNL;
+        return *validators_;
     }
 
     Cluster& cluster () override
@@ -757,12 +785,12 @@ public:
         }
         else if (ec)
         {
-            m_journal.error << "Received signal: " << signal_number
-                            << " with error: " << ec.message();
+            JLOG(m_journal.error) << "Received signal: " << signal_number
+                                  << " with error: " << ec.message();
         }
         else
         {
-            m_journal.debug << "Received signal: " << signal_number;
+            JLOG(m_journal.debug) << "Received signal: " << signal_number;
             signalStop();
         }
     }
@@ -778,7 +806,8 @@ public:
 
     void onStart () override
     {
-        m_journal.info << "Application starting. Build is " << gitCommitID();
+        JLOG(m_journal.info)
+            << "Application starting. Build is " << gitCommitID();
 
         m_sweepTimer.setExpiration (10);
         m_entropyTimer.setRecurringExpiration (300);
@@ -791,7 +820,7 @@ public:
     // Called to indicate shutdown.
     void onStop () override
     {
-        m_journal.debug << "Application stopping";
+        JLOG(m_journal.debug) << "Application stopping";
 
         m_io_latency_sampler.cancel_async ();
 
@@ -844,7 +873,7 @@ public:
     {
         if (timer == m_entropyTimer)
         {
-            add_entropy (nullptr, 0);
+            crypto_prng().mix_entropy ();
             return;
         }
 
@@ -861,7 +890,8 @@ public:
                 //
                 if (space.available < (512 * 1024 * 1024))
                 {
-                    m_journal.fatal << "Remaining free disk space is less than 512MB";
+                    JLOG(m_journal.fatal)
+                        << "Remaining free disk space is less than 512MB";
                     signalStop ();
                 }
             }
@@ -894,9 +924,13 @@ public:
 
 private:
     void addTxnSeqField();
+    void addValidationSeqFields();
     void updateTables ();
     void startGenesisLedger ();
-    Ledger::pointer getLastFullLedger();
+
+    std::shared_ptr<Ledger>
+    getLastFullLedger();
+
     bool loadOldLedger (
         std::string const& ledgerID, bool replay, bool isFilename);
 };
@@ -930,8 +964,8 @@ void ApplicationImp::setup()
         if (!logs_->open(debug_log))
             std::cerr << "Can't open log file " << debug_log << '\n';
 
-        if (logs_->severity() > beast::Journal::kDebug)
-            logs_->severity (beast::Journal::kDebug);
+        if (logs_->threshold() > beast::Journal::kDebug)
+            logs_->threshold (beast::Journal::kDebug);
     }
 
     logs_->silent (config_->SILENT);
@@ -941,7 +975,7 @@ void ApplicationImp::setup()
 
     if (!initSqliteDbs ())
     {
-        m_journal.fatal << "Can not create database connections!";
+        JLOG(m_journal.fatal) << "Cannot create database connections!";
         exitWithCode(3);
     }
 
@@ -959,8 +993,23 @@ void ApplicationImp::setup()
     if (!config_->RUN_STANDALONE)
         updateTables ();
 
-    m_amendmentTable->addInitial (
-        config_->section (SECTION_AMENDMENTS));
+    // Configure the amendments the server supports
+    {
+        Section supportedAmendments ("Supported Amendments");
+        supportedAmendments.append (detail::supportedAmendments ());
+
+        Section enabledAmendments = config_->section (SECTION_AMENDMENTS);
+        enabledAmendments.append (detail::preEnabledAmendments ());
+
+        m_amendmentTable = make_AmendmentTable (
+            weeks(2),
+            MAJORITY_FRACTION,
+            supportedAmendments,
+            enabledAmendments,
+            config_->section (SECTION_VETO_AMENDMENTS),
+            logs_->journal("Amendments"));
+    }
+
     Pathfinder::initPathTable();
 
     m_ledgerMaster->setMinValidations (
@@ -969,7 +1018,7 @@ void ApplicationImp::setup()
     auto const startUp = config_->START_UP;
     if (startUp == Config::FRESH)
     {
-        m_journal.info << "Starting new Ledger";
+        JLOG(m_journal.info) << "Starting new Ledger";
 
         startGenesisLedger ();
     }
@@ -977,7 +1026,7 @@ void ApplicationImp::setup()
                 startUp == Config::LOAD_FILE ||
                 startUp == Config::REPLAY)
     {
-        m_journal.info << "Loading specified Ledger";
+        JLOG(m_journal.info) << "Loading specified Ledger";
 
         if (!loadOldLedger (config_->START_LEDGER,
                             startUp == Config::REPLAY,
@@ -1001,21 +1050,24 @@ void ApplicationImp::setup()
 
     m_orderBookDB.setup (getLedgerMaster ().getCurrentLedger ());
 
-    cluster_ = make_Cluster (config (), logs_->journal("Overlay"));
+    nodeIdentity_ = loadNodeIdentity (*this);
 
-    // Begin validation and ip maintenance.
-    //
-    // - LocalCredentials maintains local information: including identity
-    // - and network connection persistence information.
-    //
-    // VFALCO NOTE this starts the UNL
-    m_localCredentials.start ();
+    if (!cluster_->load (config().section(SECTION_CLUSTER_NODES)))
+    {
+        JLOG(m_journal.fatal) << "Invalid entry in cluster configuration.";
+        Throw<std::exception>();
+    }
 
-    //
-    // Set up UNL.
-    //
-    if (!config_->RUN_STANDALONE)
-        getUNL ().nodeBootstrap ();
+    if (!validators_->load (config().section (SECTION_VALIDATORS)))
+    {
+        JLOG(m_journal.fatal) << "Invalid entry in validator configuration.";
+        Throw<std::exception>();
+    }
+
+    if (validators_->size () == 0 && !config_->RUN_STANDALONE)
+    {
+        JLOG(m_journal.warning) << "No validators are configured.";
+    }
 
     m_nodeStore->tune (config_->getSize (siNodeCacheSize), config_->getSize (siNodeCacheAge));
     m_ledgerMaster->tune (config_->getSize (siLedgerSize), config_->getSize (siLedgerAge));
@@ -1062,7 +1114,7 @@ void ApplicationImp::setup()
                 *m_collectorManager});
         if (!server)
         {
-            m_journal.fatal << "Could not create Websocket for [" <<
+            JLOG(m_journal.fatal) << "Could not create Websocket for [" <<
                 port.name << "]";
             Throw<std::exception> ();
         }
@@ -1077,7 +1129,10 @@ void ApplicationImp::setup()
         // Should this message be here, conceptually? In theory this sort
         // of message, if displayed, should be displayed from PeerFinder.
         if (config_->PEER_PRIVATE && config_->IPS_FIXED.empty ())
-            m_journal.warning << "No outbound peer connections will be made";
+        {
+            JLOG(m_journal.warning)
+                << "No outbound peer connections will be made";
+        }
 
         // VFALCO NOTE the state timer resets the deadlock detector.
         //
@@ -1085,41 +1140,37 @@ void ApplicationImp::setup()
     }
     else
     {
-        m_journal.warning << "Running in standalone mode";
+        JLOG(m_journal.warning) << "Running in standalone mode";
 
         m_networkOPs->setStandAlone ();
     }
 }
 
 void
-ApplicationImp::run()
+ApplicationImp::doStart()
 {
-    // VFALCO NOTE I put this here in the hopes that when unit tests run (which
-    //             tragically require an Application object to exist or else they
-    //             crash), the run() function will not get called and we will
-    //             avoid doing silly things like contacting the SNTP server, or
-    //             running the various logic threads like Validators, PeerFinder, etc.
     prepare ();
     start ();
+}
 
-
+void
+ApplicationImp::run()
+{
+    if (!config_->RUN_STANDALONE)
     {
-        if (!config_->RUN_STANDALONE)
-        {
-            // VFALCO NOTE This seems unnecessary. If we properly refactor the load
-            //             manager then the deadlock detector can just always be "armed"
-            //
-            getLoadManager ().activateDeadlockDetector ();
-        }
+        // VFALCO NOTE This seems unnecessary. If we properly refactor the load
+        //             manager then the deadlock detector can just always be "armed"
+        //
+        getLoadManager ().activateDeadlockDetector ();
     }
 
     m_stop.wait ();
 
     // Stop the server. When this returns, all
     // Stoppable objects should be stopped.
-    m_journal.info << "Received shutdown request";
+    JLOG(m_journal.info) << "Received shutdown request";
     stop (m_journal);
-    m_journal.info << "Done.";
+    JLOG(m_journal.info) << "Done.";
     StopSustain();
 }
 
@@ -1138,6 +1189,37 @@ ApplicationImp::isShutdown()
     return isStopped();
 }
 
+bool ApplicationImp::checkSigs() const
+{
+    return checkSigs_;
+}
+
+void ApplicationImp::checkSigs(bool check)
+{
+    checkSigs_ = check;
+}
+
+int ApplicationImp::fdlimit() const
+{
+    // Standard handles, config file, misc I/O etc:
+    int needed = 128;
+
+    // 1.5 times the configured peer limit for peer connections:
+    needed += static_cast<int>(0.5 + (1.5 * m_overlay->limit()));
+
+    // the number of fds needed by the backend (internally
+    // doubled if online delete is enabled).
+    needed += std::max(5, m_shaMapStore->fdlimit());
+
+    // One fd per incoming connection a port can accept, or
+    // if no limit is set, assume it'll handle 256 clients.
+    for(auto const& p : serverHandler_->setup().ports)
+        needed += std::max (256, p.limit);
+
+    // The minimum number of file descriptors we need is 1024:
+    return std::max(1024, needed);
+}
+
 //------------------------------------------------------------------------------
 
 void
@@ -1149,59 +1231,60 @@ ApplicationImp::startGenesisLedger()
     m_ledgerMaster->storeLedger (genesis);
 
     auto const next = std::make_shared<Ledger>(
-        open_ledger, *genesis, timeKeeper().closeTime());
+        *genesis, timeKeeper().closeTime());
     next->updateSkipList ();
-    next->setClosed ();
     next->setImmutable (*config_);
     m_networkOPs->setLastCloseTime (next->info().closeTime);
     openLedger_.emplace(next, cachedSLEs_,
         logs_->journal("OpenLedger"));
+    m_ledgerMaster->storeLedger(next);
     m_ledgerMaster->switchLCL (next);
 }
 
-Ledger::pointer
+std::shared_ptr<Ledger>
 ApplicationImp::getLastFullLedger()
 {
+    auto j = journal ("Ledger");
+
     try
     {
-        Ledger::pointer ledger;
-        std::uint32_t ledgerSeq;
-        uint256 ledgerHash;
-        std::tie (ledger, ledgerSeq, ledgerHash) =
-                loadLedgerHelper ("order by LedgerSeq desc limit 1", *this);
+        std::shared_ptr<Ledger> ledger;
+        std::uint32_t seq;
+        uint256 hash;
+
+        std::tie (ledger, seq, hash) =
+            loadLedgerHelper (
+                "order by LedgerSeq desc limit 1", *this);
 
         if (!ledger)
             return ledger;
 
-        ledger->setClosed ();
         ledger->setImmutable(*config_);
 
-        if (getLedgerMaster ().haveLedger (ledgerSeq))
+        if (getLedgerMaster ().haveLedger (seq))
             ledger->setValidated ();
 
-        if (ledger->getHash () != ledgerHash)
+        if (ledger->info().hash == hash)
         {
-            auto j = journal ("Ledger");
-            if (j.error)
-            {
-                j.error  << "Failed on ledger";
-                Json::Value p;
-                addJson (p, {*ledger, LedgerFill::full});
-                j.error << p;
-            }
-
-            assert (false);
-            return Ledger::pointer ();
+            JLOG (j.trace) << "Loaded ledger: " << hash;
+            return ledger;
         }
 
-        JLOG (journal ("Ledger").trace) << "Loaded ledger: " << ledgerHash;
-        return ledger;
+        if (j.error)
+        {
+            j.error  << "Failed on ledger";
+            Json::Value p;
+            addJson (p, {*ledger, LedgerFill::full});
+            j.error << p;
+        }
+
+        return {};
     }
     catch (SHAMapMissingNode& sn)
     {
-        JLOG (journal ("Ledger").warning)
-                << "Database contains ledger with missing nodes: " << sn;
-        return Ledger::pointer ();
+        JLOG (j.warning) <<
+            "Ledger with missing nodes in database: " << sn;
+        return {};
     }
 }
 
@@ -1210,21 +1293,23 @@ bool ApplicationImp::loadOldLedger (
 {
     try
     {
-        Ledger::pointer loadLedger, replayLedger;
+        std::shared_ptr<Ledger> loadLedger, replayLedger;
 
         if (isFileName)
         {
             std::ifstream ledgerFile (ledgerID.c_str (), std::ios::in);
             if (!ledgerFile)
             {
-                m_journal.fatal << "Unable to open file";
+                JLOG(m_journal.fatal) << "Unable to open file";
             }
             else
             {
                  Json::Reader reader;
                  Json::Value jLedger;
                  if (!reader.parse (ledgerFile, jLedger))
-                     m_journal.fatal << "Unable to parse ledger JSON";
+                 {
+                     JLOG(m_journal.fatal) << "Unable to parse ledger JSON";
+                 }
                  else
                  {
                      std::reference_wrapper<Json::Value> ledger (jLedger);
@@ -1275,7 +1360,8 @@ bool ApplicationImp::loadOldLedger (
                      }
                      if (!ledger.get().isArray ())
                      {
-                         m_journal.fatal << "State nodes must be an array";
+                         JLOG(m_journal.fatal)
+                            << "State nodes must be an array";
                      }
                      else
                      {
@@ -1291,7 +1377,6 @@ bool ApplicationImp::loadOldLedger (
                              entry.removeMember (jss::index);
 
                              STParsedJSONObject stp ("sle", ledger.get()[index]);
-                             // m_journal.info << "json: " << stp.object->getJson(0);
 
                              if (stp.object && (uIndex.isNonZero()))
                              {
@@ -1300,15 +1385,19 @@ bool ApplicationImp::loadOldLedger (
                                  STLedgerEntry sle (*stp.object, uIndex);
                                  bool ok = loadLedger->addSLE (sle);
                                  if (!ok)
-                                     m_journal.warning << "Couldn't add serialized ledger: " << uIndex;
+                                 {
+                                     JLOG(m_journal.warning)
+                                        << "Couldn't add serialized ledger: "
+                                        << uIndex;
+                                 }
                              }
                              else
                              {
-                                 m_journal.warning << "Invalid entry in ledger";
+                                 JLOG(m_journal.warning)
+                                    << "Invalid entry in ledger";
                              }
                          }
 
-                         loadLedger->setClosed ();
                          loadLedger->stateMap().flushDirty
                              (hotACCOUNT_NODE, loadLedger->info().seq);
                          loadLedger->setAccepted (closeTime,
@@ -1345,8 +1434,8 @@ bool ApplicationImp::loadOldLedger (
 
         if (!loadLedger)
         {
-            m_journal.fatal << "No Ledger found from ledgerID="
-                            << ledgerID << std::endl;
+            JLOG(m_journal.fatal) << "No Ledger found from ledgerID="
+                                  << ledgerID << std::endl;
             return false;
         }
 
@@ -1357,12 +1446,12 @@ bool ApplicationImp::loadOldLedger (
             // this ledger holds the transactions we want to replay
             replayLedger = loadLedger;
 
-            m_journal.info << "Loading parent ledger";
+            JLOG(m_journal.info) << "Loading parent ledger";
 
             loadLedger = loadByHash (replayLedger->info().parentHash, *this);
             if (!loadLedger)
             {
-                m_journal.info << "Loading parent ledger from node store";
+                JLOG(m_journal.info) << "Loading parent ledger from node store";
 
                 // Try to build the ledger from the back end
                 auto il = std::make_shared <InboundLedger> (
@@ -1373,44 +1462,45 @@ bool ApplicationImp::loadOldLedger (
 
                 if (!loadLedger)
                 {
-                    m_journal.fatal << "Replay ledger missing/damaged";
+                    JLOG(m_journal.fatal) << "Replay ledger missing/damaged";
                     assert (false);
                     return false;
                 }
             }
         }
 
-        loadLedger->setClosed ();
-
-        m_journal.info << "Loading ledger " << loadLedger->getHash () << " seq:" << loadLedger->info().seq;
+        JLOG(m_journal.info) <<
+            "Loading ledger " << loadLedger->info().hash <<
+            " seq:" << loadLedger->info().seq;
 
         if (loadLedger->info().accountHash.isZero ())
         {
-            m_journal.fatal << "Ledger is empty.";
+            JLOG(m_journal.fatal) << "Ledger is empty.";
             assert (false);
             return false;
         }
 
         if (!loadLedger->walkLedger (journal ("Ledger")))
         {
-            m_journal.fatal << "Ledger is missing nodes.";
+            JLOG(m_journal.fatal) << "Ledger is missing nodes.";
             assert(false);
             return false;
         }
 
         if (!loadLedger->assertSane (journal ("Ledger")))
         {
-            m_journal.fatal << "Ledger is not sane.";
+            JLOG(m_journal.fatal) << "Ledger is not sane.";
             assert(false);
             return false;
         }
 
-        m_ledgerMaster->setLedgerRangePresent (loadLedger->info().seq, loadLedger->info().seq);
+        m_ledgerMaster->setLedgerRangePresent (
+            loadLedger->info().seq,
+            loadLedger->info().seq);
 
-        auto const openLedger =
-            std::make_shared<Ledger>(open_ledger, *loadLedger, timeKeeper().closeTime());
         m_ledgerMaster->switchLCL (loadLedger);
-        m_ledgerMaster->forceValid(loadLedger);
+        loadLedger->setValidated();
+        m_ledgerMaster->setFullLedger(loadLedger, true, false);
         m_networkOPs->setLastCloseTime (loadLedger->info().closeTime);
         openLedger_.emplace(loadLedger, cachedSLEs_,
             logs_->journal("OpenLedger"));
@@ -1453,12 +1543,13 @@ bool ApplicationImp::loadOldLedger (
     }
     catch (SHAMapMissingNode&)
     {
-        m_journal.fatal << "Data is missing for selected ledger";
+        JLOG(m_journal.fatal) << "Data is missing for selected ledger";
         return false;
     }
     catch (boost::bad_lexical_cast&)
     {
-        m_journal.fatal << "Ledger specified '" << ledgerID << "' is not valid";
+        JLOG(m_journal.fatal)
+            << "Ledger specified '" << ledgerID << "' is not valid";
         return false;
     }
 
@@ -1635,6 +1726,39 @@ void ApplicationImp::addTxnSeqField ()
     tr.commit ();
 }
 
+void ApplicationImp::addValidationSeqFields ()
+{
+    if (schemaHas(getLedgerDB(), "Validations", 0, "LedgerSeq", m_journal))
+    {
+        assert(schemaHas(getLedgerDB(), "Validations", 0, "InitialSeq", m_journal));
+        return;
+    }
+
+    JLOG(m_journal.warning) << "Validation sequence fields are missing";
+    assert(!schemaHas(getLedgerDB(), "Validations", 0, "InitialSeq", m_journal));
+
+    auto& session = getLedgerDB().getSession();
+
+    soci::transaction tr(session);
+
+    JLOG(m_journal.info) << "Altering table";
+    session << "ALTER TABLE Validations "
+        "ADD COLUMN LedgerSeq       BIGINT UNSIGNED;";
+    session << "ALTER TABLE Validations "
+        "ADD COLUMN InitialSeq      BIGINT UNSIGNED;";
+
+    // Create the indexes, too, so we don't have to
+    // wait for the next startup, which may be a while.
+    // These should be identical to those in LedgerDBInit
+    JLOG(m_journal.info) << "Building new indexes";
+    session << "CREATE INDEX IF NOT EXISTS "
+        "ValidationsBySeq ON Validations(LedgerSeq);";
+    session << "CREATE INDEX IF NOT EXISTS ValidationsByInitialSeq "
+        "ON Validations(InitialSeq, LedgerSeq);";
+
+    tr.commit();
+}
+
 void ApplicationImp::updateTables ()
 {
     if (config_->section (ConfigSection::nodeDatabase ()).empty ())
@@ -1653,6 +1777,8 @@ void ApplicationImp::updateTables ()
         JLOG (m_journal.fatal) << "AccountTransactions database should not have a primary key";
         exitWithCode(1);
     }
+
+    addValidationSeqFields ();
 
     if (config_->doImport)
     {

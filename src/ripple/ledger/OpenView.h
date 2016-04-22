@@ -45,7 +45,7 @@ extern open_ledger_t const open_ledger;
 
     @note Presented as ReadView to clients.
 */
-class OpenView
+class OpenView final
     : public ReadView
     , public TxsRawView
 {
@@ -66,6 +66,7 @@ private:
     ReadView const* base_;
     detail::RawStateTable items_;
     std::shared_ptr<void const> hold_;
+    bool open_ = true;
 
 public:
     OpenView() = delete;
@@ -133,6 +134,13 @@ public:
     */
     OpenView (ReadView const* base,
         std::shared_ptr<void const> hold = nullptr);
+
+    /** Returns true if this reflects an open ledger. */
+    bool
+    open() const override
+    {
+        return open_;
+    }
 
     /** Return the number of tx inserted since creation.
 

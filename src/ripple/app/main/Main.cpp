@@ -29,7 +29,7 @@
 #include <ripple/core/Config.h>
 #include <ripple/core/ConfigSections.h>
 #include <ripple/core/TimeKeeper.h>
-#include <ripple/crypto/RandomNumbers.h>
+#include <ripple/crypto/csprng.h>
 #include <ripple/json/to_string.h>
 #include <ripple/net/RPCCall.h>
 #include <ripple/resource/Fees.h>
@@ -44,7 +44,6 @@
 #include <google/protobuf/stubs/common.h>
 #include <boost/program_options.hpp>
 #include <cstdlib>
-#include <thread>
 #include <utility>
 
 #if defined(BEAST_LINUX) || defined(BEAST_MAC) || defined(BEAST_BSD)
@@ -55,23 +54,6 @@ namespace po = boost::program_options;
 
 namespace ripple {
 
-void setupServer (Application& app)
-{
-#ifdef RLIMIT_NOFILE
-    struct rlimit rl;
-    if (getrlimit(RLIMIT_NOFILE, &rl) == 0)
-    {
-         if (rl.rlim_cur != rl.rlim_max)
-         {
-             rl.rlim_cur = rl.rlim_max;
-             setrlimit(RLIMIT_NOFILE, &rl);
-         }
-    }
-#endif
-
-    app.setup ();
-}
-
 boost::filesystem::path
 getEntropyFile(Config const& config)
 {
@@ -79,6 +61,47 @@ getEntropyFile(Config const& config)
     if (path.empty ())
         return {};
     return boost::filesystem::path (path) / "random.seed";
+}
+
+bool
+adjustDescriptorLimit(int needed)
+{
+#ifdef RLIMIT_NOFILE
+    // Get the current limit, then adjust it to what we need.
+    struct rlimit rl;
+
+    int available = 0;
+
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0)
+    {
+        // If the limit is infnite, then we are good.
+        if (rl.rlim_cur == RLIM_INFINITY)
+            available = needed;
+        else
+            available = rl.rlim_cur;
+
+        if (available < needed)
+        {
+            // Ignore the rlim_max, as the process may
+            // be configured to override it anyways. We
+            // ask for the number descriptors we need.
+            rl.rlim_cur = needed;
+
+            if (setrlimit(RLIMIT_NOFILE, &rl) == 0)
+                available = rl.rlim_cur;
+        }
+    }
+
+    if (needed > available)
+    {
+        std::cerr << "Insufficient number of file descriptors:\n";
+        std::cerr << "     Needed: " << needed << '\n';
+        std::cerr << "  Available: " << available << '\n';
+        return false;
+    }
+#endif
+
+    return true;
 }
 
 void startServer (Application& app)
@@ -107,13 +130,14 @@ void startServer (Application& app)
         }
     }
 
+    app.doStart();
     // Block until we get a stop RPC.
-    app.run ();
+    app.run();
 
     // Try to write out some entropy to use the next time we start.
     auto entropy = getEntropyFile (app.config());
     if (!entropy.empty ())
-        stir_entropy (entropy.string ());
+        crypto_prng().save_state(entropy.string ());
 }
 
 void printHelp (const po::options_description& desc)
@@ -132,6 +156,7 @@ void printHelp (const po::options_description& desc)
            "     can_delete [<ledgerid>|<ledgerhash>|now|always|never]\n"
            "     connect <ip> [<port>]\n"
            "     consensus_info\n"
+           "     feature [<feature> [accept|reject]]\n"
            "     fetch_info [clear]\n"
            "     gateway_balances [<ledger>] <issuer_account> [ <hotwallet> [ <hotwallet> ]]\n"
            "     get_counts\n"
@@ -189,30 +214,6 @@ int run (int argc, char** argv)
 
     setCallingThreadName ("main");
 
-    {
-        // We want to seed the RNG early. We acquire a small amount of
-        // questionable quality entropy from the current time and our
-        // environment block which will get stirred into the RNG pool
-        // along with high-quality entropy from the system.
-        struct entropy_t
-        {
-            std::uint64_t timestamp;
-            std::size_t tid;
-            std::uintptr_t ptr[4];
-        };
-
-        auto entropy = std::make_unique<entropy_t> ();
-
-        entropy->timestamp = beast::Time::currentTimeMillis ();
-        entropy->tid = std::hash <std::thread::id>() (std::this_thread::get_id ());
-        entropy->ptr[0] = reinterpret_cast<std::uintptr_t>(entropy.get ());
-        entropy->ptr[1] = reinterpret_cast<std::uintptr_t>(&argc);
-        entropy->ptr[2] = reinterpret_cast<std::uintptr_t>(argv);
-        entropy->ptr[3] = reinterpret_cast<std::uintptr_t>(argv[0]);
-
-        add_entropy (entropy.get (), sizeof (entropy_t));
-    }
-
     po::variables_map vm;
 
     std::string importText;
@@ -249,6 +250,7 @@ int run (int argc, char** argv)
     ("ledgerfile", po::value<std::string> (), "Load the specified ledger file.")
     ("start", "Start from a fresh Ledger.")
     ("net", "Get the initial ledger from the network.")
+    ("debug", "Enable normally suppressed debug logging")
     ("fg", "Run in the foreground.")
     ("import", importText.c_str ())
     ("version", "Display the build version.")
@@ -288,20 +290,6 @@ int run (int argc, char** argv)
         return 0;
     }
 
-    // Use a watchdog process unless we're invoking a stand alone type of mode
-    //
-    if (HaveSustain ()
-        && !vm.count ("parameters")
-        && !vm.count ("fg")
-        && !vm.count ("standalone")
-        && !vm.count ("unittest"))
-    {
-        std::string logMe = DoSustain ();
-
-        if (!logMe.empty ())
-            std::cerr << logMe;
-    }
-
     // Run the unit tests if requested.
     // The unit tests will exit the application with an appropriate return code.
     //
@@ -333,10 +321,12 @@ int run (int argc, char** argv)
         config->LEDGER_HISTORY = 0;
     }
 
-    // Use any previously available entropy to stir the pool
-    auto entropy = getEntropyFile (*config);
-    if (!entropy.empty ())
-        stir_entropy (entropy.string ());
+    {
+        // Stir any previously saved entropy into the pool:
+        auto entropy = getEntropyFile (*config);
+        if (!entropy.empty ())
+            crypto_prng().load_state(entropy.string ());
+    }
 
     if (vm.count ("start"))
         config->START_UP = Config::FRESH;
@@ -439,25 +429,52 @@ int run (int argc, char** argv)
         }
     }
 
+    // Construct the logs object at the configured severity
+    beast::Journal::Severity thresh = beast::Journal::kInfo;
+
+    if (vm.count ("quiet"))
+        thresh = beast::Journal::kFatal;
+    else if (vm.count ("verbose"))
+        thresh = beast::Journal::kTrace;
+
+    auto logs = std::make_unique<Logs>(thresh);
+
     // No arguments. Run server.
     if (!vm.count ("parameters"))
     {
-        auto logs = std::make_unique<Logs>();
+        // We want at least 1024 file descriptors. We'll
+        // tweak this further.
+        if (!adjustDescriptorLimit(1024))
+            return -1;
+
+        if (HaveSustain() && !vm.count ("fg") && !config->RUN_STANDALONE)
+        {
+            auto const ret = DoSustain ();
+
+            if (!ret.empty ())
+                std::cerr << "Watchdog: " << ret << std::endl;
+        }
+
+        if (vm.count ("debug"))
+            setDebugJournalSink (logs->get("Debug"));
+
         auto timeKeeper = make_TimeKeeper(
             logs->journal("TimeKeeper"));
-
-        if (vm.count ("quiet"))
-            logs->severity (beast::Journal::kFatal);
-        else if (vm.count ("verbose"))
-            logs->severity (beast::Journal::kTrace);
-        else
-            logs->severity (beast::Journal::kInfo);
 
         auto app = make_Application(
             std::move(config),
             std::move(logs),
             std::move(timeKeeper));
-        setupServer (*app);
+        app->setup ();
+
+        // With our configuration parsed, ensure we have
+        // enough file descriptors available:
+        if (!adjustDescriptorLimit(app->fdlimit()))
+        {
+            StopSustain();
+            return -1;
+        }
+
         startServer (*app);
         return 0;
     }
@@ -466,10 +483,9 @@ int run (int argc, char** argv)
     setCallingThreadName ("rpc");
     return RPCCall::fromCommandLine (
         *config,
-        vm["parameters"].as<std::vector<std::string>>(), deprecatedLogs());
+        vm["parameters"].as<std::vector<std::string>>(),
+        *logs);
 }
-
-extern int run (int argc, char** argv);
 
 } // ripple
 
@@ -479,7 +495,7 @@ int main (int argc, char** argv)
 {
     // Workaround for Boost.Context / Boost.Coroutine
     // https://svn.boost.org/trac/boost/ticket/10657
-    (void)beast::Time::currentTimeMillis();
+    (void)beast::currentTimeMillis();
 
 #ifdef _MSC_VER
     ripple::sha512_deprecatedMSVCWorkaround();

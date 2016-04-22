@@ -31,7 +31,6 @@ SHAMap::SHAMap (
     : f_ (f)
     , journal_(f.journal())
     , seq_ (seq)
-    , ledgerSeq_ (0)
     , state_ (SHAMapState::Modifying)
     , type_ (t)
 {
@@ -47,7 +46,6 @@ SHAMap::SHAMap (
     : f_ (f)
     , journal_(f.journal())
     , seq_ (1)
-    , ledgerSeq_ (0)
     , state_ (SHAMapState::Synching)
     , type_ (t)
 {
@@ -80,37 +78,6 @@ SHAMap::snapShot (bool isMutable) const
     return ret;
 }
 
-SHAMap::SharedPtrNodeStack
-SHAMap::getStack (uint256 const& id, bool include_nonmatching_leaf) const
-{
-    // Walk the tree as far as possible to the specified identifier
-    // produce a stack of nodes along the way, with the terminal node at the top
-    SharedPtrNodeStack stack;
-
-    std::shared_ptr<SHAMapAbstractNode> node = root_;
-    SHAMapNodeID nodeID;
-
-    while (!node->isLeaf ())
-    {
-        stack.push ({node, nodeID});
-
-        int branch = nodeID.selectBranch (id);
-        assert (branch >= 0);
-        auto inner = std::static_pointer_cast<SHAMapInnerNode>(std::move(node));
-        if (inner->isEmptyBranch (branch))
-            return stack;
-
-        node = descendThrow (inner, branch);
-        nodeID = nodeID.getChildNodeID (branch);
-    }
-
-    if (include_nonmatching_leaf ||
-        (std::static_pointer_cast<SHAMapTreeNode>(node)->peekItem()->key() == id))
-        stack.push ({node, nodeID});
-
-    return stack;
-}
-
 void
 SHAMap::dirtyUp (SharedPtrNodeStack& stack,
                  uint256 const& target, std::shared_ptr<SHAMapAbstractNode> child)
@@ -137,7 +104,7 @@ SHAMap::dirtyUp (SharedPtrNodeStack& stack,
         node->setChild (branch, child);
 
     #ifdef ST_DEBUG
-        if (journal_.trace) journal_.trace <<
+        JLOG(journal_.trace) <<
             "dirtyUp sets branch " << branch << " to " << prevHash;
     #endif
         child = std::move (node);
@@ -145,10 +112,10 @@ SHAMap::dirtyUp (SharedPtrNodeStack& stack,
 }
 
 SHAMapTreeNode*
-SHAMap::walkTowardsKey(uint256 const& id, NodeStack* stack) const
+SHAMap::walkTowardsKey(uint256 const& id, SharedPtrNodeStack* stack) const
 {
     assert(stack == nullptr || stack->empty());
-    auto inNode = root_.get();
+    auto inNode = root_;
     SHAMapNodeID nodeID;
     if (stack != nullptr)
         stack->push({inNode, nodeID});
@@ -156,7 +123,7 @@ SHAMap::walkTowardsKey(uint256 const& id, NodeStack* stack) const
     while (inNode->isInner())
     {
         auto const branch = nodeID.selectBranch (id);
-        auto const inner = static_cast<SHAMapInnerNode*>(inNode);
+        auto const inner = std::static_pointer_cast<SHAMapInnerNode>(std::move(inNode));
         if (inner->isEmptyBranch (branch))
             return nullptr;
 
@@ -165,7 +132,7 @@ SHAMap::walkTowardsKey(uint256 const& id, NodeStack* stack) const
         if (stack != nullptr)
             stack->push({inNode, nodeID});
     }
-    return static_cast<SHAMapTreeNode*>(inNode);
+    return static_cast<SHAMapTreeNode*>(inNode.get());
 }
 
 SHAMapTreeNode*
@@ -196,7 +163,7 @@ SHAMap::fetchNodeFromDB (SHAMapHash const& hash) const
             }
             catch (std::exception const&)
             {
-                if (journal_.warning) journal_.warning <<
+                JLOG(journal_.warning) <<
                     "Invalid DB node " << hash;
                 return std::shared_ptr<SHAMapTreeNode> ();
             }
@@ -213,18 +180,19 @@ SHAMap::fetchNodeFromDB (SHAMapHash const& hash) const
 
 // See if a sync filter has a node
 std::shared_ptr<SHAMapAbstractNode>
-SHAMap::checkFilter(SHAMapHash const& hash, SHAMapNodeID const& id,
+SHAMap::checkFilter(SHAMapHash const& hash,
                     SHAMapSyncFilter* filter) const
 {
     std::shared_ptr<SHAMapAbstractNode> node;
     Blob nodeData;
-    if (filter->haveNode (id, hash, nodeData))
+    if (filter->haveNode (hash, nodeData))
     {
         node = SHAMapAbstractNode::make(
             nodeData, 0, snfPREFIX, hash, true, f_.journal ());
         if (node)
         {
-            filter->gotNode (true, id, hash, nodeData, node->getType ());
+            filter->gotNode (true, hash,
+                std::move(nodeData), node->getType ());
             if (backed_)
                 canonicalize (hash, node);
         }
@@ -235,7 +203,6 @@ SHAMap::checkFilter(SHAMapHash const& hash, SHAMapNodeID const& id,
 // Get a node without throwing
 // Used on maps where missing nodes are expected
 std::shared_ptr<SHAMapAbstractNode> SHAMap::fetchNodeNT(
-    SHAMapNodeID const& id,
     SHAMapHash const& hash,
     SHAMapSyncFilter* filter) const
 {
@@ -254,7 +221,7 @@ std::shared_ptr<SHAMapAbstractNode> SHAMap::fetchNodeNT(
     }
 
     if (filter)
-        node = checkFilter (hash, id, filter);
+        node = checkFilter (hash, filter);
 
     return node;
 }
@@ -355,7 +322,7 @@ SHAMap::descend (SHAMapInnerNode * parent, SHAMapNodeID const& parentID,
 
     if (!child)
     {
-        std::shared_ptr<SHAMapAbstractNode> childNode = fetchNodeNT (childID, childHash, filter);
+        std::shared_ptr<SHAMapAbstractNode> childNode = fetchNodeNT (childHash, filter);
 
         if (childNode)
         {
@@ -369,7 +336,7 @@ SHAMap::descend (SHAMapInnerNode * parent, SHAMapNodeID const& parentID,
 
 SHAMapAbstractNode*
 SHAMap::descendAsync (SHAMapInnerNode* parent, int branch,
-    SHAMapNodeID const& childID, SHAMapSyncFilter * filter, bool & pending) const
+    SHAMapSyncFilter * filter, bool & pending) const
 {
     pending = false;
 
@@ -383,7 +350,7 @@ SHAMap::descendAsync (SHAMapInnerNode* parent, int branch,
     if (!ptr)
     {
         if (filter)
-            ptr = checkFilter (hash, childID, filter);
+            ptr = checkFilter (hash, filter);
 
         if (!ptr && backed_)
         {
@@ -430,12 +397,13 @@ SHAMap::unshareNode (std::shared_ptr<Node> node, SHAMapNodeID const& nodeID)
 }
 
 SHAMapTreeNode*
-SHAMap::firstBelow(SHAMapAbstractNode* node, NodeStack& stack) const
+SHAMap::firstBelow(std::shared_ptr<SHAMapAbstractNode> node,
+                   SharedPtrNodeStack& stack) const
 {
     // Return the first item at or below this node
     if (node->isLeaf())
-        return static_cast<SHAMapTreeNode*>(node);
-    auto inner = static_cast<SHAMapInnerNode*>(node);
+        return static_cast<SHAMapTreeNode*>(node.get());
+    auto inner = std::static_pointer_cast<SHAMapInnerNode>(node);
     for (int i = 0; i < 16;)
     {
         if (!inner->isEmptyBranch(i))
@@ -444,8 +412,8 @@ SHAMap::firstBelow(SHAMapAbstractNode* node, NodeStack& stack) const
             assert(!stack.empty());
             stack.push({node, stack.top().second.getChildNodeID(i)});
             if (node->isLeaf())
-                return static_cast<SHAMapTreeNode*>(node);
-            inner = static_cast<SHAMapInnerNode*>(node);
+                return static_cast<SHAMapTreeNode*>(node.get());
+            inner = std::static_pointer_cast<SHAMapInnerNode>(node);
             i = 0;  // scan all 16 branches of this new node
         }
         else
@@ -497,11 +465,11 @@ static std::shared_ptr<
     SHAMapItem const> const nullConstSHAMapItem;
 
 SHAMapItem const*
-SHAMap::peekFirstItem(NodeStack& stack) const
+SHAMap::peekFirstItem(SharedPtrNodeStack& stack) const
 {
     assert(stack.empty());
-    stack.push({root_.get(), SHAMapNodeID{}});
-    SHAMapTreeNode* node = firstBelow(root_.get(), stack);
+    stack.push({root_, SHAMapNodeID{}});
+    SHAMapTreeNode* node = firstBelow(root_, stack);
     if (!node)
     {
         while (!stack.empty())
@@ -512,7 +480,7 @@ SHAMap::peekFirstItem(NodeStack& stack) const
 }
 
 SHAMapItem const*
-SHAMap::peekNextItem(uint256 const& id, NodeStack& stack) const
+SHAMap::peekNextItem(uint256 const& id, SharedPtrNodeStack& stack) const
 {
     assert(!stack.empty());
     assert(stack.top().first->isLeaf());
@@ -522,7 +490,7 @@ SHAMap::peekNextItem(uint256 const& id, NodeStack& stack) const
         auto node = stack.top().first;
         auto nodeID = stack.top().second;
         assert(!node->isLeaf());
-        auto inner = static_cast<SHAMapInnerNode*>(node);
+        auto inner = std::static_pointer_cast<SHAMapInnerNode>(node);
         for (auto i = nodeID.selectBranch(id) + 1; i < 16; ++i)
         {
             if (!inner->isEmptyBranch(i))
@@ -583,22 +551,22 @@ SHAMap::upper_bound(uint256 const& id) const
 {
     // Get a const_iterator to the next item in the tree after a given item
     // item need not be in tree
-    NodeStack stack;
+    SharedPtrNodeStack stack;
     walkTowardsKey(id, &stack);
-    SHAMapAbstractNode* node;
+    std::shared_ptr<SHAMapAbstractNode> node;
     SHAMapNodeID nodeID;
     while (!stack.empty())
     {
         std::tie(node, nodeID) = stack.top();
         if (node->isLeaf())
         {
-            auto leaf = static_cast<SHAMapTreeNode*>(node);
+            auto leaf = static_cast<SHAMapTreeNode*>(node.get());
             if (leaf->peekItem()->key() > id)
                 return const_iterator(this, leaf->peekItem().get(), std::move(stack));
         }
         else
         {
-            auto inner = static_cast<SHAMapInnerNode*>(node);
+            auto inner = std::static_pointer_cast<SHAMapInnerNode>(node);
             for (auto branch = nodeID.selectBranch(id) + 1; branch < 16; ++branch)
             {
                 if (!inner->isEmptyBranch(branch))
@@ -631,7 +599,8 @@ bool SHAMap::delItem (uint256 const& id)
     // delete the item with this ID
     assert (state_ != SHAMapState::Immutable);
 
-    auto stack = getStack (id, true);
+    SharedPtrNodeStack stack;
+    walkTowardsKey(id, &stack);
 
     if (stack.empty ())
         Throw<SHAMapMissingNode> (type_, id);
@@ -719,7 +688,8 @@ SHAMap::addGiveItem (std::shared_ptr<SHAMapItem const> const& item,
 
     assert (state_ != SHAMapState::Immutable);
 
-    auto stack = getStack (tag, true);
+    SharedPtrNodeStack stack;
+    walkTowardsKey(tag, &stack);
 
     if (stack.empty ())
         Throw<SHAMapMissingNode> (type_, tag);
@@ -783,11 +753,6 @@ SHAMap::addGiveItem (std::shared_ptr<SHAMapItem const> const& item,
     return true;
 }
 
-bool SHAMap::addItem (const SHAMapItem& i, bool isTransaction, bool hasMetaData)
-{
-    return addGiveItem(std::make_shared<SHAMapItem const>(i), isTransaction, hasMetaData);
-}
-
 bool
 SHAMap::addItem(SHAMapItem&& i, bool isTransaction, bool hasMetaData)
 {
@@ -816,7 +781,8 @@ SHAMap::updateGiveItem (std::shared_ptr<SHAMapItem const> const& item,
 
     assert (state_ != SHAMapState::Immutable);
 
-    auto stack = getStack (tag, true);
+    SharedPtrNodeStack stack;
+    walkTowardsKey(tag, &stack);
 
     if (stack.empty ())
         Throw<SHAMapMissingNode> (type_, tag);
@@ -836,7 +802,7 @@ SHAMap::updateGiveItem (std::shared_ptr<SHAMapItem const> const& item,
     if (!node->setItem (item, !isTransaction ? SHAMapTreeNode::tnACCOUNT_STATE :
                         (hasMeta ? SHAMapTreeNode::tnTRANSACTION_MD : SHAMapTreeNode::tnTRANSACTION_NM)))
     {
-        journal_.trace <<
+        JLOG(journal_.trace) <<
             "SHAMap setItem, no change";
         return true;
     }
@@ -869,7 +835,7 @@ bool SHAMap::fetchRoot (SHAMapHash const& hash, SHAMapSyncFilter* filter)
         }
     }
 
-    auto newRoot = fetchNodeNT (SHAMapNodeID(), hash, filter);
+    auto newRoot = fetchNodeNT (hash, filter);
 
     if (newRoot)
     {
@@ -930,6 +896,7 @@ SHAMap::preFlushNode (std::shared_ptr<Node> node) const
 
 int SHAMap::unshare ()
 {
+    // Don't share nodes wth parent map
     return walkSubTree (false, hotUNKNOWN, 0);
 }
 
@@ -952,13 +919,21 @@ SHAMap::walkSubTree (bool doWrite, NodeObjectType t, std::uint32_t seq)
     if (root_->isLeaf())
     { // special case -- root_ is leaf
         root_ = preFlushNode (std::move(root_));
+        root_->updateHash();
         if (doWrite && backed_)
             root_ = writeNode(t, seq, std::move(root_));
+        else
+            root_->setSeq (0);
         return 1;
     }
+
     auto node = std::static_pointer_cast<SHAMapInnerNode>(root_);
-    if (node->isEmpty())
-        return flushed;
+
+    if (node->isEmpty ())
+    { // replace empty root with a new empty root
+        root_ = std::make_shared <SHAMapInnerNode> (0);
+        return 1;
+    }
 
     // Stack of {parent,index,child} pointers representing
     // inner nodes we are in the process of flushing
@@ -989,10 +964,11 @@ SHAMap::walkSubTree (bool doWrite, NodeObjectType t, std::uint32_t seq)
                 {
                     // This is a node that needs to be flushed
 
+                    child = preFlushNode(std::move(child));
+
                     if (child->isInner ())
                     {
                         // save our place and work on this node
-                        child = preFlushNode(std::move(child));
 
                         stack.emplace (std::move (node), branch);
 
@@ -1004,13 +980,13 @@ SHAMap::walkSubTree (bool doWrite, NodeObjectType t, std::uint32_t seq)
                         // flush this leaf
                         ++flushed;
 
-                        child = preFlushNode(std::move(child));
-
                         assert (node->getSeq() == seq_);
                         child->updateHash();
 
                         if (doWrite && backed_)
                             child = writeNode(t, seq, std::move(child));
+                        else
+                            child->setSeq (0);
 
                         node->shareChild (branch, child);
                     }
@@ -1025,6 +1001,8 @@ SHAMap::walkSubTree (bool doWrite, NodeObjectType t, std::uint32_t seq)
         if (doWrite && backed_)
             node = std::static_pointer_cast<SHAMapInnerNode>(writeNode(t, seq,
                                                                        std::move(node)));
+        else
+            node->setSeq (0);
 
         ++flushed;
 
@@ -1053,8 +1031,7 @@ SHAMap::walkSubTree (bool doWrite, NodeObjectType t, std::uint32_t seq)
 void SHAMap::dump (bool hash) const
 {
     int leafCount = 0;
-    if (journal_.info) journal_.info <<
-        " MAP Contains";
+    JLOG(journal_.info) << " MAP Contains";
 
     std::stack <std::pair <SHAMapAbstractNode*, SHAMapNodeID> > stack;
     stack.push ({root_.get (), SHAMapNodeID ()});
@@ -1065,11 +1042,11 @@ void SHAMap::dump (bool hash) const
         auto nodeID = stack.top().second;
         stack.pop();
 
-        if (journal_.info) journal_.info <<
-            node->getString (nodeID);
+        JLOG(journal_.info) << node->getString (nodeID);
         if (hash)
-           if (journal_.info) journal_.info <<
-               "Hash: " << node->getNodeHash();
+        {
+           JLOG(journal_.info) << "Hash: " << node->getNodeHash();
+        }
 
         if (node->isInner ())
         {
@@ -1092,8 +1069,7 @@ void SHAMap::dump (bool hash) const
     }
     while (!stack.empty ());
 
-    if (journal_.info) journal_.info <<
-        leafCount << " resident leaves";
+    JLOG(journal_.info) << leafCount << " resident leaves";
 }
 
 std::shared_ptr<SHAMapAbstractNode> SHAMap::getCache (SHAMapHash const& hash) const

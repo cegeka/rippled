@@ -18,6 +18,7 @@
 //==============================================================================
 
 #include <beast/threads/Stoppable.h>
+#include <cassert>
 
 namespace beast {
 
@@ -40,7 +41,7 @@ Stoppable::Stoppable (char const* name, Stoppable& parent)
     , m_childrenStopped (false)
 {
     // Must not have stopping parent.
-    bassert (! parent.isStopping());
+    assert (! parent.isStopping());
 
     parent.m_children.push_front (&m_child);
 }
@@ -48,7 +49,7 @@ Stoppable::Stoppable (char const* name, Stoppable& parent)
 Stoppable::~Stoppable ()
 {
     // Children must be stopped.
-    bassert (!m_started || m_childrenStopped);
+    assert (!m_started || m_childrenStopped);
 }
 
 bool Stoppable::isStopping() const
@@ -113,8 +114,13 @@ void Stoppable::stopAsyncRecursive (Journal j)
     onStop ();
     auto const ms = duration_cast<milliseconds>(
         high_resolution_clock::now() - start).count();
+
+#ifdef NDEBUG
     if (ms >= 10)
         j.fatal << m_name << "::onStop took " << ms << "ms";
+#else
+    (void)ms;
+#endif
 
     for (Children::const_iterator iter (m_children.cbegin ());
         iter != m_children.cend(); ++iter)
@@ -139,7 +145,7 @@ void Stoppable::stopRecursive (Journal j)
     bool const timedOut (! m_stoppedEvent.wait (1 * 1000)); // milliseconds
     if (timedOut)
     {
-        j.warning << "Waiting for '" << m_name << "' to stop";
+        j.error << "Waiting for '" << m_name << "' to stop";
         m_stoppedEvent.wait ();
     }
 
@@ -181,7 +187,7 @@ void RootStoppable::start ()
 void RootStoppable::stop (Journal j)
 {
     // Must have a prior call to start()
-    bassert (m_started);
+    assert (m_started);
 
     {
         std::lock_guard<std::mutex> lock(m_);

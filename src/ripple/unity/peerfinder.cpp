@@ -19,12 +19,6 @@
 
 #include <BeastConfig.h>
 
-#ifndef NDEBUG
-# define consistency_check(cond) bassert(cond)
-#else
-# define consistency_check(cond)
-#endif
-
 #include <ripple/peerfinder/impl/Bootcache.cpp>
 #include <ripple/peerfinder/impl/PeerfinderConfig.cpp>
 #include <ripple/peerfinder/impl/Endpoint.cpp>
@@ -33,7 +27,6 @@
 #include <ripple/peerfinder/impl/SourceStrings.cpp>
 
 #include <ripple/peerfinder/sim/GraphAlgorithms.h>
-#include <ripple/peerfinder/sim/WrappedSink.h>
 #include <ripple/peerfinder/sim/Predicates.h>
 #include <ripple/peerfinder/sim/FunctionQueue.h>
 #include <ripple/peerfinder/sim/Message.h>

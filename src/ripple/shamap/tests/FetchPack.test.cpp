@@ -22,10 +22,10 @@
 #include <ripple/shamap/tests/common.h>
 #include <ripple/protocol/digest.h>
 #include <ripple/basics/contract.h>
+#include <ripple/basics/random.h>
 #include <ripple/basics/StringUtilities.h>
 #include <ripple/basics/UnorderedContainers.h>
-#include <ripple/protocol/UInt160.h>
-#include <beast/module/core/maths/Random.h>
+#include <beast/xor_shift_engine.h>
 #include <beast/unit_test/suite.h>
 #include <functional>
 #include <stdexcept>
@@ -61,13 +61,13 @@ public:
         }
 
         void gotNode (bool fromFilter,
-            SHAMapNodeID const& id, SHAMapHash const& nodeHash,
-                Blob& nodeData, SHAMapTreeNode::TNType type) const override
+            SHAMapHash const& nodeHash,
+                Blob&& nodeData, SHAMapTreeNode::TNType type) const override
         {
         }
 
-        bool haveNode (SHAMapNodeID const& id,
-            SHAMapHash const& nodeHash, Blob& nodeData) const override
+        bool haveNode (SHAMapHash const& nodeHash,
+            Blob& nodeData) const override
         {
             Map::iterator it = mMap.find (nodeHash);
             if (it == mMap.end ())
@@ -84,23 +84,26 @@ public:
     };
 
     std::shared_ptr <Item>
-    make_random_item (beast::Random& r)
+    make_random_item (beast::xor_shift_engine& r)
     {
         Serializer s;
         for (int d = 0; d < 3; ++d)
-            s.add32 (r.nextInt ());
+            s.add32 (ripple::rand_int<std::uint32_t>(r));
         return std::make_shared <Item> (
             s.getSHA512Half(), s.peekData ());
     }
 
     void
-    add_random_items (std::size_t n, Table& t, beast::Random& r)
+    add_random_items (
+        std::size_t n,
+        Table& t,
+        beast::xor_shift_engine& r)
     {
         while (n--)
         {
             std::shared_ptr <SHAMapItem> item (
                 make_random_item (r));
-            auto const result (t.addItem (*item, false, false));
+            auto const result (t.addItem (std::move(*item), false, false));
             assert (result);
             (void) result;
         }

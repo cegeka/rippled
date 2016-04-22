@@ -88,7 +88,7 @@ CreateOffer::preflight (PreflightContext const& ctx)
     if (saTakerPays.native () && saTakerGets.native ())
     {
         JLOG(j.debug) <<
-            "Malformed offer: XRP for XRP";
+            "Malformed offer: redundant (XRP for XRP)";
         return temBAD_OFFER;
     }
     if (saTakerPays <= zero || saTakerGets <= zero)
@@ -107,14 +107,14 @@ CreateOffer::preflight (PreflightContext const& ctx)
     if (uPaysCurrency == uGetsCurrency && uPaysIssuerID == uGetsIssuerID)
     {
         JLOG(j.debug) <<
-            "Malformed offer: redundant offer";
+            "Malformed offer: redundant (IOU for IOU)";
         return temREDUNDANT;
     }
     // We don't allow a non-native currency to use the currency code XRP.
     if (badCurrency() == uPaysCurrency || badCurrency() == uGetsCurrency)
     {
         JLOG(j.debug) <<
-            "Malformed offer: Bad currency.";
+            "Malformed offer: bad currency";
         return temBAD_CURRENCY;
     }
 
@@ -274,8 +274,7 @@ CreateOffer::dry_offer (ApplyView& view, Offer const& offer)
 std::pair<bool, Quality>
 CreateOffer::select_path (
     bool have_direct, OfferStream const& direct,
-    bool have_bridge, OfferStream const& leg1, OfferStream const& leg2,
-    STAmountCalcSwitchovers const& amountCalcSwitchovers)
+    bool have_bridge, OfferStream const& leg1, OfferStream const& leg2)
 {
     // If we don't have any viable path, why are we here?!
     assert (have_direct || have_bridge);
@@ -285,7 +284,7 @@ CreateOffer::select_path (
         return std::make_pair (true, direct.tip ().quality ());
 
     Quality const bridged_quality (composed_quality (
-        leg1.tip ().quality (), leg2.tip ().quality (), amountCalcSwitchovers));
+        leg1.tip ().quality (), leg2.tip ().quality ()));
 
     if (have_direct)
     {
@@ -352,9 +351,6 @@ CreateOffer::bridged_cross (
 
     auto viewJ = ctx_.app.journal ("View");
 
-    STAmountCalcSwitchovers amountCalcSwitchovers (
-        view.info ().parentCloseTime);
-
     // Modifying the order or logic of the operations in the loop will cause
     // a protocol breaking change.
     while (have_direct || have_bridge)
@@ -368,8 +364,7 @@ CreateOffer::bridged_cross (
 
         std::tie (use_direct, quality) = select_path (
             have_direct, offers_direct,
-            have_bridge, offers_leg1, offers_leg2,
-            amountCalcSwitchovers);
+            have_bridge, offers_leg1, offers_leg2);
 
 
         // We are always looking at the best quality; we are done with
@@ -455,13 +450,13 @@ CreateOffer::bridged_cross (
 
         if (taker.done())
         {
-            j_.debug << "The taker reports he's done during crossing!";
+            JLOG(j_.debug) << "The taker reports he's done during crossing!";
             break;
         }
 
         if (reachedOfferCrossingLimit (taker))
         {
-            j_.debug << "The offer crossing limit has been exceeded!";
+            JLOG(j_.debug) << "The offer crossing limit has been exceeded!";
             break;
         }
 
@@ -473,7 +468,7 @@ CreateOffer::bridged_cross (
             Throw<std::logic_error> ("bridged crossing: nothing was fully consumed.");
     }
 
-    return std::make_pair(cross_result, taker.remaining_offer (amountCalcSwitchovers));
+    return std::make_pair(cross_result, taker.remaining_offer ());
 }
 
 std::pair<TER, Amounts>
@@ -536,13 +531,13 @@ CreateOffer::direct_cross (
 
         if (taker.done())
         {
-            j_.debug << "The taker reports he's done during crossing!";
+            JLOG(j_.debug) << "The taker reports he's done during crossing!";
             break;
         }
 
         if (reachedOfferCrossingLimit (taker))
         {
-            j_.debug << "The offer crossing limit has been exceeded!";
+            JLOG(j_.debug) << "The offer crossing limit has been exceeded!";
             break;
         }
 
@@ -554,8 +549,7 @@ CreateOffer::direct_cross (
             Throw<std::logic_error> ("direct crossing: nothing was fully consumed.");
     }
 
-    STAmountCalcSwitchovers amountCalcSwitchovers (view.info ().parentCloseTime);
-    return std::make_pair(cross_result, taker.remaining_offer (amountCalcSwitchovers));
+    return std::make_pair(cross_result, taker.remaining_offer ());
 }
 
 // Step through the stream for as long as possible, skipping any offers
@@ -581,10 +575,9 @@ CreateOffer::step_account (OfferStream& stream, Taker const& taker, Logs& logs)
     return false;
 }
 
-// Fill offer as much as possible by consuming offers already on the books,
-// and adjusting account balances accordingly.
-//
-// Charges fees on top to taker.
+// Fill as much of the offer as possible by consuming offers
+// already on the books. Return the status and the amount of
+// the offer to left unfilled.
 std::pair<TER, Amounts>
 CreateOffer::cross (
     ApplyView& view,
@@ -598,7 +591,20 @@ CreateOffer::cross (
     Taker taker (cross_type_, view, account_, taker_amount,
         ctx_.tx.getFlags(), beast::Journal (takerSink));
 
-    STAmountCalcSwitchovers amountCalcSwitchovers (view.info ().parentCloseTime);
+    // If the taker is unfunded before we begin crossing
+    // there's nothing to do - just return an error.
+    //
+    // We check this in preclaim, but when selling XRP
+    // charged fees can cause a user's available balance
+    // to go to 0 (by causing it to dip below the reserve)
+    // so we check this case again.
+    if (taker.unfunded ())
+    {
+        JLOG (j_.debug) <<
+            "Not crossing: taker is unfunded.";
+        return { tecUNFUNDED_OFFER, taker_amount };
+    }
+
     try
     {
         if (cross_type_ == CrossType::IouToIou)
@@ -608,8 +614,9 @@ CreateOffer::cross (
     }
     catch (std::exception const& e)
     {
-        j_.error << "Exception during offer crossing: " << e.what ();
-        return std::make_pair (tecINTERNAL, taker.remaining_offer (amountCalcSwitchovers));
+        JLOG (j_.error) <<
+            "Exception during offer crossing: " << e.what ();
+        return { tecINTERNAL, taker.remaining_offer () };
     }
 }
 
@@ -763,7 +770,7 @@ CreateOffer::applyGuts (ApplyView& view, ApplyView& view_cancel)
         // never be negative. If it is, something went very very wrong.
         if (place_offer.in < zero || place_offer.out < zero)
         {
-            j_.fatal << "Cross left offer negative!" <<
+            JLOG(j_.fatal) << "Cross left offer negative!" <<
                 "     in: " << format_amount (place_offer.in) <<
                 "    out: " << format_amount (place_offer.out);
             return { tefINTERNAL, true };
@@ -771,7 +778,7 @@ CreateOffer::applyGuts (ApplyView& view, ApplyView& view_cancel)
 
         if (place_offer.in == zero || place_offer.out == zero)
         {
-            j_.debug << "Offer fully crossed!";
+            JLOG(j_.debug) << "Offer fully crossed!";
             return { result, true };
         }
 
@@ -801,7 +808,7 @@ CreateOffer::applyGuts (ApplyView& view, ApplyView& view_cancel)
     // entire operation should be aborted, with only fees paid.
     if (bFillOrKill)
     {
-        j_.trace << "Fill or Kill: offer killed";
+        JLOG (j_.trace) << "Fill or Kill: offer killed";
         return { tesSUCCESS, false };
     }
 
@@ -809,7 +816,7 @@ CreateOffer::applyGuts (ApplyView& view, ApplyView& view_cancel)
     // placed - it gets cancelled and the operation succeeds.
     if (bImmediateOrCancel)
     {
-        j_.trace << "Immediate or cancel: offer cancelled";
+        JLOG (j_.trace) << "Immediate or cancel: offer cancelled";
         return { tesSUCCESS, true };
     }
 
@@ -854,7 +861,7 @@ CreateOffer::applyGuts (ApplyView& view, ApplyView& view_cancel)
         // Update owner count.
         adjustOwnerCount(view, sleCreator, 1, viewJ);
 
-        if (j_.trace) j_.trace <<
+        JLOG (j_.trace) <<
             "adding to book: " << to_string (saTakerPays.issue ()) <<
             " : " << to_string (saTakerGets.issue ());
 

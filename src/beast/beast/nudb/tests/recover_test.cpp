@@ -18,8 +18,7 @@
 //==============================================================================
 
 #include <beast/nudb/tests/common.h>
-#include <beast/module/core/files/File.h>
-#include <beast/random/xor_shift_engine.h>
+#include <beast/xor_shift_engine.h>
 #include <beast/unit_test/suite.h>
 #include <cmath>
 #include <cstring>
@@ -116,9 +115,10 @@ public:
     test_recover (float load_factor, std::size_t count)
     {
         testcase << count << " inserts";
-        path_type const path =
-            beast::UnitTestUtilities::TempDirectory(
-                "nudb").getFullPathName().toStdString();
+
+        beast::UnitTestUtilities::TempDirectory tempDir;
+
+        auto const path = tempDir.path();
         for (std::size_t n = 1;;++n)
         {
             try
@@ -156,7 +156,6 @@ public:
         test_recover (lf, 0);
         test_recover (lf, 10);
         test_recover (lf, 100);
-        test_recover (lf, 1000);
     }
 };
 
@@ -169,6 +168,7 @@ public:
     run() override
     {
         float lf = 0.90f;
+        test_recover (lf, 1000);
         test_recover (lf, 10000);
         test_recover (lf, 100000);
     }
